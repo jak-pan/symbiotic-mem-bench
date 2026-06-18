@@ -2,7 +2,8 @@
 //!
 //! Model traces are emitted per provider call with usage, timing, and the role
 //! binding that issued the call (e.g. `bench.judge`, `bench.answer`). We derive:
-//! - total cost (when the provider reported `cost_micro_usd`),
+//! - total cost (reported by the provider, or estimated from the built-in
+//!   pricing catalog when token buckets are present),
 //! - token totals,
 //! - latency percentiles over `timing.total_ms`,
 //! - per-model and per-role breakdowns (the per-role map also tells us which
@@ -16,8 +17,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
+pub const PRICING_TABLE_VERSION: &str = "official-pricing-2026-06-19";
+
 #[derive(Clone, Debug, Deserialize)]
 struct RawModelTrace {
+    #[serde(default)]
+    queue_id: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
     model: RawModelId,
     #[serde(default)]
     role_binding: Option<String>,
@@ -29,9 +37,11 @@ struct RawModelTrace {
     timing: Option<RawTiming>,
     #[serde(default)]
     outcome: Option<String>,
+    #[serde(default)]
+    cost_micro_usd: Option<u64>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 struct RawModelId {
     #[serde(default)]
     operation: String,
@@ -53,10 +63,14 @@ struct RawCache {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 struct RawUsage {
-    #[serde(default)]
+    #[serde(default, alias = "prompt_tokens")]
     input_tokens: Option<u64>,
-    #[serde(default)]
+    #[serde(default, alias = "completion_tokens")]
     output_tokens: Option<u64>,
+    #[serde(default)]
+    cache_hit_tokens: Option<u64>,
+    #[serde(default)]
+    cache_miss_tokens: Option<u64>,
     #[serde(default)]
     cost_micro_usd: Option<u64>,
 }
@@ -84,6 +98,8 @@ pub struct ModelStat {
     pub prompt_cache_partial_hits: u64,
     pub prompt_cache_misses: u64,
     pub cost_micro_usd: Option<u64>,
+    pub cost_estimated: bool,
+    pub pricing_source: Option<String>,
     pub latency_ms_p50: Option<f64>,
 }
 
@@ -103,6 +119,8 @@ pub struct RoleStat {
     pub prompt_cache_partial_hits: u64,
     pub prompt_cache_misses: u64,
     pub cost_micro_usd: Option<u64>,
+    pub cost_estimated: bool,
+    pub pricing_source: Option<String>,
     pub latency_ms_p50: Option<f64>,
     pub latency_ms_p95: Option<f64>,
 }
@@ -122,6 +140,9 @@ pub struct ModelTraceRollup {
     pub prompt_cache_misses: u64,
     /// Total cost when at least one call reported a price; `None` otherwise.
     pub cost_micro_usd: Option<u64>,
+    pub cost_estimated: bool,
+    pub pricing_table_version: Option<String>,
+    pub pricing_sources: Vec<String>,
     pub latency_ms_p50: Option<f64>,
     pub latency_ms_p95: Option<f64>,
     pub models: Vec<ModelStat>,
@@ -146,6 +167,8 @@ struct ModelAcc {
     prompt_cache_misses: u64,
     cost_micro_usd: u64,
     saw_cost: bool,
+    estimated_cost: bool,
+    pricing_sources: BTreeMap<String, ()>,
     latencies: Vec<i64>,
 }
 
@@ -164,7 +187,17 @@ struct RoleAcc {
     prompt_cache_misses: u64,
     cost_micro_usd: u64,
     saw_cost: bool,
+    estimated_cost: bool,
+    pricing_sources: BTreeMap<String, ()>,
     latencies: Vec<i64>,
+}
+
+#[derive(Clone, Copy)]
+struct Pricing {
+    input_per_million_usd: Option<f64>,
+    cached_input_per_million_usd: Option<f64>,
+    output_per_million_usd: Option<f64>,
+    source: &'static str,
 }
 
 fn percentile(sorted: &[i64], pct: f64) -> Option<f64> {
@@ -181,11 +214,76 @@ fn percentile(sorted: &[i64], pct: f64) -> Option<f64> {
     Some(sorted[lo] as f64 * (1.0 - weight) + sorted[hi] as f64 * weight)
 }
 
+fn pricing_for(operator: &str, operation: &str, model: &str) -> Option<Pricing> {
+    let operator = operator.trim();
+    let operation = operation.trim();
+    let model = model.trim();
+    match (operator, operation, model) {
+        ("deepseek", "chat", "deepseek-v4-flash") => Some(Pricing {
+            input_per_million_usd: Some(0.14),
+            cached_input_per_million_usd: Some(0.0028),
+            output_per_million_usd: Some(0.28),
+            source: "DeepSeek API pricing: https://api-docs.deepseek.com/quick_start/pricing",
+        }),
+        ("deepseek", "chat", "deepseek-v4-pro") => Some(Pricing {
+            input_per_million_usd: Some(0.435),
+            cached_input_per_million_usd: Some(0.003625),
+            output_per_million_usd: Some(0.87),
+            source: "DeepSeek API pricing: https://api-docs.deepseek.com/quick_start/pricing",
+        }),
+        ("gemini", "embedding", "gemini-embedding-2") => Some(Pricing {
+            input_per_million_usd: Some(0.20),
+            cached_input_per_million_usd: None,
+            output_per_million_usd: None,
+            source: "Gemini API pricing: https://ai.google.dev/gemini-api/docs/pricing",
+        }),
+        ("gemini", "embedding", "gemini-embedding-2-batch") => Some(Pricing {
+            input_per_million_usd: Some(0.10),
+            cached_input_per_million_usd: None,
+            output_per_million_usd: None,
+            source: "Gemini API pricing batch: https://ai.google.dev/gemini-api/docs/pricing",
+        }),
+        _ => None,
+    }
+}
+
+fn estimate_cost_micro_usd(
+    pricing: Pricing,
+    input_tokens: u64,
+    cached_input_tokens: u64,
+    output_tokens: u64,
+) -> Option<u64> {
+    let uncached_input_tokens = input_tokens.saturating_sub(cached_input_tokens);
+    let mut usd = 0.0;
+    let mut observed_price = false;
+    if let Some(price) = pricing.input_per_million_usd {
+        usd += (uncached_input_tokens as f64 / 1_000_000.0) * price;
+        observed_price = true;
+    }
+    if let Some(price) = pricing.cached_input_per_million_usd {
+        usd += (cached_input_tokens as f64 / 1_000_000.0) * price;
+        observed_price = true;
+    }
+    if let Some(price) = pricing.output_per_million_usd {
+        usd += (output_tokens as f64 / 1_000_000.0) * price;
+        observed_price = true;
+    }
+    observed_price.then_some((usd * 1_000_000.0).round() as u64)
+}
+
 /// Compute the rollup for a run, or `None` when `model-traces.jsonl` is absent
 /// or empty.
 pub fn rollup_model_traces(run_root: &Path) -> Option<ModelTraceRollup> {
-    let path = run_root.join("artifacts").join("model-traces.jsonl");
-    rollup_model_trace_file(&path)
+    [
+        run_root.join("artifacts").join("model-traces.jsonl"),
+        run_root
+            .join("provider-queue")
+            .join("model-queue-traces.jsonl"),
+        run_root.join("raw").join("model-traces.jsonl"),
+        run_root.join("model-traces.jsonl"),
+    ]
+    .into_iter()
+    .find_map(|path| rollup_model_trace_file(&path))
 }
 
 /// Compute the rollup for a specific model trace file.
@@ -197,6 +295,8 @@ pub fn rollup_model_trace_file(path: &Path) -> Option<ModelTraceRollup> {
     let mut per_role: BTreeMap<String, RoleAcc> = BTreeMap::new();
     let mut all_latencies: Vec<i64> = Vec::new();
     let mut total_cost = 0u64;
+    let mut estimated_any_cost = false;
+    let mut pricing_sources: BTreeMap<String, ()> = BTreeMap::new();
     let mut saw_any = false;
 
     for line in raw.lines() {
@@ -206,20 +306,35 @@ pub fn rollup_model_trace_file(path: &Path) -> Option<ModelTraceRollup> {
         let Ok(trace) = serde_json::from_str::<RawModelTrace>(line) else {
             continue;
         };
+        if trace.queue_id.is_some()
+            && matches!(
+                trace.status.as_deref(),
+                Some("queued" | "pending" | "running")
+            )
+        {
+            continue;
+        }
         saw_any = true;
         rollup.calls += 1;
         let failed = trace
             .outcome
             .as_deref()
+            .or(trace.status.as_deref())
             .is_some_and(|outcome| outcome != "succeeded");
         if failed {
             rollup.failed_calls += 1;
         }
 
+        let (operation, operator, model) = model_identity(&trace);
+        let has_usage = trace.usage.is_some();
         let usage = trace.usage.unwrap_or_default();
         let cache = trace.cache.unwrap_or_default();
         let input = usage.input_tokens.unwrap_or(0);
-        let cached = cache.cached_input_tokens.unwrap_or(0).min(input);
+        let cached = cache
+            .cached_input_tokens
+            .or(usage.cache_hit_tokens)
+            .unwrap_or(0)
+            .min(input);
         let uncached = input.saturating_sub(cached);
         let output = usage.output_tokens.unwrap_or(0);
         rollup.input_tokens += input;
@@ -229,25 +344,51 @@ pub fn rollup_model_trace_file(path: &Path) -> Option<ModelTraceRollup> {
         if cache.response_cache.as_deref() == Some("hit") {
             rollup.response_cache_hits += 1;
         }
-        match cache.prompt_cache.as_deref() {
+        let prompt_cache = cache.prompt_cache.or_else(|| {
+            let hit = usage.cache_hit_tokens.unwrap_or(0);
+            let miss = usage.cache_miss_tokens.unwrap_or(0);
+            match (hit, miss) {
+                (0, _) => Some("miss".to_string()),
+                (_, 0) => Some("hit".to_string()),
+                _ => Some("partial_hit".to_string()),
+            }
+        });
+        match prompt_cache.as_deref() {
             Some("hit") => rollup.prompt_cache_hits += 1,
             Some("partial_hit") => rollup.prompt_cache_partial_hits += 1,
             Some("miss") => rollup.prompt_cache_misses += 1,
             _ => {}
         }
-        if let Some(cost) = usage.cost_micro_usd {
+        let reported_cost = usage.cost_micro_usd.or(trace.cost_micro_usd);
+        let estimated_cost = reported_cost.or_else(|| {
+            has_usage
+                .then(|| pricing_for(&operator, &operation, &model))
+                .flatten()
+                .and_then(|pricing| estimate_cost_micro_usd(pricing, input, cached, output))
+        });
+        let pricing = pricing_for(&operator, &operation, &model);
+        let cost_was_estimated = reported_cost.is_none() && estimated_cost.is_some();
+        if let Some(cost) = estimated_cost {
             total_cost += cost;
             rollup.cost_micro_usd = Some(total_cost);
+            if cost_was_estimated {
+                estimated_any_cost = true;
+            }
+            if cost_was_estimated {
+                if let Some(pricing) = pricing {
+                    pricing_sources.insert(pricing.source.to_string(), ());
+                }
+            }
         }
 
-        let latency = trace.timing.and_then(|timing| timing.total_ms);
+        let latency = trace.timing.as_ref().and_then(|timing| timing.total_ms);
         if let Some(latency) = latency {
             all_latencies.push(latency);
         }
 
-        let acc = per_model.entry(trace.model.model.clone()).or_default();
-        acc.operator = trace.model.operator.clone();
-        acc.operation = trace.model.operation.clone();
+        let acc = per_model.entry(model.clone()).or_default();
+        acc.operator = operator.clone();
+        acc.operation = operation.clone();
         acc.calls += 1;
         if failed {
             acc.failed_calls += 1;
@@ -259,15 +400,21 @@ pub fn rollup_model_trace_file(path: &Path) -> Option<ModelTraceRollup> {
         if cache.response_cache.as_deref() == Some("hit") {
             acc.response_cache_hits += 1;
         }
-        match cache.prompt_cache.as_deref() {
+        match prompt_cache.as_deref() {
             Some("hit") => acc.prompt_cache_hits += 1,
             Some("partial_hit") => acc.prompt_cache_partial_hits += 1,
             Some("miss") => acc.prompt_cache_misses += 1,
             _ => {}
         }
-        if let Some(cost) = usage.cost_micro_usd {
+        if let Some(cost) = estimated_cost {
             acc.cost_micro_usd += cost;
             acc.saw_cost = true;
+            if cost_was_estimated {
+                acc.estimated_cost = true;
+                if let Some(pricing) = pricing {
+                    acc.pricing_sources.insert(pricing.source.to_string(), ());
+                }
+            }
         }
         if let Some(latency) = latency {
             acc.latencies.push(latency);
@@ -277,9 +424,9 @@ pub fn rollup_model_trace_file(path: &Path) -> Option<ModelTraceRollup> {
             rollup
                 .roles
                 .entry(role.clone())
-                .or_insert_with(|| trace.model.model.clone());
+                .or_insert_with(|| model.clone());
             let role_acc = per_role.entry(role).or_default();
-            role_acc.models.insert(trace.model.model.clone(), ());
+            role_acc.models.insert(model.clone(), ());
             role_acc.calls += 1;
             if failed {
                 role_acc.failed_calls += 1;
@@ -291,15 +438,23 @@ pub fn rollup_model_trace_file(path: &Path) -> Option<ModelTraceRollup> {
             if cache.response_cache.as_deref() == Some("hit") {
                 role_acc.response_cache_hits += 1;
             }
-            match cache.prompt_cache.as_deref() {
+            match prompt_cache.as_deref() {
                 Some("hit") => role_acc.prompt_cache_hits += 1,
                 Some("partial_hit") => role_acc.prompt_cache_partial_hits += 1,
                 Some("miss") => role_acc.prompt_cache_misses += 1,
                 _ => {}
             }
-            if let Some(cost) = usage.cost_micro_usd {
+            if let Some(cost) = estimated_cost {
                 role_acc.cost_micro_usd += cost;
                 role_acc.saw_cost = true;
+                if cost_was_estimated {
+                    role_acc.estimated_cost = true;
+                    if let Some(pricing) = pricing {
+                        role_acc
+                            .pricing_sources
+                            .insert(pricing.source.to_string(), ());
+                    }
+                }
             }
             if let Some(latency) = latency {
                 role_acc.latencies.push(latency);
@@ -314,6 +469,11 @@ pub fn rollup_model_trace_file(path: &Path) -> Option<ModelTraceRollup> {
     all_latencies.sort_unstable();
     rollup.latency_ms_p50 = percentile(&all_latencies, 50.0);
     rollup.latency_ms_p95 = percentile(&all_latencies, 95.0);
+    rollup.cost_estimated = estimated_any_cost;
+    rollup.pricing_sources = pricing_sources.into_keys().collect();
+    if !rollup.pricing_sources.is_empty() {
+        rollup.pricing_table_version = Some(PRICING_TABLE_VERSION.to_string());
+    }
 
     rollup.models = per_model
         .into_iter()
@@ -334,6 +494,8 @@ pub fn rollup_model_trace_file(path: &Path) -> Option<ModelTraceRollup> {
                 prompt_cache_partial_hits: acc.prompt_cache_partial_hits,
                 prompt_cache_misses: acc.prompt_cache_misses,
                 cost_micro_usd: acc.saw_cost.then_some(acc.cost_micro_usd),
+                cost_estimated: acc.estimated_cost,
+                pricing_source: acc.pricing_sources.into_keys().next(),
                 latency_ms_p50: percentile(&acc.latencies, 50.0),
             }
         })
@@ -360,6 +522,8 @@ pub fn rollup_model_trace_file(path: &Path) -> Option<ModelTraceRollup> {
                 prompt_cache_partial_hits: acc.prompt_cache_partial_hits,
                 prompt_cache_misses: acc.prompt_cache_misses,
                 cost_micro_usd: acc.saw_cost.then_some(acc.cost_micro_usd),
+                cost_estimated: acc.estimated_cost,
+                pricing_source: acc.pricing_sources.into_keys().next(),
                 latency_ms_p50: percentile(&acc.latencies, 50.0),
                 latency_ms_p95: percentile(&acc.latencies, 95.0),
             }
@@ -370,6 +534,28 @@ pub fn rollup_model_trace_file(path: &Path) -> Option<ModelTraceRollup> {
         .sort_by(|left, right| right.calls.cmp(&left.calls));
 
     Some(rollup)
+}
+
+fn model_identity(trace: &RawModelTrace) -> (String, String, String) {
+    if !trace.model.model.is_empty() {
+        return (
+            trace.model.operation.clone(),
+            trace.model.operator.clone(),
+            trace.model.model.clone(),
+        );
+    }
+    if let Some(queue_id) = &trace.queue_id {
+        let mut parts = queue_id.splitn(3, ':');
+        let operation = parts.next().unwrap_or("").to_string();
+        let operator = parts.next().unwrap_or("").to_string();
+        let model = parts.next().unwrap_or(queue_id).to_string();
+        return (operation, operator, model);
+    }
+    (
+        trace.model.operation.clone(),
+        trace.model.operator.clone(),
+        trace.model.model.clone(),
+    )
 }
 
 #[cfg(test)]
@@ -397,7 +583,15 @@ mod tests {
         assert_eq!(rollup.prompt_cache_hits, 1);
         assert_eq!(rollup.prompt_cache_partial_hits, 1);
         assert_eq!(rollup.prompt_cache_misses, 0);
-        assert_eq!(rollup.cost_micro_usd, None);
+        assert_eq!(rollup.cost_micro_usd, Some(8));
+        assert!(rollup.cost_estimated);
+        assert_eq!(
+            rollup.pricing_table_version.as_deref(),
+            Some(PRICING_TABLE_VERSION)
+        );
+        assert!(rollup.pricing_sources.iter().any(|source| {
+            source == "DeepSeek API pricing: https://api-docs.deepseek.com/quick_start/pricing"
+        }));
         assert_eq!(
             rollup.roles.get("bench.judge").map(String::as_str),
             Some("deepseek-v4-flash")
@@ -413,5 +607,47 @@ mod tests {
     fn absent_traces_yield_none() {
         let dir = tempfile::tempdir().unwrap();
         assert!(rollup_model_traces(dir.path()).is_none());
+    }
+
+    #[test]
+    fn rolls_up_provider_queue_traces_when_model_artifact_is_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join("provider-queue")
+            .join("model-queue-traces.jsonl");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "{\"queue_id\":\"chat:deepseek:deepseek-v4-flash\",\"item_id\":\"a\",\"operation\":\"chat\",\"status\":\"queued\",\"attempt\":0,\"timestamp\":\"2026-01-01T00:00:00Z\"}\n\
+             {\"queue_id\":\"chat:deepseek:deepseek-v4-flash\",\"item_id\":\"a\",\"operation\":\"chat\",\"status\":\"running\",\"attempt\":1,\"timestamp\":\"2026-01-01T00:00:01Z\"}\n\
+             {\"queue_id\":\"chat:deepseek:deepseek-v4-flash\",\"item_id\":\"a\",\"operation\":\"chat\",\"status\":\"succeeded\",\"attempt\":1,\"timestamp\":\"2026-01-01T00:00:02Z\",\"usage\":{\"prompt_tokens\":100,\"cache_hit_tokens\":90,\"cache_miss_tokens\":10,\"completion_tokens\":4}}\n\
+             {\"queue_id\":\"embedding:gemini:gemini-embedding-2\",\"item_id\":\"b\",\"operation\":\"embedding\",\"status\":\"succeeded\",\"attempt\":1,\"timestamp\":\"2026-01-01T00:00:03Z\",\"usage\":{\"prompt_tokens\":1000,\"cache_miss_tokens\":1000,\"completion_tokens\":0}}\n",
+        )
+        .unwrap();
+
+        let rollup = rollup_model_traces(dir.path()).unwrap();
+        assert_eq!(rollup.calls, 2);
+        assert_eq!(rollup.input_tokens, 1100);
+        assert_eq!(rollup.cached_input_tokens, 90);
+        assert_eq!(rollup.uncached_input_tokens, 1010);
+        assert_eq!(rollup.output_tokens, 4);
+        assert_eq!(rollup.cost_micro_usd, Some(203));
+        assert!(rollup.cost_estimated);
+        assert_eq!(rollup.prompt_cache_partial_hits, 1);
+        assert_eq!(rollup.prompt_cache_misses, 1);
+        assert_eq!(rollup.models.len(), 2);
+        assert!(rollup.models.iter().any(|stat| {
+            stat.model == "deepseek-v4-flash"
+                && stat.operator == "deepseek"
+                && stat.operation == "chat"
+        }));
+        assert!(rollup.models.iter().any(|stat| {
+            stat.model == "gemini-embedding-2"
+                && stat.operator == "gemini"
+                && stat.operation == "embedding"
+                && stat.input_tokens == 1000
+                && stat.cost_micro_usd == Some(200)
+        }));
     }
 }

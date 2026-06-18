@@ -19,22 +19,3 @@ recall:
   enable_artifact_policy: true
   answerer_enabled: true
   support_retry_limit: 1
-
-providers:
-  chat_provider: openai-compatible
-  chat_model: deepseek-v4-pro
-  embedding_provider: hash
-  embedding_model: hash-embedding-v1
-  prompt_cache: true
-  distill:
-    operation: chat
-    operator: deepseek
-    model: deepseek-v4-flash
-  answer:
-    operation: chat
-    operator: deepseek
-    model: deepseek-v4-pro
-  embedding:
-    operation: embedding
-    operator: gemini
-    model: gemini-embedding-2

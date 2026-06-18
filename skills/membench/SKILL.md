@@ -69,8 +69,13 @@ alternate environment.
 - LongMemEval small runs default to `--sample stratified`, not first-N row order. Use `--sample first`
   only for exact row-order reproductions.
 - Native runs re-ingest by default; state reuse must be explicit with `--resume` or `--answer-only`.
+  For cheap isolated answer-only comparisons, pass `--source-vault-root
+  runs/inputs/vault-roots/.../vaults`; membench links immutable `memory.sqlite` and `archive/`
+  data into the new run root and writes fresh hypotheses, debug, traces, and scores there.
 - Default Symbiotic Memory launches are paid, provider-backed, and scored: `llm` distill, `gemini`
   embeddings, answerer/routed/consolidated retrieval enabled, and `score=true`.
+- Paid/provider-backed benchmark runs must use Cargo release mode (`cargo run --release ...`).
+  Dev-mode runs are acceptable only for smoke/debug/inspection commands.
 - Symbiotic Memory adapter status today: explicit local `--smoke` runs and the default paid
   LLM/Gemini ingestion/scoring path are wired in this repo. Compact normalized
   `artifacts/model-traces.jsonl` export is still pending; provider queue logs are present under
@@ -96,6 +101,9 @@ alternate environment.
 - Native adapters must preserve async pipeline behavior: no benchmark-owned ingestion/recall
   duplication, no artificial batch barrier, stage outputs and traces written incrementally, and
   provider caps controlled by model queue id.
+- Symbiotic Memory model/provider defaults belong in `../symbiotic-memory` code/config. Benchmark
+  profiles should not repeat answer/distill/embed model defaults; add role/model env overrides only
+  for an explicitly named tuning arm or provider comparison.
 - Native adapters write executor-owned outputs directly under `raw/`; do not add root-level
   temporary outputs that need a cleanup pass.
 - For LongMemEval native runs, hypotheses and memory `answer` traces are controlled by
@@ -105,6 +113,42 @@ alternate environment.
   not install or rely on Homebrew Node.
 - Dashboard command previews should target the short native `membench` command and omit harness-owned
   defaults such as dataset, run root, raw output, prompt dir, provider queue dir, and fresh mode.
+
+## Cost And Pricing Interpretation
+
+Use the dashboard/API cost fields for run-level cost. Do not manually multiply screenshots or guess
+from provider dashboards unless debugging a provider-side discrepancy.
+
+Cost source rules:
+
+- If a trace row has `cost_micro_usd`, that provider-reported value wins.
+- If a trace row has token usage but no explicit cost, membench estimates cost from its built-in
+  pricing catalog and marks the rollup with `cost_estimated: true`.
+- If a model has no token usage, that model stays unpriced. Do not treat missing usage as zero-cost.
+- New Symbiotic Memory Gemini embedding traces should include `usage.prompt_tokens` from Gemini
+  `countTokens`, so embedding cost should be estimated. Old native Gemini embedding traces may show
+  thousands of embedding calls with no cost because those queue rows did not record embedding
+  input-token usage.
+
+Current built-in catalog:
+
+- `official-pricing-2026-06-19`
+- DeepSeek official API pricing for `deepseek-v4-flash` and `deepseek-v4-pro`, including cache-hit
+  input, cache-miss input, and output tokens.
+- Gemini official API pricing for `gemini-embedding-2` standard and batch text-input prices.
+
+Useful inspection command:
+
+```bash
+curl -s 'http://127.0.0.1:8787/api/run?id=runs%2Fsymbiotic-memory%2Flong-mem-eval%2F10%2F{run_name}' \
+  | jq '{cost:.cost.cost_micro_usd, estimated:.cost.cost_estimated, pricing:.cost.pricing_table_version, models:[.cost.models[] | {model,calls,cost_micro_usd,cost_estimated,input_tokens,cached_input_tokens,output_tokens}]}'
+```
+
+When investigating unexpected spend, always compare:
+
+- `run-params.json` `configured_models` and `runtime_models`;
+- `provider-queue/model-queue-traces.jsonl` queue ids and successful-call counts;
+- dashboard/API `cost.models[]`, especially `cached_input_tokens` versus `input_tokens`.
 
 ## Publication Pass
 

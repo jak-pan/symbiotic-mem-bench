@@ -2,7 +2,9 @@ use chrono::Utc;
 use clap::{Parser, Subcommand};
 #[cfg(feature = "symbiotic-memory-adapter")]
 use futures::StreamExt;
-use serde_json::{Value, json};
+#[cfg(feature = "symbiotic-memory-adapter")]
+use serde_json::Value;
+use serde_json::json;
 use sha2::{Digest, Sha256};
 #[cfg(feature = "symbiotic-memory-adapter")]
 use std::collections::VecDeque;
@@ -115,6 +117,9 @@ struct Cli {
     env_file: Option<PathBuf>,
     #[arg(long)]
     provider_queue_dir: Option<PathBuf>,
+    /// For answer-only reruns, link immutable vault data from this vault root instead of copying a full run.
+    #[arg(long)]
+    source_vault_root: Option<PathBuf>,
     /// Keep local smoke-test artifacts instead of deleting them after success.
     #[arg(long, hide = true)]
     keep_smoke_run: bool,
@@ -365,6 +370,7 @@ fn run_selected_benchmark(cli: Cli) -> anyhow::Result<()> {
                 scorer: cli.scorer,
                 env_file: cli.env_file,
                 provider_queue_dir: cli.provider_queue_dir,
+                source_vault_root: cli.source_vault_root,
                 ephemeral_smoke_run,
             })
         }
@@ -807,6 +813,13 @@ fn native_memory_traces_path(run_root: &Path) -> Option<PathBuf> {
 fn native_model_traces_path(run_root: &Path) -> Option<PathBuf> {
     optional_existing(native_raw_dir(run_root).join("model-traces.jsonl"))
         .or_else(|| optional_existing(run_root.join("model-traces.jsonl")))
+        .or_else(|| {
+            optional_existing(
+                run_root
+                    .join("provider-queue")
+                    .join("model-queue-traces.jsonl"),
+            )
+        })
 }
 
 #[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
@@ -1534,6 +1547,7 @@ struct SymbioticMemoryCliRun {
     scorer: String,
     env_file: Option<PathBuf>,
     provider_queue_dir: Option<PathBuf>,
+    source_vault_root: Option<PathBuf>,
     ephemeral_smoke_run: bool,
 }
 
@@ -1557,6 +1571,9 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
         std::fs::remove_dir_all(&run.run_root)?;
     }
     std::fs::create_dir_all(&run.run_root)?;
+    if run.answer_only && !run.resume {
+        clear_answer_only_run_outputs(&run.run_root)?;
+    }
     write_run_params(&run.run_root, &symbiotic_memory_run_params(&run))?;
 
     let config = run
@@ -1568,6 +1585,17 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
     let provider_runtime = ProviderRuntime::new(&run, &config)?;
     let rows = symbiotic_mem_bench::symbiotic_memory_adapter::load_longmemeval(&run.dataset, None)?;
     let rows = select_longmemeval_rows(rows, run.limit, &run.sample)?;
+    if let Some(source_vault_root) = &run.source_vault_root {
+        if !run.answer_only {
+            anyhow::bail!("--source-vault-root is only valid with --answer-only");
+        }
+        if run.resume {
+            anyhow::bail!(
+                "--source-vault-root creates a fresh linked vault view and cannot be combined with --resume"
+            );
+        }
+        prepare_answer_only_linked_vaults(&run.run_root, source_vault_root, &rows)?;
+    }
     let mut policy = config.recall.clone();
     policy.answerer_enabled = run.answerer;
     if let Some(query_planner) = &run.query_planner {
@@ -1682,6 +1710,93 @@ impl symbiotic_memory::Distiller for DynDistiller {
     ) -> anyhow::Result<()> {
         self.0.distill_into(source, receipt, sink).await
     }
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn clear_answer_only_run_outputs(run_root: &Path) -> anyhow::Result<()> {
+    for path in [
+        run_root.join("artifacts"),
+        run_root.join("benchmark-report.json"),
+        run_root.join("traces").join("memory-events.jsonl"),
+        run_root.join("raw").join("memory-traces.jsonl"),
+        run_root.join("raw").join("model-traces.jsonl"),
+        run_root.join("model-traces.jsonl"),
+        run_root
+            .join("provider-queue")
+            .join("model-queue-traces.jsonl"),
+    ] {
+        remove_path_if_exists(&path)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn prepare_answer_only_linked_vaults(
+    run_root: &Path,
+    source_vault_root: &Path,
+    rows: &[symbiotic_mem_bench::symbiotic_memory_adapter::LongMemEvalRecord],
+) -> anyhow::Result<()> {
+    let source_vault_root = resolve_repo_path(source_vault_root);
+    if !source_vault_root.is_dir() {
+        anyhow::bail!(
+            "source vault root does not exist: {}",
+            source_vault_root.display()
+        );
+    }
+    let target_vault_root = run_root.join("vaults");
+    std::fs::create_dir_all(&target_vault_root)?;
+    for row in rows {
+        let source_vault = source_vault_root.join(&row.question_id);
+        let target_vault = target_vault_root.join(&row.question_id);
+        let source_manifest = source_vault.join("manifest.json");
+        let source_memory = source_vault.join("memory.sqlite");
+        if !source_manifest.is_file() || !source_memory.is_file() {
+            anyhow::bail!(
+                "source vault {} is missing manifest.json or memory.sqlite",
+                source_vault.display()
+            );
+        }
+
+        remove_path_if_exists(&target_vault)?;
+        std::fs::create_dir_all(&target_vault)?;
+        std::fs::copy(source_manifest, target_vault.join("manifest.json"))?;
+        link_path(&source_memory, &target_vault.join("memory.sqlite"))?;
+        let source_archive = source_vault.join("archive");
+        if source_archive.exists() {
+            link_path(&source_archive, &target_vault.join("archive"))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+#[cfg(unix)]
+fn link_path(source: &Path, target: &Path) -> anyhow::Result<()> {
+    std::os::unix::fs::symlink(source, target)?;
+    Ok(())
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+#[cfg(not(unix))]
+fn link_path(source: &Path, target: &Path) -> anyhow::Result<()> {
+    if source.is_dir() {
+        anyhow::bail!("directory vault links require a Unix-like filesystem");
+    }
+    std::fs::hard_link(source, target)?;
+    Ok(())
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn remove_path_if_exists(path: &Path) -> anyhow::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    if path.is_dir() {
+        std::fs::remove_dir_all(path)?;
+    } else {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
@@ -1814,13 +1929,7 @@ impl ProviderRuntime {
         if run.query_planner.as_deref() != Some("flash") {
             return Ok(None);
         }
-        let adapter = symbiotic_memory::ProviderAdapterConfig::new(
-            "chat",
-            run_env_value(run, "SYMEM_QUERY_PLANNER_OPERATOR")
-                .unwrap_or_else(|| "deepseek".to_string()),
-            run_env_value(run, "SYMEM_QUERY_PLANNER_MODEL")
-                .unwrap_or_else(|| "deepseek-v4-flash".to_string()),
-        );
+        let adapter = self.role_adapter(run, "QUERY_PLANNER", &self.config.providers.distill);
         let chat_factory = self.chat_factory(run, "QUERY_PLANNER", &adapter)?;
         Ok(Some(Arc::new(move || {
             Arc::new(symbiotic_memory::recall::ChatQueryPlanner::new(
@@ -2656,6 +2765,7 @@ fn symbiotic_memory_run_params(run: &SymbioticMemoryCliRun) -> serde_json::Value
         "judge_model": judge.model,
         "env_file": run.env_file.as_deref().map(portable_path),
         "provider_queue_dir": run.provider_queue_dir.as_deref().map(portable_path),
+        "source_vault_root": run.source_vault_root.as_deref().map(portable_path),
     });
     let object = params
         .as_object_mut()
@@ -2847,31 +2957,11 @@ fn apply_symbiotic_memory_env(
     if let Some(memory_config) = &run.memory_config {
         cmd.env("SYMEM_CONFIG", memory_config);
     }
-    set_env_default(cmd, "SYMEM_DISTILL_OPERATOR", "deepseek");
-    set_env_default(cmd, "SYMEM_DISTILL_BASE_URL", "https://api.deepseek.com");
-    set_env_default(cmd, "SYMEM_DISTILL_MODEL", "deepseek-v4-flash");
-    set_env_default(cmd, "SYMEM_ANSWER_OPERATOR", "deepseek");
-    set_env_default(cmd, "SYMEM_ANSWER_BASE_URL", "https://api.deepseek.com");
-    set_env_default(cmd, "SYMEM_ANSWER_MODEL", "deepseek-v4-pro");
-    set_env_default(cmd, "SYMEM_QUERY_PLANNER_OPERATOR", "deepseek");
-    set_env_default(
-        cmd,
-        "SYMEM_QUERY_PLANNER_BASE_URL",
-        "https://api.deepseek.com",
-    );
-    set_env_default(cmd, "SYMEM_TEMPORAL_ANSWER_OPERATOR", "deepseek");
-    set_env_default(
-        cmd,
-        "SYMEM_TEMPORAL_ANSWER_BASE_URL",
-        "https://api.deepseek.com",
-    );
     set_env_default(cmd, "SYMEM_JUDGE_OPERATOR", "deepseek");
     set_env_default(cmd, "SYMEM_JUDGE_BASE_URL", "https://api.deepseek.com");
     set_env_default(cmd, "SYMEM_JUDGE_MODEL", "deepseek-v4-flash");
     set_env_default(cmd, "SYMEM_JUDGE_THINKING", "disabled");
     set_env_default(cmd, "SYMEM_JUDGE_MAX_TOKENS", "64");
-    set_env_default(cmd, "SYMEM_EMBED_MODEL", "gemini-embedding-2");
-    set_env_default(cmd, "SYMEM_EMBED_DIMS", "3072");
     set_env_default(cmd, "SYMEM_DISTILL_PARSE_RETRIES", "4");
     set_env_default(cmd, "SYMEM_DISTILL_WINDOW_TIMEOUT_SECS", "0");
     set_env_default(cmd, "SYMEM_DISTILL_TURNS_PER_WINDOW", "16");
@@ -2971,6 +3061,7 @@ fn to_symem_plan(run: &SymbioticMemoryCliRun) -> runner::SymemRunPlan {
         answerer: run.answerer,
         routed: run.routed,
         answer_only: run.answer_only,
+        source_vault_root: run.source_vault_root.clone(),
         consolidate_briefs: run.consolidate_briefs,
         resume: run.resume,
         fresh: run.fresh,
@@ -3075,6 +3166,7 @@ mod tests {
             scorer: "queued-longmemeval-deepseek-v4-flash".to_string(),
             env_file: None,
             provider_queue_dir: None,
+            source_vault_root: None,
             ephemeral_smoke_run: false,
         }
     }
@@ -3084,6 +3176,64 @@ mod tests {
             .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[cfg(all(feature = "symbiotic-memory-adapter", unix))]
+    #[test]
+    fn prepares_answer_only_linked_vaults_without_copying_heavy_state() {
+        use symbiotic_mem_bench::symbiotic_memory_adapter::{
+            LongMemEvalMessage, LongMemEvalRecord,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let source_root = dir.path().join("source-vaults");
+        let run_root = dir.path().join("run");
+        let source_vault = source_root.join("q1");
+        std::fs::create_dir_all(source_vault.join("archive/memories")).unwrap();
+        std::fs::write(source_vault.join("manifest.json"), r#"{"source":"stable"}"#).unwrap();
+        std::fs::write(source_vault.join("memory.sqlite"), b"sqlite").unwrap();
+        std::fs::write(source_vault.join("archive/memories/fact.md"), "fact").unwrap();
+        let rows = vec![LongMemEvalRecord {
+            question_id: "q1".to_string(),
+            question_type: Some("direct".to_string()),
+            question: "What happened?".to_string(),
+            answer: None,
+            question_date: None,
+            haystack_dates: Vec::new(),
+            haystack_session_ids: Vec::new(),
+            haystack_sessions: vec![vec![LongMemEvalMessage {
+                role: "user".to_string(),
+                content: "fact".to_string(),
+            }]],
+        }];
+
+        prepare_answer_only_linked_vaults(&run_root, &source_root, &rows).unwrap();
+
+        let target_vault = run_root.join("vaults/q1");
+        assert!(
+            std::fs::symlink_metadata(target_vault.join("memory.sqlite"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
+            std::fs::symlink_metadata(target_vault.join("archive"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
+            !std::fs::symlink_metadata(target_vault.join("manifest.json"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+
+        std::fs::write(target_vault.join("manifest.json"), r#"{"source":"target"}"#).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(source_vault.join("manifest.json")).unwrap(),
+            r#"{"source":"stable"}"#
+        );
     }
 
     #[test]
@@ -3717,9 +3867,10 @@ mod tests {
         assert_eq!(plan.program, std::ffi::OsString::from("cargo"));
         let args = arg_strings(&plan);
         assert_eq!(
-            &args[..8],
+            &args[..9],
             &[
                 "run",
+                "--release",
                 "--features",
                 "symbiotic-memory-adapter",
                 "--bin",

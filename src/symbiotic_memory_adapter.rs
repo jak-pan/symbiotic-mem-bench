@@ -434,7 +434,12 @@ where
         fs::create_dir_all(parent)?;
     }
     fs::create_dir_all(run_root.as_ref())?;
-    let completed = read_existing_hypothesis_ids(out_path.as_ref())?;
+    let completed = if answer_only && !allow_terminal_reenqueue {
+        reset_hypotheses_for_answer_only(out_path.as_ref())?;
+        BTreeSet::new()
+    } else {
+        read_existing_hypothesis_ids(out_path.as_ref())?
+    };
     let debug_run_id = debug_run_id(out_path.as_ref());
     let file = Arc::new(Mutex::new(
         fs::OpenOptions::new()
@@ -518,7 +523,7 @@ where
                     workflow_lease_seconds,
                     workflow_max_in_flight,
                     workflow_max_attempts,
-                    allow_terminal_reenqueue,
+                    allow_terminal_reenqueue || answer_only,
                 )
                 .await?;
                 let heartbeat = spawn_workflow_heartbeat(
@@ -1298,6 +1303,19 @@ fn read_existing_hypothesis_ids(path: &Path) -> anyhow::Result<BTreeSet<String>>
         out.insert(question_id.to_string());
     }
     Ok(out)
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn reset_hypotheses_for_answer_only(path: &Path) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)?;
+    Ok(())
 }
 
 fn parse_bench_hypothesis_line(line: &str) -> anyhow::Result<BenchHypothesis> {
@@ -2621,6 +2639,11 @@ mod tests {
             .unwrap()
             .unwrap();
         let distill_finished_at = before.stages[&MemoryStage::DistillWindow].finished_at;
+        fs::write(
+            &answer_only_out,
+            r#"{"question_id":"q-answer-only","question_type":"count","question":"stale","hypothesis":"STALE","debug_artifact":null,"router_initial":null,"router_final":null,"router_reason":null}"#,
+        )
+        .unwrap();
 
         run_longmemeval_sqlite(
             &[row],
@@ -2647,6 +2670,9 @@ mod tests {
         );
         assert!(after.stage_succeeded(MemoryStage::Answer));
         assert!(answer_only_out.is_file());
+        let hypotheses = read_existing_hypotheses(&answer_only_out).unwrap();
+        assert_eq!(hypotheses.len(), 1);
+        assert_ne!(hypotheses[0].hypothesis, "STALE");
     }
 
     #[cfg(feature = "symbiotic-memory-adapter")]

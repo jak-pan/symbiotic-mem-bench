@@ -58,6 +58,45 @@
   const maxStarted = $derived(
     Math.max(1, ...(data?.detail.memory_stages.map((s) => s.started) ?? [1])),
   );
+
+  const queueSummary = $derived.by(() => {
+    const queues = data?.detail.queues ?? [];
+    return {
+      avgRunning: queues.reduce((sum, q) => sum + num(q.avg_running), 0),
+      avgQueued: queues.reduce((sum, q) => sum + num(q.avg_queued), 0),
+      avgRpm: queues.reduce((sum, q) => sum + num(q.avg_starts_per_minute), 0),
+      peakRunning: queues.reduce((peak, q) => Math.max(peak, num(q.observed_peak_running)), 0),
+      peakRpm: queues.reduce((peak, q) => Math.max(peak, num(q.peak_starts_per_minute)), 0),
+    };
+  });
+
+  function statusLabel(status: string): string {
+    if (status === "running") return "LIVE";
+    if (status === "warning") return "IDLE";
+    if (status === "complete") return "DONE";
+    return "STALLED";
+  }
+
+  function opLabel(op: string): string {
+    return op === "consolidate" ? "briefs" : op;
+  }
+
+  function shortQueue(id: string): string {
+    return id.replace(/^chat:/, "").replace(/^embedding:/, "");
+  }
+
+  function timeOnly(timestamp: string | null): string {
+    return (timestamp ?? "").slice(11, 19);
+  }
+
+  function num(value: number | null | undefined): number {
+    return Number.isFinite(value) ? Number(value) : 0;
+  }
+
+  function oneDecimal(value: number | null | undefined): string {
+    const v = num(value);
+    return v.toFixed(v >= 10 ? 0 : 1);
+  }
 </script>
 
 <div class="live">
@@ -67,8 +106,8 @@
     {@const p = data.pending}
     {@const d = data.detail}
     <div class="lhead">
-      <span class="badge" class:running={p.status === "running"} class:warning={p.status === "warning"} class:stalled={p.status === "stalled"}>
-        <span class="dot"></span>{p.status === "running" ? "LIVE" : p.status === "warning" ? "IDLE" : "STALLED"}
+      <span class="badge" class:running={p.status === "running"} class:warning={p.status === "warning"} class:complete={p.status === "complete"} class:stalled={p.status === "stalled"}>
+        <span class="dot"></span>{statusLabel(p.status)}
       </span>
       <span class="lname">{p.run_name}</span>
       <span class="lmeta">{p.limit}Q · {p.config_label}</span>
@@ -91,11 +130,17 @@
         </div>
       </Panel>
 
-      <Panel title="Provider Queue" tag="pressure · {d.queue.window} recent">
+      <Panel title="Provider Queue" tag="{p.status === 'complete' ? 'run summary' : 'current state'} · {d.queue.window} events inspected">
         <div class="qbig">
-          <div class="qtile"><span class="qt">IN-FLIGHT</span><b class="amber">{d.queue.in_flight}</b></div>
-          <div class="qtile"><span class="qt">RUNNING</span><b>{d.queue.running}</b></div>
-          <div class="qtile"><span class="qt">QUEUED</span><b class="cyan">{d.queue.queued}</b></div>
+          {#if p.status === "complete"}
+            <div class="qtile"><span class="qt">AVG RUN</span><b class="amber">{oneDecimal(queueSummary.avgRunning)}</b></div>
+            <div class="qtile"><span class="qt">PEAK RUN</span><b>{queueSummary.peakRunning}</b></div>
+            <div class="qtile"><span class="qt">AVG RPM</span><b class="cyan">{oneDecimal(queueSummary.avgRpm)}</b></div>
+          {:else}
+            <div class="qtile"><span class="qt">IN-FLIGHT</span><b class="amber">{d.queue.in_flight}</b></div>
+            <div class="qtile"><span class="qt">RUNNING</span><b>{d.queue.running}</b></div>
+            <div class="qtile"><span class="qt">QUEUED</span><b class="cyan">{d.queue.queued}</b></div>
+          {/if}
           <div class="qtile"><span class="qt">DONE</span><b class="up">{d.queue.succeeded}</b></div>
           <div class="qtile"><span class="qt">FAILED</span><b class:down={d.queue.failed > 0}>{d.queue.failed}</b></div>
           <div class="qtile"><span class="qt">DEAD</span><b class:down={d.queue.dead > 0}>{d.queue.dead}</b></div>
@@ -105,6 +150,22 @@
             {#if s.v > 0}<div class="qseg" style="width:{s.pct}%;background:{s.c}" title="{s.k}: {s.v}"></div>{/if}
           {/each}
         </div>
+        {#if d.queues.length}
+          <div class="qrows">
+            {#each d.queues as q (q.queue_id)}
+              <div class="qrow" title={q.queue_id}>
+                <span class="qname">{shortQueue(q.queue_id)}</span>
+                <span class="qop">{q.operation}</span>
+                <span class="mono-num amber">{p.status === "complete" ? "avg" : "active"} {p.status === "complete" ? oneDecimal(q.avg_running) : num(q.in_flight)}</span>
+                <span class="mono-num">peak {num(q.observed_peak_running)}</span>
+                <span class="mono-num cyan">{p.status === "complete" ? "avgrpm" : "rpm"} {p.status === "complete" ? oneDecimal(q.avg_starts_per_minute) : num(q.starts_last_minute)}</span>
+                <span class="mono-num">maxrpm {num(q.peak_starts_per_minute)}</span>
+                <span class="mono-num up">done {q.succeeded}</span>
+                <span class="mono-num" class:down={q.failed + q.dead > 0}>fail {q.failed + q.dead}</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
       </Panel>
     </div>
 
@@ -123,8 +184,8 @@
         <div class="ops">
           {#each d.memory_stages as s (s.operation)}
             <div class="strow">
-              <span class="sname">{s.operation}</span>
-              <div class="sbar" title="{s.succeeded} done · {s.in_flight} in-flight · {s.failed} failed of {s.started} started">
+              <span class="sname">{opLabel(s.operation)}</span>
+              <div class="sbar" title="{s.succeeded} done · {s.in_flight} in-flight · {s.failed} failed of {s.started} started · last {s.last_event ?? 'none'} {timeOnly(s.last_event_at)}">
                 <div class="sbar-in" style="width:{(s.started / maxStarted) * 100}%">
                   {#if s.succeeded}<div class="seg ok" style="flex:{s.succeeded}"></div>{/if}
                   {#if s.in_flight}<div class="seg fly" style="flex:{s.in_flight}"></div>{/if}
@@ -145,19 +206,21 @@
         </div>
       </Panel>
 
-      <Panel title="Recent Errors" tag={String(d.errors.length)} scroll>
-        {#if d.errors.length}
-          <div class="errs">
-            {#each d.errors as e, i (i)}
-              <div class="erow">
-                <span class="esrc {e.source}">{e.source}</span>
-                <span class="emsg">{e.kind ? `[${e.kind}] ` : ""}{e.message}</span>
-                <span class="ets mono-num">{(e.timestamp ?? "").slice(11, 19)}</span>
+      <Panel title="Recent Activity" tag="{d.errors.length} errors" scroll>
+        {#if d.activity.length}
+          <div class="activity">
+            {#each d.activity as a, i (i)}
+              <div class="arow" class:error={a.severity === "error"}>
+                <span class="ets mono-num">{timeOnly(a.timestamp)}</span>
+                <span class="esrc {a.source}">{a.source}</span>
+                <span class="aop">{opLabel(a.operation)}</span>
+                <span class="astatus">{a.status}</span>
+                <span class="emsg">{a.message}</span>
               </div>
             {/each}
           </div>
         {:else}
-          <div class="ok">✓ no errors in recent window</div>
+          <div class="ok">✓ no activity in recent window</div>
         {/if}
       </Panel>
     </div>
@@ -229,6 +292,14 @@
   }
   .badge.stalled .dot {
     background: var(--text-faint);
+  }
+  .badge.complete {
+    color: var(--cyan);
+    border-color: var(--cyan-dim);
+    background: rgba(82, 166, 255, 0.08);
+  }
+  .badge.complete .dot {
+    background: var(--cyan);
   }
   @keyframes pulse {
     50% {
@@ -332,6 +403,33 @@
   .qseg {
     height: 100%;
   }
+  .qrows {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    max-height: 116px;
+    overflow: auto;
+    padding-top: 4px;
+  }
+  .qrow {
+    display: grid;
+    grid-template-columns: minmax(190px, 1fr) 52px 64px 58px 58px 70px 64px 58px;
+    gap: 8px;
+    align-items: center;
+    font-size: 9.5px;
+    color: var(--text-dim);
+    border-top: 1px solid var(--border);
+    padding-top: 3px;
+  }
+  .qname {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
+  }
+  .qop {
+    color: var(--text-faint);
+  }
   .cyan {
     color: var(--cyan);
   }
@@ -427,19 +525,22 @@
     margin-right: 3px;
   }
 
-  .errs {
+  .activity {
     display: flex;
     flex-direction: column;
     gap: 2px;
   }
-  .erow {
+  .arow {
     display: grid;
-    grid-template-columns: 54px 1fr auto;
+    grid-template-columns: 54px 58px 82px 94px 1fr;
     gap: 8px;
     align-items: baseline;
     padding: 3px 0;
     border-bottom: 1px solid var(--border);
     font-size: 10.5px;
+  }
+  .arow.error {
+    background: rgba(255, 79, 79, 0.04);
   }
   .esrc {
     font-family: var(--sans);
@@ -458,11 +559,30 @@
   .esrc.memory {
     color: var(--violet);
   }
-  .emsg {
-    color: var(--red);
+  .esrc.provider {
+    color: var(--cyan);
+  }
+  .aop {
+    color: var(--text-dim);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .astatus {
+    color: var(--text-faint);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .emsg {
+    color: var(--text-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .arow.error .emsg,
+  .arow.error .astatus {
+    color: var(--red);
   }
   .ets {
     color: var(--text-faint);

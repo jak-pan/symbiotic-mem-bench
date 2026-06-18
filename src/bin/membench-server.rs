@@ -175,14 +175,47 @@ async fn run_live(
     State(state): State<Shared>,
     Query(query): Query<IdQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let pending = state
+    let pending = if let Some(pending) = state
         .pending()
         .into_iter()
         .find(|run| run.run_id == query.id)
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "pending run not found"))?;
+    {
+        pending
+    } else {
+        let record = state
+            .find(&query.id)
+            .ok_or_else(|| err(StatusCode::NOT_FOUND, "run not found"))?;
+        let summary = registry::summarize(&record);
+        registry::PendingRun {
+            run_id: summary.run_id.clone(),
+            origin: summary.origin,
+            system: summary.system,
+            benchmark: summary.benchmark,
+            limit: summary.limit,
+            run_name: summary.run_name,
+            config_label: summary.config_label,
+            status: "complete".to_string(),
+            started_ms: None,
+            updated_ms: record.modified_ms,
+            age_secs: None,
+            hypotheses: count_nonempty_lines(&record.run_root.join("artifacts/hypotheses.jsonl"))
+                .or_else(|| count_nonempty_lines(&record.run_root.join("raw/hypotheses.jsonl")))
+                .unwrap_or_default(),
+            ingested: count_dir_entries(&record.run_root.join("vaults")).unwrap_or_default(),
+        }
+    };
     let run_root = state.repo_root.join(&pending.run_id);
     let detail = live::live_detail(&run_root);
     Ok(Json(json!({ "pending": pending, "detail": detail })))
+}
+
+fn count_nonempty_lines(path: &Path) -> Option<u64> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    Some(raw.lines().filter(|line| !line.trim().is_empty()).count() as u64)
+}
+
+fn count_dir_entries(path: &Path) -> Option<u64> {
+    Some(std::fs::read_dir(path).ok()?.flatten().count() as u64)
 }
 
 #[derive(Deserialize)]

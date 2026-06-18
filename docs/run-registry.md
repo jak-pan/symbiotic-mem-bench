@@ -179,6 +179,11 @@ records/{system}/{benchmark}/{limit}/{run_name}/
 Use `--record-name` only when giving the tracked record a clearer public name. Use `--force` only
 when intentionally replacing an existing record.
 
+Full native runs may be too large to track entirely in Git. The planned canonical-record workflow is
+tracked in `docs/canonical-record-storage-task.md`: keep normalized public artifacts in `records/`,
+store heavy native state externally with hashes, and restore reusable vault substrates locally when
+needed for answer-only reruns.
+
 ## Explorer Behavior
 
 `membench explore` recursively scans a registry root for `benchmark-report.json`.

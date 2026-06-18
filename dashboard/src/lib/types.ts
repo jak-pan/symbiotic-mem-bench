@@ -75,6 +75,8 @@ export interface ModelStat {
   input_tokens: number;
   output_tokens: number;
   cost_micro_usd: number | null;
+  cost_estimated: boolean;
+  pricing_source: string | null;
   latency_ms_p50: number | null;
 }
 
@@ -84,6 +86,9 @@ export interface ModelRollup {
   input_tokens: number;
   output_tokens: number;
   cost_micro_usd: number | null;
+  cost_estimated: boolean;
+  pricing_table_version: string | null;
+  pricing_sources: string[];
   latency_ms_p50: number | null;
   latency_ms_p95: number | null;
   models: ModelStat[];
@@ -236,7 +241,7 @@ export interface PendingRun {
   limit: number | null;
   run_name: string;
   config_label: string;
-  status: "running" | "warning" | "stalled";
+  status: "running" | "warning" | "stalled" | "complete";
   started_ms: number | null;
   updated_ms: number | null;
   age_secs: number | null;
@@ -252,6 +257,26 @@ export interface QueuePressure {
   dead: number;
   in_flight: number;
   window: number;
+}
+
+export interface QueueBreakdown {
+  queue_id: string;
+  operation: string;
+  queued: number;
+  running: number;
+  succeeded: number;
+  failed: number;
+  dead: number;
+  in_flight: number;
+  window: number;
+  observed_peak_running: number;
+  starts_last_minute: number;
+  peak_starts_per_minute: number;
+  avg_running: number;
+  avg_queued: number;
+  avg_starts_per_minute: number;
+  observed_duration_secs: number;
+  last_event_at: string | null;
 }
 
 export interface ModelLive {
@@ -275,14 +300,28 @@ export interface StageProgress {
   succeeded: number;
   failed: number;
   in_flight: number;
+  last_event: string | null;
+  last_event_at: string | null;
+}
+
+export interface LiveActivityRow {
+  timestamp: string | null;
+  source: string;
+  operation: string;
+  status: string;
+  queue_id: string | null;
+  message: string;
+  severity: string;
 }
 
 export interface LiveDetail {
   queue: QueuePressure;
+  queues: QueueBreakdown[];
   model: ModelLive;
   memory_stages: StageProgress[];
   memory_failures: number;
   errors: LiveErrorRow[];
+  activity: LiveActivityRow[];
 }
 
 export interface LiveResponse {

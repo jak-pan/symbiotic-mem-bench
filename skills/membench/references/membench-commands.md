@@ -46,7 +46,7 @@ The runner does not implicitly load env files from sibling repositories.
 Run a fresh default benchmark:
 
 ```bash
-CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run \
+CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run --release \
   --features symbiotic-memory-adapter \
   --bin membench -- \
   --system symbiotic-memory \
@@ -74,7 +74,7 @@ The current raw-light LongMemEval profile is
 `config/symbiotic-memory/longmemeval-raw-light.yaml`: facts 20, raw primary 10, raw fallback 10,
 scripted query planner, and shared provider queue defaults.
 
-Default native launches are paid, provider-backed, and scored:
+Default native launches are paid, provider-backed, scored, and must run in Cargo release mode:
 
 ```text
 distiller        llm
@@ -120,7 +120,7 @@ official-style cache experiments, use `SYMEM_JUDGE_PROMPT_MODE=category-prefix`.
 DeepSeek judge cache prewarm should remain opt-in and mainly for rejudge/score-heavy runs:
 
 ```bash
-cargo run --bin membench -- \
+CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run --release --bin membench -- \
   --system symbiotic-memory \
   --benchmark long-mem-eval \
   --dataset path/to/longmemeval.json \

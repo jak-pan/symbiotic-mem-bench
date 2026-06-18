@@ -59,6 +59,7 @@ pub struct SymemRunPlan {
     pub answerer: bool,
     pub routed: bool,
     pub answer_only: bool,
+    pub source_vault_root: Option<PathBuf>,
     pub consolidate_briefs: bool,
     pub resume: bool,
     pub fresh: bool,
@@ -159,6 +160,10 @@ impl SymemRunPlan {
         if self.answer_only {
             args.push("--answer-only".to_string());
         }
+        if let Some(source_vault_root) = &self.source_vault_root {
+            args.push("--source-vault-root".to_string());
+            args.push(self.path_arg(source_vault_root));
+        }
         if !self.smoke && self.consolidate_briefs {
             args.push("--consolidate-briefs".to_string());
         }
@@ -206,14 +211,17 @@ impl SymemRunPlan {
                 args: membench_args,
             };
         }
-        let mut args = vec![
-            "run".to_string(),
+        let mut args = vec!["run".to_string()];
+        if !self.smoke {
+            args.push("--release".to_string());
+        }
+        args.extend([
             "--features".to_string(),
             "symbiotic-memory-adapter".to_string(),
             "--bin".to_string(),
             "membench".to_string(),
             "--".to_string(),
-        ];
+        ]);
         args.extend(membench_args);
         PlannedCommand {
             program: "cargo".to_string(),
@@ -584,6 +592,16 @@ pub fn symem_param_schema() -> Vec<ParamField> {
             false,
         ),
         field(
+            "source_vault_root",
+            "Source vault root",
+            "path",
+            Value::Null,
+            &[],
+            "Lifecycle",
+            "Optional vaults/ directory to link immutable memory state from for cheap answer-only reruns.",
+            false,
+        ),
+        field(
             "resume",
             "Resume",
             "bool",
@@ -639,6 +657,7 @@ pub fn plan_from_params(params: &Value, repo_root: &Path) -> SymemRunPlan {
         answerer: bool_field("answerer", true),
         routed: bool_field("routed", true),
         answer_only,
+        source_vault_root: opt_path("source_vault_root"),
         consolidate_briefs: bool_field("consolidate_briefs", true),
         resume,
         // Native runs are fresh by default unless reuse is explicitly requested.
@@ -686,6 +705,7 @@ mod tests {
             answerer: true,
             routed: false,
             answer_only: true,
+            source_vault_root: None,
             consolidate_briefs: false,
             resume: true,
             fresh: false,
@@ -724,9 +744,10 @@ mod tests {
         let command = plan.run_command();
         assert_eq!(command.program, "cargo");
         assert_eq!(
-            &command.args[..8],
+            &command.args[..9],
             &[
                 "run",
+                "--release",
                 "--features",
                 "symbiotic-memory-adapter",
                 "--bin",
@@ -787,10 +808,33 @@ mod tests {
     }
 
     #[test]
+    fn answer_only_plan_can_link_source_vault_root() {
+        let plan = plan_from_params(
+            &json!({
+                "answer_only": true,
+                "source_vault_root": "runs/inputs/vault-roots/symbiotic-memory/long-mem-eval/50/base/vaults"
+            }),
+            Path::new("/repo"),
+        );
+        let command = plan.run_command();
+        assert!(command.args.contains(&"--answer-only".to_string()));
+        let idx = command
+            .args
+            .iter()
+            .position(|arg| arg == "--source-vault-root")
+            .unwrap();
+        assert_eq!(
+            command.args.get(idx + 1).map(String::as_str),
+            Some("runs/inputs/vault-roots/symbiotic-memory/long-mem-eval/50/base/vaults")
+        );
+    }
+
+    #[test]
     fn smoke_mode_uses_one_clear_flag() {
         let plan = plan_from_params(&json!({"smoke": true}), Path::new("/repo"));
         let command = plan.run_command();
         assert!(command.args.contains(&"--smoke".to_string()));
+        assert!(!command.args.contains(&"--release".to_string()));
         assert!(!command.args.contains(&"--distiller".to_string()));
         assert!(!command.args.contains(&"--embedder".to_string()));
         assert!(!command.args.contains(&"--score".to_string()));
@@ -823,7 +867,7 @@ mod tests {
         assert!(command.args.contains(&"--score".to_string()));
         assert_eq!(
             command.to_shell(),
-            "cargo run --features symbiotic-memory-adapter --bin membench -- --symbiotic-memory --long-mem-eval --memory-config config/symbiotic-memory/longmemeval-raw-light.yaml --answerer --routed --consolidate-briefs --query-planner scripted --score"
+            "cargo run --release --features symbiotic-memory-adapter --bin membench -- --symbiotic-memory --long-mem-eval --memory-config config/symbiotic-memory/longmemeval-raw-light.yaml --answerer --routed --consolidate-briefs --query-planner scripted --score"
         );
     }
 

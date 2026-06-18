@@ -28,7 +28,7 @@ default. Use `--env-file path/to/file` only for an intentional alternate environ
 Run a default Symbiotic Memory LongMemEval benchmark through the native adapter:
 
 ```bash
-CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run \
+CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run --release \
   --features symbiotic-memory-adapter \
   --bin membench -- \
   --system symbiotic-memory \
@@ -42,10 +42,10 @@ When `--dataset` is omitted for LongMemEval, `membench` downloads the cleaned S 
 Small LongMemEval runs use `--sample stratified` by default so quick runs cover multiple question
 types. Use `--sample first` only when reproducing the dataset's original row order.
 
-Default launches are paid, provider-backed, and scored: `llm` distill, `gemini` embeddings, routed
-answering, consolidation, scripted query planning, and judge scoring. The native adapter owns the run
-state, provider queues, response caches, hypotheses, verdicts, score summaries, and normalized run
-report.
+Default launches are paid, provider-backed, scored, and must run in Cargo release mode. They use
+`llm` distill, `gemini` embeddings, routed answering, source-backed brief generation, scripted query
+planning, and judge scoring. The native adapter owns the run state, provider queues, response caches,
+hypotheses, verdicts, score summaries, and normalized run report.
 
 Run a no-network smoke test explicitly:
 
@@ -157,7 +157,9 @@ runs/symbiotic-memory/long-mem-eval/500/20260617-153012-a1b2c3d4/
 
 Native runs re-ingest by default. `membench` passes `--fresh` for normal native benchmark runs so
 the run root is reset and every question is ingested from source again. Reuse is opt-in with
-`--resume` or `--answer-only`.
+`--resume` or `--answer-only`. For cheap answer-only comparisons, use `--source-vault-root
+runs/inputs/vault-roots/.../vaults`; the rerun links immutable `memory.sqlite` and `archive/`
+state, copies mutable manifests, and writes fresh answer/score artifacts in its own run root.
 
 Relative `--registry-root`, `--run-root`, and `save-record --records-root` paths resolve from this
 repo root, not from the caller's current working directory.
@@ -205,6 +207,10 @@ cargo run --bin membench -- save-record \
 
 Use `--force` only when intentionally replacing a record with a corrected version.
 
+Follow-up task: `docs/canonical-record-storage-task.md` tracks the plan for promoting one canonical
+run to `records/` while storing oversized native state externally with hashes and restore
+instructions.
+
 Summarize queue timing from queue event JSONL:
 
 ```bash
@@ -221,17 +227,21 @@ Current adapter status:
 | Capability | Status | Notes |
 | --- | --- | --- |
 | Explicit `--smoke` run | wired | No network spend; maps internally to local deterministic providers and no scorer for adapter/run-shape smoke tests. |
-| Fresh/resume/answer-only semantics | partially wired | Fresh and resume flags are recorded; answer-only needs provider-backed parity before quality runs. |
+| Fresh/resume/answer-only semantics | wired | Normal native runs re-ingest, `--resume` continues interrupted roots, and `--answer-only` regenerates answers from existing vault state. `--source-vault-root` links immutable vault data into a fresh run root for cheap isolated reruns. |
 | Provider-backed LLM/Gemini ingestion | wired | Runs through `membench` native adapter and shared provider queues; benchmark subcommands stay out of `symem`. |
 | Default paid Symbiotic Memory launch | wired | The CLI and dashboard default to `llm + gemini + score`. |
 | Queued LongMemEval scoring | wired | Uses the same queued provider, retry, trace, and response-cache stack as memory answerer calls. |
 | Explorer/import/save-record | wired | Reads normalized `benchmark-report.json` and `artifacts/`. |
-| Normalized model-trace export | pending | Provider queue logs exist at `provider-queue/model-queue-traces.jsonl`; copying a compact `artifacts/model-traces.jsonl` is still TODO. |
+| Provider queue/model trace export | wired | New native runs export `provider-queue/model-queue-traces.jsonl` as `artifacts/model-traces.jsonl`; dashboard live/detail also read provider queue traces directly for older runs. |
 
 Queued scoring belongs in `membench`. The scorer uses the same durable provider queue, retry, trace,
 and response-cache stack as memory answerer calls. The default judge worker fanout remains `400`, but
 effective concurrency is capped by the shared model queue id, such as
 `chat:deepseek:deepseek-v4-flash`.
+
+Memory answer/distill/embed model defaults are owned by `../symbiotic-memory`. Benchmark profiles
+should not repeat those bindings. Use env/model overrides only for explicit model-comparison or
+tuning runs; the scorer/judge model remains benchmark-owned.
 
 The default LongMemEval judge prompt mode is `semantic-shared-compact`: a stable shared prefix that
 keeps the LongMemEval yes/no rubric while accepting equivalent or inferable answers that the original
@@ -288,14 +298,37 @@ Both templates are safe to commit and contain placeholders only. Real `.env`, `.
 
 Use `--memory-config config/symbiotic-memory/longmemeval-raw-light.yaml` for the current
 raw-light LongMemEval profile: fact top-k 20, raw primary top-k 10, raw fallback top-k 10, scripted
-query planner, and the shared provider queue defaults.
+query planner, and memory-owned provider/model defaults.
+
+Dashboard live monitor semantics:
+
+- Provider Queue counts are latest state per queue item in the inspected trace window, not cumulative
+  event counts. `running` should drop when each item writes a terminal `succeeded`, `failed`, or
+  `dead` event.
+- The per-queue rows show shared model queue ids, such as `chat:deepseek:deepseek-v4-flash` and
+  `embedding:gemini:gemini-embedding-2`.
+- Per-queue `rpm` is the number of provider requests started in the last trace minute of the
+  inspected window. `maxrpm` is the highest 60-second start rate observed in that window. `peak` is
+  observed peak running requests, not a configured provider limit.
+- After a run completes, the Provider Queue panel switches to run-summary mode: `avg` is
+  time-weighted average running requests, `avgrpm` is average request starts per minute across the
+  inspected provider event span, and `peak`/`maxrpm` remain observed peaks.
+- The Recent Activity panel interleaves memory-stage events and provider-queue events newest-first.
+  Use it to confirm whether capture, raw embedding, distill, fact embedding, indexing, and answering
+  are flowing independently or bunching at a join.
+- Native completed runs keep a `LIVE` tab so the final provider queue and memory-stage snapshot can
+  be inspected after the run leaves the in-flight list.
+- The Memory Pipeline label `briefs` corresponds to the memory operation named `consolidate` in
+  traces. It is the source-backed extractive brief pass, not a benchmark-only step.
 
 Default freshness rule:
 
 ```text
 normal native run  -> fresh re-ingest
 --resume           -> continue an interrupted run root
---answer-only      -> reuse an existing ingested run root
+--answer-only      -> re-answer from an existing ingested run root
+--source-vault-root runs/inputs/vault-roots/.../vaults
+                   -> link immutable vault state for cheap isolated answer-only reruns
 ```
 
 ## Contract
@@ -342,6 +375,19 @@ Cost is derived from:
 - cached input tokens, when exposed by the provider;
 - output tokens;
 - pricing table version used by the run.
+
+When a provider trace includes `cost_micro_usd`, membench uses the provider-reported value. When
+the trace has token buckets but no explicit cost, membench estimates cost from the built-in pricing
+catalog and marks the rollup as estimated. The current built-in catalog is
+`official-pricing-2026-06-19`:
+
+- DeepSeek API official pricing for `deepseek-v4-flash` and `deepseek-v4-pro`, including cache-hit,
+  cache-miss, and output-token prices.
+- Gemini API official pricing for `gemini-embedding-2` standard and batch text-input prices.
+
+Runs without token usage for a model stay unpriced for that model. New Symbiotic Memory Gemini
+embedding traces should include input tokens from Gemini `countTokens`; old traces may remain
+unpriced because they recorded queue events before embedding token usage existed.
 
 Queue traces should preserve timestamps for queued, running, succeeded, and failed events. The crate
 can derive queue wait time, run time, total time, attempts, and final status by grouping events by

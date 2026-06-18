@@ -6,7 +6,8 @@ agent to run, inspect, and publish results without reverse-engineering local scr
 ## Core Rules
 
 - Work from this repository root when possible.
-- Prefer `cargo run --bin membench -- ...` over ad hoc scripts.
+- Prefer `cargo run --bin membench -- ...` over ad hoc scripts, and use `cargo run --release`
+  for paid/provider-backed benchmark runs.
 - Do not add Python scoring scripts or manual score entry paths.
 - Do not commit `runs/`, `.debug-session/`, `target/`, secrets, provider queues, or raw local
   datasets.
@@ -64,6 +65,25 @@ For native runs, `artifacts/` is the portable public bundle and `raw/` keeps exe
 Do not delete `vaults/`, `workflow/`, or `provider-queue/` from local scratch runs unless you are
 intentionally making a minimal exported record.
 
+Provider/model trace facts:
+
+- Native Symbiotic Memory provider calls are emitted under
+  `provider-queue/model-queue-traces.jsonl`.
+- New completed native runs also export that file as `artifacts/model-traces.jsonl`.
+- Older runs may show `model_traces` missing in their manifest but still have provider traces under
+  `provider-queue/`; the dashboard live/detail paths read that fallback directly.
+- In the live monitor, provider queue counts are latest state per queue item, not cumulative event
+  counts. `running` should drop after terminal events.
+- Live per-queue `rpm`, `maxrpm`, and `peak` are observed from tailed provider events. They are
+  useful for diagnosing pressure and async flow, but are not a replacement for full-run cost or
+  provider billing summaries.
+- Completed runs show queue `avg`/`avgrpm` summaries derived from provider event timing instead of
+  emphasizing current active counts, which should naturally be zero after completion.
+- The live activity stream should show memory-stage events and provider events interleaved. If stages
+  appear wave-like in the bars, inspect activity before concluding the executor is sequential.
+- The stage label `briefs` maps to the trace operation `consolidate`, which is the source-backed
+  extractive brief pass.
+
 Imported runs can be artifact-only. Their `artifact_manifest.native_state_available` must be `false`,
 and their `artifact_manifest.missing` list must make absent traces or state folders explicit.
 
@@ -83,7 +103,7 @@ different environment; the runner does not implicitly load sibling repo env file
 Run native Symbiotic Memory benchmarks through the adapter:
 
 ```bash
-CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run \
+CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run --release \
   --features symbiotic-memory-adapter \
   --bin membench -- \
   --system symbiotic-memory \
@@ -102,8 +122,13 @@ pending: compact normalized `artifacts/model-traces.jsonl` export
 Do not restore `symem` benchmark subcommands. Benchmark orchestration, scoring, records, and
 dashboard artifacts belong in this repository.
 
-Default launches are paid, provider-backed, and scored. A local no-network smoke test must be
-requested explicitly:
+Symbiotic Memory model/provider defaults are owned by `../symbiotic-memory` code and config. Keep
+membench profiles focused on benchmark policy such as recall shape, scorer choice, dataset sampling,
+or an explicitly named tuning arm. Do not inject answer/distill/embed model env defaults from the
+harness just to mirror production defaults.
+
+Default launches are paid, provider-backed, scored, and must run in Cargo release mode. A local
+no-network smoke test must be requested explicitly:
 
 ```bash
 CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run \

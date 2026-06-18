@@ -37,7 +37,11 @@
             <div class="tile"><span class="tl">TASK·AVG</span><b class="mono-num">{pct(s.task_averaged_accuracy)}<i>%</i></b></div>
             <div class="tile"><span class="tl">ABSTENTION</span><b class="mono-num">{pct(s.abstention_accuracy)}<i>%</i></b></div>
             <div class="tile"><span class="tl">CORRECT</span><b class="mono-num">{s.accuracy_correct ?? "—"}<i>/{s.accuracy_total ?? "—"}</i></b></div>
-            <div class="tile"><span class="tl">COST</span><b class="mono-num">{money(s.cost_micro_usd ?? c.cost_micro_usd)}</b></div>
+            <div class="tile">
+              <span class="tl">COST</span>
+              <b class="mono-num">{money(s.cost_micro_usd ?? c.cost_micro_usd)}</b>
+              {#if detail.cost?.cost_estimated}<span class="op">est</span>{/if}
+            </div>
             <div class="tile"><span class="tl">LAT·P50</span><b class="mono-num">{ms(s.latency_ms_p50 ?? c.latency_ms_p50)}</b></div>
             <div class="tile"><span class="tl">LAT·P95</span><b class="mono-num">{ms(s.latency_ms_p95 ?? c.latency_ms_p95)}</b></div>
           </div>
@@ -93,7 +97,7 @@
                   <td class="num mono-num">{m.calls}</td>
                   <td class="num mono-num dim">{tokens(m.input_tokens)}</td>
                   <td class="num mono-num dim">{tokens(m.output_tokens)}</td>
-                  <td class="num mono-num dim">{money(m.cost_micro_usd)}</td>
+                  <td class="num mono-num dim">{money(m.cost_micro_usd)}{m.cost_estimated ? " est" : ""}</td>
                   <td class="num mono-num dim">{ms(m.latency_ms_p50)}</td>
                 </tr>
               {/each}

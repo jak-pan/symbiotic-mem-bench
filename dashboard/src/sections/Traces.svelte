@@ -49,7 +49,7 @@
             <div class="rt"><span class="label">FAILED</span><b class:down={m.failed_calls > 0}>{m.failed_calls}</b></div>
             <div class="rt"><span class="label">IN TOK</span><b>{tokens(m.input_tokens)}</b></div>
             <div class="rt"><span class="label">OUT TOK</span><b>{tokens(m.output_tokens)}</b></div>
-            <div class="rt"><span class="label">COST</span><b>{money(m.cost_micro_usd)}</b></div>
+            <div class="rt"><span class="label">COST</span><b>{money(m.cost_micro_usd)}{m.cost_estimated ? " est" : ""}</b></div>
             <div class="rt"><span class="label">p50</span><b>{ms(m.latency_ms_p50)}</b></div>
             <div class="rt"><span class="label">p95</span><b>{ms(m.latency_ms_p95)}</b></div>
           </div>

@@ -10,12 +10,13 @@
   import Tuner from "../sections/Tuner.svelte";
   import Live from "../sections/Live.svelte";
 
-  let tab = $state<"overview" | "questions" | "compare" | "traces" | "tuner">("overview");
+  let tab = $state<"overview" | "questions" | "compare" | "traces" | "live" | "tuner">("overview");
   let showStale = $state(false);
 
   const selectedId = $derived(router.arg || store.runs[0]?.run_id || "");
   const selected = $derived(store.byId(selectedId));
   const isPending = $derived(store.isPending(selectedId));
+  const hasNativeState = $derived(Boolean(selected?.native_state_available));
 
   // In-flight runs (not yet finalized). Running + idle-warning shown by default;
   // stalled behind a toggle.
@@ -41,13 +42,16 @@
       .sort((a, b) => a.key.localeCompare(b.key));
   });
 
-  const TABS = [
-    ["overview", "OVERVIEW"],
-    ["questions", "QUESTIONS"],
-    ["compare", "COMPARE"],
-    ["traces", "TRACES"],
-    ["tuner", "TUNER"],
-  ] as const;
+  const tabs = $derived.by(() => {
+    const base = [
+      ["overview", "OVERVIEW"],
+      ["questions", "QUESTIONS"],
+      ["compare", "COMPARE"],
+      ["traces", "TRACES"],
+    ] as const;
+    const live = hasNativeState ? ([["live", "LIVE"]] as const) : [];
+    return [...base, ...live, ["tuner", "TUNER"] as const];
+  });
 </script>
 
 <div class="dbg">
@@ -110,7 +114,7 @@
         <div class="tabs"><span class="tab on livetab">▶ LIVE MONITOR</span></div>
       {:else}
         <div class="tabs">
-          {#each TABS as [id, lbl] (id)}
+          {#each tabs as [id, lbl] (id)}
             <button class="tab" class:on={tab === id} onclick={() => (tab = id)}>{lbl}</button>
           {/each}
         </div>
@@ -130,6 +134,8 @@
         <Compare id={selectedId} {selected} />
       {:else if tab === "traces"}
         <Traces id={selectedId} />
+      {:else if tab === "live" && hasNativeState}
+        <Live id={selectedId} />
       {:else if tab === "tuner"}
         <Tuner {selected} />
       {/if}

@@ -135,6 +135,35 @@ Common artifact kinds:
 | `model_traces` | `artifacts/model-traces.jsonl` |
 | `score_summary` | `artifacts/score-summary.json` |
 
+For native Symbiotic Memory runs, `model_traces` may use the provider queue event schema copied from
+`provider-queue/model-queue-traces.jsonl`. Readers must accept both the older nested
+`model/usage/timing/outcome` trace shape and the queue-native
+`queue_id/item_id/operation/status/attempt/usage` shape.
+
+Native answer-only reruns may include `run_params.source_vault_root`. When present, the run's
+`vaults/` tree is an isolated view over an existing ingested substrate: heavy immutable files such
+as `memory.sqlite` and `archive/` may be filesystem links, while mutable files such as
+`manifest.json`, `answer.json`, and `debug/` belong to the rerun.
+
+The live monitor derives model-queue diagnostics from provider queue events:
+
+| Field | Meaning |
+|---|---|
+| `running` / `queued` | Current latest state per queue item inside the inspected window. |
+| `observed_peak_running` | Highest simultaneously running item count observed in the inspected window. |
+| `starts_last_minute` | Requests whose `running` event started in the last trace minute of the inspected window. |
+| `peak_starts_per_minute` | Highest 60-second count of `running` events observed in the inspected window. |
+| `avg_running` | Time-weighted average running item count over the inspected provider event span. |
+| `avg_queued` | Time-weighted average queued item count over the inspected provider event span. |
+| `avg_starts_per_minute` | Average request-start rate over the inspected provider event span. |
+| `observed_duration_secs` | Seconds between first and last inspected event for this queue. |
+| `last_event_at` | Latest provider event timestamp for the queue. |
+
+Active runs may be summarized from a bounded tail. Completed native runs read the full provider trace
+when it is under the live safety cap, otherwise they also fall back to a bounded tail. Full-run cost,
+token, and latency summaries come from the artifact rollups and should not be inferred from the live
+tail alone.
+
 Do not synthesize traces. If a wrapped external system cannot expose internal retrieval details, keep
 the artifact missing and let the manifest say so.
 
@@ -166,7 +195,7 @@ Important fields:
 | `run_id` | Run identifier. |
 | `question_id` | Benchmark question id, when applicable. |
 | `operation` | Normalized stage such as `capture`, `distill`, `retrieve`, `answer`, or `score`. |
-| `event` | Lifecycle event such as `operation_started`, `operation_succeeded`, or `operation_failed`. |
+| `event` | Lifecycle event such as `operation_started`, `operation_succeeded`, `operation_failed`, `branch_started`, or `branch_joined`. |
 | `attempt` | Attempt number for retries. |
 | `timestamp` | Event timestamp. |
 | `input_hash` / `output_hash` | Hashes for forensic correlation without storing raw content. |
@@ -190,6 +219,7 @@ Native adapters should emit enough trace and state to show the asynchronous flow
 | `embed_raw` | raw source unit embeddings produced and persisted |
 | `embed_facts` | fact/search text embeddings produced and persisted |
 | `index` | derived recall index updated |
+| `consolidate` | source-backed extractive briefs written for smaller grounded recall context |
 | `retrieve` | retrieval query and candidates produced |
 | `answer` | final answer or explicit unavailable result produced |
 | `score` | benchmark judgment produced |
@@ -197,8 +227,8 @@ Native adapters should emit enough trace and state to show the asynchronous flow
 Expected event progression is `operation_started` followed by `operation_succeeded` or
 `operation_failed`, with retry attempts represented as new events using the same logical input hash
 or queue item id. Branches such as `embed_raw` and `distill -> write_archive -> embed_facts` may
-overlap. Tools must not infer failure from missing later stages alone; use durable state and trace
-events.
+overlap and may emit `branch_started` / `branch_joined` instead of operation events. Tools must not
+infer failure from missing later stages alone; use durable state and trace events.
 
 ## Queue Events
 
@@ -211,6 +241,10 @@ cargo run --bin membench -- summarize-queue-events \
 
 Required queue fields are `queue_id`, `item_id`, `operation` or `kind`, `status`, `attempt`, and
 `timestamp`. Optional fields include `model`, `input_hash`, `usage`, `cost_micro_usd`, and `error`.
+If `cost_micro_usd` is missing but `usage` has token buckets, the cost rollup may estimate cost from
+the built-in pricing catalog. Estimated rollups set `cost_estimated: true`,
+`pricing_table_version`, and `pricing_sources`. If token usage is missing, the model remains
+unpriced instead of being treated as zero-cost.
 
 Native Symbiotic Memory runs may also have a workflow queue at
 `workflow/longmemeval/queue.sqlite`. This queue records durable row-level work such as pending,
