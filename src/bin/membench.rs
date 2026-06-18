@@ -1923,6 +1923,7 @@ impl ProviderRuntime {
                 .with_max_in_flight(resolved.max_in_flight)
                 .with_request_timeout(Some(Duration::from_secs(resolved.timeout_seconds)))
                 .with_retry_attempts(resolved.retry_attempts)
+                .with_requests_per_minute(resolved.requests_per_minute)
                 .with_pricing(symbiotic_memory::providers::ProviderPricing {
                     input_token_micro_usd: resolved.pricing.input_token_micro_usd,
                     cached_input_token_micro_usd: resolved.pricing.cached_input_token_micro_usd,

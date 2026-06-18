@@ -20,43 +20,6 @@ recall:
   answerer_enabled: true
   support_retry_limit: 1
 
-queue:
-  workflow_max_in_flight: 50
-  defaults:
-    max_in_flight: 8
-    timeout_seconds: 600
-    retry_attempts: 4
-    logical_retry_attempts: 4
-  operations:
-    chat:
-      max_in_flight: 20
-      timeout_seconds: 600
-      retry_attempts: 4
-      logical_retry_attempts: 4
-    embedding:
-      max_in_flight: 400
-      timeout_seconds: 300
-      retry_attempts: 6
-      logical_retry_attempts: 6
-  models:
-    "chat:deepseek:deepseek-v4-flash":
-      max_in_flight: 400
-      timeout_seconds: 420
-      retry_attempts: 4
-      logical_retry_attempts: 4
-    "chat:deepseek:deepseek-v4-pro":
-      max_in_flight: 400
-      timeout_seconds: 600
-      retry_attempts: 4
-      logical_retry_attempts: 4
-    "embedding:gemini:gemini-embedding-2":
-      max_in_flight: 400
-      timeout_seconds: 300
-      retry_attempts: 6
-      logical_retry_attempts: 6
-      requests_per_minute: 2700
-      input_units_per_minute: 900000
-
 providers:
   chat_provider: openai-compatible
   chat_model: deepseek-v4-pro
