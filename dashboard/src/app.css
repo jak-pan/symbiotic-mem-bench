@@ -1,0 +1,326 @@
+/* ============================================================
+   MEMBENCH TERMINAL — Bloomberg-style data terminal theme
+   Near-black panels · signature amber · green/red deltas
+   All data in monospace, sharp corners, dense grid.
+   ============================================================ */
+
+:root {
+  /* surfaces */
+  --bg: #07080a;
+  --bg-panel: #0c0e12;
+  --bg-elev: #11141a;
+  --bg-row: #0a0c10;
+  --bg-row-alt: #0c0f14;
+  --bg-hover: #161b22;
+  --bg-sel: #1b2230;
+
+  /* lines */
+  --border: #191d25;
+  --border-bright: #262c37;
+  --grid: rgba(255, 255, 255, 0.028);
+
+  /* text */
+  --text: #ccd2db;
+  --text-dim: #828b98;
+  --text-faint: #4f5662;
+
+  /* signal palette */
+  --amber: #ffa524;
+  --amber-soft: #ffbf63;
+  --amber-dim: #9c6a1c;
+  --green: #2fcf7a;
+  --green-dim: #1d7a48;
+  --red: #ff5347;
+  --red-dim: #8f3029;
+  --cyan: #46a9ff;
+  --violet: #b285ff;
+  --gold: #e8c34a;
+
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --sans: "Archivo", system-ui, sans-serif;
+
+  --h-topbar: 38px;
+  --h-statusbar: 26px;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+
+/* faint grid + vignette atmosphere behind everything */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 44px 44px;
+}
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(
+    120% 80% at 50% -10%,
+    rgba(255, 165, 36, 0.05),
+    transparent 60%
+  );
+}
+
+#app {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--sans);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+a {
+  color: var(--cyan);
+  text-decoration: none;
+}
+
+/* ---- scrollbars: thin terminal style ---- */
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: #20262f;
+  border: 2px solid var(--bg);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #2e3641;
+}
+
+/* ============ reusable terminal primitives ============ */
+
+.label {
+  font-family: var(--sans);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.mono-num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+.up {
+  color: var(--green);
+}
+.down {
+  color: var(--red);
+}
+.flat {
+  color: var(--text-dim);
+}
+.amber {
+  color: var(--amber);
+}
+
+/* chip / tag */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border: 1px solid var(--border-bright);
+  color: var(--text-dim);
+  background: var(--bg-elev);
+}
+.chip.amber {
+  color: var(--amber);
+  border-color: var(--amber-dim);
+  background: rgba(255, 165, 36, 0.07);
+}
+.chip.green {
+  color: var(--green);
+  border-color: var(--green-dim);
+  background: rgba(47, 207, 122, 0.07);
+}
+.chip.red {
+  color: var(--red);
+  border-color: var(--red-dim);
+  background: rgba(255, 83, 71, 0.07);
+}
+.chip.cyan {
+  color: var(--cyan);
+  border-color: #1f4a73;
+  background: rgba(70, 169, 255, 0.07);
+}
+
+/* generic table */
+table.grid {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+table.grid th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  text-align: left;
+  font-family: var(--sans);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  background: var(--bg-panel);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-bright);
+  cursor: default;
+  user-select: none;
+  white-space: nowrap;
+}
+table.grid th.sortable {
+  cursor: pointer;
+}
+table.grid th.sortable:hover {
+  color: var(--amber);
+}
+table.grid th.num,
+table.grid td.num {
+  text-align: right;
+}
+table.grid td {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+table.grid tbody tr {
+  background: var(--bg-row);
+}
+table.grid tbody tr:nth-child(even) {
+  background: var(--bg-row-alt);
+}
+table.grid tbody tr:hover {
+  background: var(--bg-hover);
+}
+table.grid tbody tr.selected {
+  background: var(--bg-sel);
+  box-shadow: inset 2px 0 0 var(--amber);
+}
+
+/* buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 11px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-bright);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: all 0.1s ease;
+}
+.btn:hover {
+  border-color: var(--amber-dim);
+  color: var(--amber);
+}
+.btn.active {
+  background: rgba(255, 165, 36, 0.1);
+  border-color: var(--amber-dim);
+  color: var(--amber);
+}
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+input.field,
+select.field,
+textarea.field {
+  background: var(--bg);
+  border: 1px solid var(--border-bright);
+  color: var(--text);
+  padding: 4px 8px;
+  font-size: 12px;
+  width: 100%;
+  outline: none;
+}
+input.field:focus,
+select.field:focus,
+textarea.field:focus {
+  border-color: var(--amber-dim);
+  box-shadow: 0 0 0 1px rgba(255, 165, 36, 0.25);
+}
+
+::selection {
+  background: rgba(255, 165, 36, 0.28);
+  color: #fff;
+}
+
+.blink {
+  animation: blink 1.1s steps(1) infinite;
+}
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.fade-in {
+  animation: fade-in 0.25s ease both;
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}

@@ -1,0 +1,13 @@
+/target
+/.debug-session
+/runs
+/.env
+/.env.*
+!/.env.example
+!/.env.test.local.example
+
+# Dashboard build artifacts (the Svelte source under dashboard/src is tracked)
+/dashboard/node_modules
+/dashboard/dist
+
+.DS_Store
