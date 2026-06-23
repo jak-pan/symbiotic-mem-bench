@@ -77,6 +77,7 @@ artifacts/partial-verdicts.jsonl
 artifacts/provenance.jsonl
 artifacts/memory-traces.jsonl
 artifacts/model-traces.jsonl
+artifacts/step-analytics.json
 artifacts/score-summary.json
 ```
 
@@ -98,6 +99,7 @@ artifacts/
   score-summary.json
   memory-traces.jsonl
   model-traces.jsonl
+  step-analytics.json
 raw/
   hypotheses.jsonl
   verdicts.jsonl

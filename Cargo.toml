@@ -11,6 +11,7 @@ symbiotic-memory-adapter = [
     "dep:async-trait",
     "dep:futures",
     "dep:hex",
+    "dep:reqwest",
     "dep:regex",
     "dep:rusqlite",
     "dep:symbiotic-core",
@@ -28,10 +29,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 clap = { version = "4", features = ["derive"] }
-symbiotic-memory = { path = "../symbiotic-memory", default-features = false, features = ["sqlite", "http", "cli"], optional = true }
+symbiotic-memory = { path = "../symbiotic-memory", default-features = false, features = ["sqlite", "http", "cli", "zvec"], optional = true }
 async-trait = { version = "0.1", optional = true }
 futures = { version = "0.3", optional = true }
 hex = { version = "0.4", optional = true }
+reqwest = { version = "0.13.4", features = ["json"], optional = true }
 regex = { version = "1", optional = true }
 rusqlite = { version = "0.32", features = ["bundled", "chrono"], optional = true }
 symbiotic-core = { path = "../symbiotic-foundation/crates/symbiotic-core", optional = true }

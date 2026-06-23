@@ -8,8 +8,14 @@ export interface RunSummary {
   benchmark: string;
   limit: number | null;
   run_name: string;
+  display_name: string;
   run_kind: string;
+  registry_section: string;
+  is_meta_record: boolean;
+  tuning_cohort: string | null;
+  tuning_shape: string | null;
   config_label: string;
+  settings_label: string;
   accuracy: number | null;
   accuracy_correct: number | null;
   accuracy_total: number | null;
@@ -29,6 +35,28 @@ export interface RunSummary {
   artifacts_available: string[];
   artifacts_missing: string[];
   native_state_available: boolean | null;
+  is_trial_run: boolean;
+  trial_markers: TrialMarker[];
+}
+
+export interface TrialMarker {
+  stack_id: string;
+  change_id: string;
+  change_title: string;
+  decision: string;
+  analysis_path: string;
+  compared_to_run_id: string | null;
+  original_baseline_run_id: string | null;
+  improvements: number;
+  regressions: number;
+  unchanged_wrong: number;
+  unchanged_correct: number;
+  question_count: number;
+  sample_classification: string;
+  focused: boolean;
+  aggregate_accuracy: number | null;
+  aggregate_correct: number | null;
+  aggregate_total: number | null;
 }
 
 export interface QTypeScore {
@@ -64,7 +92,82 @@ export interface QuestionRow {
   router_pick: string | null;
   initial_pick: string | null;
   final_pick: string | null;
+  debug_artifact: string | null;
   error: string | null;
+}
+
+export interface QueryPlannerCallDebug {
+  mode?: string | null;
+  system_prompt?: string | null;
+  user_prompt?: string | null;
+  response_text?: string | null;
+  parsed_plan?: {
+    canonical_query?: string | null;
+    dense_queries?: string[] | null;
+    sparse_terms?: string[] | null;
+    expected_answer_type?: string | null;
+    needs_raw_turns?: boolean | null;
+  } | null;
+  usage?: Record<string, unknown> | null;
+  finish_reason?: string | null;
+  error?: string | null;
+}
+
+export interface QuestionDebug {
+  recall?: {
+    query_planner_call?: QueryPlannerCallDebug | null;
+    retrieval_queries?: string[] | null;
+    query_plan?: Record<string, unknown> | null;
+    initial_profile?: RetrievalProfileDebug | null;
+    fallback_profile?: RetrievalProfileDebug | null;
+    [key: string]: unknown;
+  } | null;
+  [key: string]: unknown;
+}
+
+export interface AnswererCallDebug {
+  phase?: string | null;
+  context?: string[] | null;
+  system_prompt?: string | null;
+  prompt?: string | null;
+  response_text?: string | null;
+  processed_text?: string | null;
+  selection_reason?: string | null;
+  usage?: Record<string, unknown> | null;
+  finish_reason?: string | null;
+  error?: string | null;
+}
+
+export interface RetrievalProfileDebug {
+  route?: string | null;
+  facts?: FactEvidenceDebug[] | null;
+  raw_turns?: RawTurnEvidenceDebug[] | null;
+  [key: string]: unknown;
+}
+
+export interface FactEvidenceDebug {
+  score?: number | null;
+  fact?: {
+    memory_id?: string | null;
+    content?: string | null;
+    event_time?: string | null;
+    valid_from?: string | null;
+    status?: string | null;
+    tags?: string[] | null;
+    source_refs?: Array<Record<string, unknown>> | null;
+    [key: string]: unknown;
+  } | null;
+  [key: string]: unknown;
+}
+
+export interface RawTurnEvidenceDebug {
+  score?: number | null;
+  speaker?: string | null;
+  text?: string | null;
+  event_time?: string | null;
+  ordinal?: number | null;
+  source_ref?: Record<string, unknown> | null;
+  [key: string]: unknown;
 }
 
 export interface ModelStat {
@@ -228,9 +331,108 @@ export interface WorkflowQueueSummary {
 
 export interface TracesResponse {
   memory_traces: { total: number; truncated: boolean; rows: any[] };
+  memory_stage_timing: Array<{
+    operation: string;
+    events: number;
+    batch_events: number;
+    intermediate_failed: number;
+    failed: number;
+    item_count: number;
+    item_unit: string;
+    work_ms_p50: number | null;
+    work_ms_p80: number | null;
+    work_ms_p95: number | null;
+    work_ms_p98: number | null;
+    numeric_metrics?: Record<string, {
+      count: number;
+      p50: number | null;
+      p80: number | null;
+      p95: number | null;
+      p98: number | null;
+      max: number | null;
+    }>;
+  }>;
   model_rollup: ModelRollup | null;
   queue_timing: QueueTiming[] | null;
+  trace_waterfall: TraceWaterfall | null;
+  dependency_waterfall: DependencyWaterfall | null;
+  trace_events: TraceEventStream | null;
   workflow_queue: WorkflowQueueSummary | null;
+}
+
+export interface TraceEventRow {
+  timestamp: string;
+  kind: "memory" | "provider" | string;
+  operation: string;
+  lane: string;
+  event: string;
+  status: string;
+  attempt: number;
+  duration_ms: number | null;
+  wait_ms: number | null;
+  run_ms: number | null;
+  total_ms: number | null;
+  item_count: number;
+  item_unit: string;
+  source: string;
+  error: string | null;
+}
+
+export interface TraceEventStream {
+  total: number;
+  truncated: boolean;
+  rows: TraceEventRow[];
+}
+
+export interface TraceWaterfallBlock {
+  kind: "memory_work" | "memory_failed" | "provider_wait" | "provider_run" | "provider_failed" | string;
+  start_ms: number;
+  end_ms: number;
+  duration_ms: number;
+  label: string;
+  status: string;
+  source: string;
+  item_count: number;
+  item_unit: string;
+}
+
+export interface TraceWaterfallLane {
+  name: string;
+  kind: "memory" | "provider" | string;
+  blocks: TraceWaterfallBlock[];
+}
+
+export interface TraceWaterfall {
+  timeline_start: string | null;
+  timeline_end: string | null;
+  duration_ms: number;
+  block_count: number;
+  truncated: boolean;
+  lanes: TraceWaterfallLane[];
+}
+
+export interface DependencyWaterfallBlock {
+  kind: string;
+  label: string;
+  start_ms: number;
+  end_ms: number;
+  duration_ms: number;
+  item_count: number;
+  item_unit: string;
+}
+
+export interface DependencyWaterfallLane {
+  source: string;
+  wait_ms: number;
+  setup_ms?: number;
+  blocks: DependencyWaterfallBlock[];
+}
+
+export interface DependencyWaterfall {
+  timeline_start: string | null;
+  timeline_end: string | null;
+  duration_ms: number;
+  lanes: DependencyWaterfallLane[];
 }
 
 export interface PendingRun {
@@ -241,6 +443,7 @@ export interface PendingRun {
   limit: number | null;
   run_name: string;
   config_label: string;
+  settings_label: string;
   status: "running" | "warning" | "stalled" | "complete";
   started_ms: number | null;
   updated_ms: number | null;
@@ -269,12 +472,24 @@ export interface QueueBreakdown {
   dead: number;
   in_flight: number;
   window: number;
+  queued_units: number;
+  running_units: number;
+  succeeded_units: number;
+  failed_units: number;
+  dead_units: number;
+  in_flight_units: number;
   observed_peak_running: number;
+  observed_peak_running_units: number;
   starts_last_minute: number;
+  starts_last_minute_units: number;
   peak_starts_per_minute: number;
+  peak_starts_per_minute_units: number;
   avg_running: number;
+  avg_running_units: number;
   avg_queued: number;
+  avg_queued_units: number;
   avg_starts_per_minute: number;
+  avg_starts_per_minute_units: number;
   observed_duration_secs: number;
   last_event_at: string | null;
 }
@@ -294,12 +509,36 @@ export interface LiveErrorRow {
   message: string;
 }
 
+export interface ErrorCategory {
+  category: string;
+  source: string;
+  kind: string | null;
+  count: number;
+}
+
+export interface StageSegment {
+  id: string;
+  started: number;
+  succeeded: number;
+  failed: number;
+  in_flight: number;
+  item_succeeded: number;
+  item_failed: number;
+  progress: number;
+  status: string;
+}
+
 export interface StageProgress {
   operation: string;
   started: number;
   succeeded: number;
   failed: number;
+  item_succeeded: number;
+  item_failed: number;
+  item_unit: string;
   in_flight: number;
+  intermediate_failed: number;
+  segments: StageSegment[];
   last_event: string | null;
   last_event_at: string | null;
 }
@@ -320,6 +559,7 @@ export interface LiveDetail {
   model: ModelLive;
   memory_stages: StageProgress[];
   memory_failures: number;
+  error_categories: ErrorCategory[];
   errors: LiveErrorRow[];
   activity: LiveActivityRow[];
 }

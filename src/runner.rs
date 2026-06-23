@@ -61,6 +61,7 @@ pub struct SymemRunPlan {
     pub answer_only: bool,
     pub source_vault_root: Option<PathBuf>,
     pub consolidate_briefs: bool,
+    pub ingest_diagnostic: Option<String>,
     pub resume: bool,
     pub fresh: bool,
     pub query_planner: Option<String>,
@@ -138,7 +139,7 @@ impl SymemRunPlan {
                 args.push("--embedder".to_string());
                 args.push(self.embedder.clone());
             }
-            if self.store != "sqlite" {
+            if self.store != "zvec-hybrid" {
                 args.push("--store".to_string());
                 args.push(self.store.clone());
             }
@@ -153,9 +154,6 @@ impl SymemRunPlan {
             if self.answerer {
                 args.push("--answerer".to_string());
             }
-            if self.routed {
-                args.push("--routed".to_string());
-            }
         }
         if self.answer_only {
             args.push("--answer-only".to_string());
@@ -167,11 +165,18 @@ impl SymemRunPlan {
         if !self.smoke && self.consolidate_briefs {
             args.push("--consolidate-briefs".to_string());
         }
+        if !self.smoke
+            && let Some(ingest_diagnostic) = &self.ingest_diagnostic
+        {
+            args.push("--ingest-diagnostic".to_string());
+            args.push(ingest_diagnostic.clone());
+        }
         if self.resume {
             args.push("--resume".to_string());
         }
         if !self.smoke
             && let Some(query_planner) = &self.query_planner
+            && query_planner != "flash"
         {
             args.push("--query-planner".to_string());
             args.push(query_planner.clone());
@@ -485,8 +490,8 @@ pub fn symem_param_schema() -> Vec<ParamField> {
             "query_planner",
             "Query planner",
             "enum",
-            json!("scripted"),
-            &["off", "scripted"],
+            json!("flash"),
+            &["off", "compact", "flash"],
             "Memory",
             "Retrieval query planner.",
             false,
@@ -499,16 +504,6 @@ pub fn symem_param_schema() -> Vec<ParamField> {
             &[],
             "Memory",
             "Enable the memory engine's generative answerer policy; LongMemEval still writes hypotheses either way.",
-            false,
-        ),
-        field(
-            "routed",
-            "Routed",
-            "bool",
-            json!(true),
-            &[],
-            "Memory",
-            "Use routed retrieval.",
             false,
         ),
         field(
@@ -651,21 +646,24 @@ pub fn plan_from_params(params: &Value, repo_root: &Path) -> SymemRunPlan {
         smoke: bool_field("smoke", false),
         distiller: str_field("distiller", "llm"),
         embedder: str_field("embedder", "gemini"),
-        store: str_field("store", "sqlite"),
+        store: str_field("store", "zvec-hybrid"),
         prompt_dir: opt_path("prompt_dir"),
         distill_prompt: str_field("distill_prompt", "distill"),
         answerer: bool_field("answerer", true),
-        routed: bool_field("routed", true),
+        routed: bool_field("routed", false),
         answer_only,
         source_vault_root: opt_path("source_vault_root"),
         consolidate_briefs: bool_field("consolidate_briefs", true),
+        ingest_diagnostic: nested_str(params, &["ingest_diagnostic"])
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
         resume,
         // Native runs are fresh by default unless reuse is explicitly requested.
         fresh: !resume && !answer_only,
         query_planner: nested_str(params, &["query_planner"])
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned)
-            .or_else(|| Some("scripted".to_string())),
+            .or_else(|| Some("flash".to_string())),
         score: if bool_field("smoke", false) {
             false
         } else {
@@ -699,7 +697,7 @@ mod tests {
             sample: "stratified".to_string(),
             distiller: "heuristic".to_string(),
             embedder: "hash".to_string(),
-            store: "sqlite".to_string(),
+            store: "zvec-hybrid".to_string(),
             prompt_dir: None,
             distill_prompt: "distill".to_string(),
             answerer: true,
@@ -707,6 +705,7 @@ mod tests {
             answer_only: true,
             source_vault_root: None,
             consolidate_briefs: false,
+            ingest_diagnostic: None,
             resume: true,
             fresh: false,
             query_planner: Some("off".to_string()),
@@ -794,9 +793,9 @@ mod tests {
         assert_eq!(plan.distiller, "llm");
         assert_eq!(plan.embedder, "gemini");
         assert!(plan.answerer);
-        assert!(plan.routed);
+        assert!(!plan.routed);
         assert!(plan.consolidate_briefs);
-        assert_eq!(plan.query_planner.as_deref(), Some("scripted"));
+        assert_eq!(plan.query_planner.as_deref(), Some("flash"));
         assert!(plan.score);
         assert!(!plan.smoke);
         assert_eq!(plan.judge_workers, 400);
@@ -849,9 +848,8 @@ mod tests {
                 "limit": 10,
                 "memory_config": "config/symbiotic-memory/longmemeval-raw-light.yaml",
                 "answerer": true,
-                "routed": true,
                 "consolidate_briefs": true,
-                "query_planner": "scripted"
+                "query_planner": "flash"
             }),
             Path::new("/repo"),
         );
@@ -862,12 +860,11 @@ mod tests {
         assert!(!command.args.contains(&"--limit".to_string()));
         assert!(command.args.contains(&"--memory-config".to_string()));
         assert!(command.args.contains(&"--answerer".to_string()));
-        assert!(command.args.contains(&"--routed".to_string()));
         assert!(command.args.contains(&"--consolidate-briefs".to_string()));
         assert!(command.args.contains(&"--score".to_string()));
         assert_eq!(
             command.to_shell(),
-            "cargo run --release --features symbiotic-memory-adapter --bin membench -- --symbiotic-memory --long-mem-eval --memory-config config/symbiotic-memory/longmemeval-raw-light.yaml --answerer --routed --consolidate-briefs --query-planner scripted --score"
+            "cargo run --release --features symbiotic-memory-adapter --bin membench -- --symbiotic-memory --long-mem-eval --memory-config config/symbiotic-memory/longmemeval-raw-light.yaml --answerer --consolidate-briefs --score"
         );
     }
 

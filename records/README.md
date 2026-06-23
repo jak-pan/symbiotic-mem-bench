@@ -34,3 +34,13 @@ Native records may also include `raw/`, `vaults/`, `workflow/`, and `provider-qu
 records can be artifact-only; their `artifact_manifest` must make missing native state explicit.
 
 Use `--force` only when intentionally replacing a tracked record with a corrected version.
+
+For dashboard-safe timing evidence, prefer meta records:
+
+```bash
+scripts/save-run-meta-record.sh runs/{system}/{benchmark}/{limit}/{run_name}
+```
+
+Meta records retain trace/timing artifacts and queue state, but omit vaults, raw outputs, raw
+provider request payloads, and question-level artifacts. They are intended to populate the
+dashboard without carrying source data.

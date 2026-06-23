@@ -117,7 +117,7 @@
   <span class="stk">PEAK&nbsp;ACC <b class="amber">{pct(store.bestAccuracy)}%</b></span>
   {#if store.active.length}
     <span class="sep">│</span>
-    <button class="inflight" onclick={() => router.openRun(store.active[0].run_id)}>
+    <button class="inflight" onclick={() => router.openRun(store.active[0].run_id, "live")}>
       <span class="ifdot"></span>{store.active.length} IN&nbsp;FLIGHT
     </button>
   {/if}

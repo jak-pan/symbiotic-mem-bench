@@ -1,0 +1,1714 @@
+{
+  "generated_at": "2026-06-23T09:50:52.189094+00:00",
+  "memory": {
+    "operations": [
+      {
+        "duration_ms": {
+          "avg": 15691.6,
+          "count": 10,
+          "max": 48937,
+          "p50": 12325.5,
+          "p95": 34494.69999999997,
+          "sum": 156916
+        },
+        "failed": 0,
+        "failed_duration_ms": null,
+        "item_count": null,
+        "numeric_metrics": {
+          "create_vault_dir_ms": {
+            "avg": 0.0,
+            "count": 10,
+            "max": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "sum": 0.0
+          },
+          "embedding_dimensions_ms": {
+            "avg": 0.0,
+            "count": 10,
+            "max": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "sum": 0.0
+          },
+          "fact_count": {
+            "avg": 0.0,
+            "count": 10,
+            "max": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "sum": 0.0
+          },
+          "ingest_ms": {
+            "avg": 14965.1,
+            "count": 10,
+            "max": 48336.0,
+            "p50": 11416.0,
+            "p95": 33862.649999999965,
+            "sum": 149651.0
+          },
+          "load_counts_ms": {
+            "avg": 1.4,
+            "count": 10,
+            "max": 2.0,
+            "p50": 1.0,
+            "p95": 2.0,
+            "sum": 14.0
+          },
+          "load_existing_ms": {
+            "avg": 0.0,
+            "count": 10,
+            "max": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "sum": 0.0
+          },
+          "manifest_ms": {
+            "avg": 0.0,
+            "count": 10,
+            "max": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "sum": 0.0
+          },
+          "source_hash_ms": {
+            "avg": 4.5,
+            "count": 10,
+            "max": 7.0,
+            "p50": 4.0,
+            "p95": 6.099999999999998,
+            "sum": 45.0
+          },
+          "store_open_ms": {
+            "avg": 718.5,
+            "count": 10,
+            "max": 935.0,
+            "p50": 650.0,
+            "p95": 925.55,
+            "sum": 7185.0
+          },
+          "turn_count": {
+            "avg": 492.0,
+            "count": 10,
+            "max": 550.0,
+            "p50": 491.5,
+            "p95": 550.0,
+            "sum": 4920.0
+          },
+          "zvec_cache_ms": {
+            "avg": 0.0,
+            "count": 10,
+            "max": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "sum": 0.0
+          }
+        },
+        "operation": "adapter_call",
+        "started": 0,
+        "succeeded": 10,
+        "worst_case_duration_ms": {
+          "avg": 15691.6,
+          "count": 10,
+          "max": 48937,
+          "p50": 12325.5,
+          "p95": 34494.69999999997,
+          "sum": 156916
+        }
+      },
+      {
+        "duration_ms": {
+          "avg": 0.2,
+          "count": 10,
+          "max": 1,
+          "p50": 0.0,
+          "p95": 1.0,
+          "sum": 2
+        },
+        "failed": 0,
+        "failed_duration_ms": null,
+        "item_count": null,
+        "numeric_metrics": {
+          "artifact_size_bytes": {
+            "avg": 587463.9,
+            "count": 10,
+            "max": 599595.0,
+            "p50": 591782.5,
+            "p95": 598468.2,
+            "sum": 5874639.0
+          },
+          "payload_bytes": {
+            "avg": 558785.9,
+            "count": 10,
+            "max": 571377.0,
+            "p50": 561616.5,
+            "p95": 569626.05,
+            "sum": 5587859.0
+          }
+        },
+        "operation": "capture",
+        "started": 10,
+        "succeeded": 10,
+        "worst_case_duration_ms": {
+          "avg": 0.2,
+          "count": 10,
+          "max": 1,
+          "p50": 0.0,
+          "p95": 1.0,
+          "sum": 2
+        }
+      },
+      {
+        "duration_ms": null,
+        "failed": 0,
+        "failed_duration_ms": null,
+        "item_count": {
+          "avg": 55.59322033898305,
+          "count": 177,
+          "max": 550,
+          "p50": 16.0,
+          "p95": 418.99999999999966,
+          "sum": 9840
+        },
+        "numeric_metrics": {
+          "batch_index": {
+            "avg": 8.8562874251497,
+            "count": 167,
+            "max": 17.0,
+            "p50": 9.0,
+            "p95": 16.0,
+            "sum": 1479.0
+          },
+          "embed_ms": {
+            "avg": 6681.8443113772455,
+            "count": 167,
+            "max": 48306.0,
+            "p50": 5745.0,
+            "p95": 11709.499999999998,
+            "sum": 1115868.0
+          },
+          "input_chars": {
+            "avg": 30756.08383233533,
+            "count": 167,
+            "max": 32000.0,
+            "p50": 31994.0,
+            "p95": 32000.0,
+            "sum": 5136266.0
+          },
+          "post_provider_ms": {
+            "avg": 12.095808383233534,
+            "count": 167,
+            "max": 49.0,
+            "p50": 9.0,
+            "p95": 28.69999999999999,
+            "sum": 2020.0
+          },
+          "store_upsert_ms": {
+            "avg": 12.083832335329342,
+            "count": 167,
+            "max": 49.0,
+            "p50": 9.0,
+            "p95": 28.69999999999999,
+            "sum": 2018.0
+          },
+          "total_turn_count": {
+            "avg": 492.437125748503,
+            "count": 167,
+            "max": 550.0,
+            "p50": 498.0,
+            "p95": 550.0,
+            "sum": 82237.0
+          },
+          "turn_count": {
+            "avg": 55.59322033898305,
+            "count": 177,
+            "max": 550.0,
+            "p50": 16.0,
+            "p95": 418.99999999999966,
+            "sum": 9840.0
+          }
+        },
+        "operation": "embed_raw",
+        "started": 0,
+        "succeeded": 0,
+        "worst_case_duration_ms": null
+      }
+    ],
+    "questions": [
+      {
+        "events": 1,
+        "operations": [
+          {
+            "duration_ms": {
+              "avg": 48937.0,
+              "count": 1,
+              "max": 48937,
+              "p50": 48937.0,
+              "p95": 48937.0,
+              "sum": 48937
+            },
+            "failed": 0,
+            "failed_duration_ms": null,
+            "item_count": null,
+            "numeric_metrics": {
+              "create_vault_dir_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "embedding_dimensions_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "fact_count": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "ingest_ms": {
+                "avg": 48336.0,
+                "count": 1,
+                "max": 48336.0,
+                "p50": 48336.0,
+                "p95": 48336.0,
+                "sum": 48336.0
+              },
+              "load_counts_ms": {
+                "avg": 1.0,
+                "count": 1,
+                "max": 1.0,
+                "p50": 1.0,
+                "p95": 1.0,
+                "sum": 1.0
+              },
+              "load_existing_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "manifest_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "source_hash_ms": {
+                "avg": 4.0,
+                "count": 1,
+                "max": 4.0,
+                "p50": 4.0,
+                "p95": 4.0,
+                "sum": 4.0
+              },
+              "store_open_ms": {
+                "avg": 593.0,
+                "count": 1,
+                "max": 593.0,
+                "p50": 593.0,
+                "p95": 593.0,
+                "sum": 593.0
+              },
+              "turn_count": {
+                "avg": 443.0,
+                "count": 1,
+                "max": 443.0,
+                "p50": 443.0,
+                "p95": 443.0,
+                "sum": 443.0
+              },
+              "zvec_cache_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              }
+            },
+            "operation": "adapter_call",
+            "started": 0,
+            "succeeded": 1,
+            "worst_case_duration_ms": {
+              "avg": 48937.0,
+              "count": 1,
+              "max": 48937,
+              "p50": 48937.0,
+              "p95": 48937.0,
+              "sum": 48937
+            }
+          }
+        ],
+        "question_id": "06878be2",
+        "summary": {
+          "answer_chars": null,
+          "answer_ms": null,
+          "context_chars": null,
+          "context_item_count": null,
+          "dense_query_count": null,
+          "fact_searches": 0,
+          "query_plan_ms": null,
+          "raw_searches": 0,
+          "retrieval_query_count": null,
+          "sparse_term_count": null
+        },
+        "trace_span": {
+          "duration_ms": 0,
+          "first_timestamp": "2026-06-23T09:50:51.568209+00:00",
+          "last_timestamp": "2026-06-23T09:50:51.568209+00:00"
+        }
+      },
+      {
+        "events": 1,
+        "operations": [
+          {
+            "duration_ms": {
+              "avg": 12473.0,
+              "count": 1,
+              "max": 12473,
+              "p50": 12473.0,
+              "p95": 12473.0,
+              "sum": 12473
+            },
+            "failed": 0,
+            "failed_duration_ms": null,
+            "item_count": null,
+            "numeric_metrics": {
+              "create_vault_dir_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "embedding_dimensions_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "fact_count": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "ingest_ms": {
+                "avg": 11551.0,
+                "count": 1,
+                "max": 11551.0,
+                "p50": 11551.0,
+                "p95": 11551.0,
+                "sum": 11551.0
+              },
+              "load_counts_ms": {
+                "avg": 1.0,
+                "count": 1,
+                "max": 1.0,
+                "p50": 1.0,
+                "p95": 1.0,
+                "sum": 1.0
+              },
+              "load_existing_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "manifest_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "source_hash_ms": {
+                "avg": 5.0,
+                "count": 1,
+                "max": 5.0,
+                "p50": 5.0,
+                "p95": 5.0,
+                "sum": 5.0
+              },
+              "store_open_ms": {
+                "avg": 914.0,
+                "count": 1,
+                "max": 914.0,
+                "p50": 914.0,
+                "p95": 914.0,
+                "sum": 914.0
+              },
+              "turn_count": {
+                "avg": 484.0,
+                "count": 1,
+                "max": 484.0,
+                "p50": 484.0,
+                "p95": 484.0,
+                "sum": 484.0
+              },
+              "zvec_cache_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              }
+            },
+            "operation": "adapter_call",
+            "started": 0,
+            "succeeded": 1,
+            "worst_case_duration_ms": {
+              "avg": 12473.0,
+              "count": 1,
+              "max": 12473,
+              "p50": 12473.0,
+              "p95": 12473.0,
+              "sum": 12473
+            }
+          }
+        ],
+        "question_id": "0a995998",
+        "summary": {
+          "answer_chars": null,
+          "answer_ms": null,
+          "context_chars": null,
+          "context_item_count": null,
+          "dense_query_count": null,
+          "fact_searches": 0,
+          "query_plan_ms": null,
+          "raw_searches": 0,
+          "retrieval_query_count": null,
+          "sparse_term_count": null
+        },
+        "trace_span": {
+          "duration_ms": 0,
+          "first_timestamp": "2026-06-23T09:50:09.744711+00:00",
+          "last_timestamp": "2026-06-23T09:50:09.744711+00:00"
+        }
+      },
+      {
+        "events": 1,
+        "operations": [
+          {
+            "duration_ms": {
+              "avg": 12428.0,
+              "count": 1,
+              "max": 12428,
+              "p50": 12428.0,
+              "p95": 12428.0,
+              "sum": 12428
+            },
+            "failed": 0,
+            "failed_duration_ms": null,
+            "item_count": null,
+            "numeric_metrics": {
+              "create_vault_dir_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "embedding_dimensions_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "fact_count": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "ingest_ms": {
+                "avg": 11818.0,
+                "count": 1,
+                "max": 11818.0,
+                "p50": 11818.0,
+                "p95": 11818.0,
+                "sum": 11818.0
+              },
+              "load_counts_ms": {
+                "avg": 2.0,
+                "count": 1,
+                "max": 2.0,
+                "p50": 2.0,
+                "p95": 2.0,
+                "sum": 2.0
+              },
+              "load_existing_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "manifest_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "source_hash_ms": {
+                "avg": 4.0,
+                "count": 1,
+                "max": 4.0,
+                "p50": 4.0,
+                "p95": 4.0,
+                "sum": 4.0
+              },
+              "store_open_ms": {
+                "avg": 602.0,
+                "count": 1,
+                "max": 602.0,
+                "p50": 602.0,
+                "p95": 602.0,
+                "sum": 602.0
+              },
+              "turn_count": {
+                "avg": 485.0,
+                "count": 1,
+                "max": 485.0,
+                "p50": 485.0,
+                "p95": 485.0,
+                "sum": 485.0
+              },
+              "zvec_cache_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              }
+            },
+            "operation": "adapter_call",
+            "started": 0,
+            "succeeded": 1,
+            "worst_case_duration_ms": {
+              "avg": 12428.0,
+              "count": 1,
+              "max": 12428,
+              "p50": 12428.0,
+              "p95": 12428.0,
+              "sum": 12428
+            }
+          }
+        ],
+        "question_id": "118b2229",
+        "summary": {
+          "answer_chars": null,
+          "answer_ms": null,
+          "context_chars": null,
+          "context_item_count": null,
+          "dense_query_count": null,
+          "fact_searches": 0,
+          "query_plan_ms": null,
+          "raw_searches": 0,
+          "retrieval_query_count": null,
+          "sparse_term_count": null
+        },
+        "trace_span": {
+          "duration_ms": 0,
+          "first_timestamp": "2026-06-23T09:50:13.784409+00:00",
+          "last_timestamp": "2026-06-23T09:50:13.784409+00:00"
+        }
+      },
+      {
+        "events": 1,
+        "operations": [
+          {
+            "duration_ms": {
+              "avg": 10890.0,
+              "count": 1,
+              "max": 10890,
+              "p50": 10890.0,
+              "p95": 10890.0,
+              "sum": 10890
+            },
+            "failed": 0,
+            "failed_duration_ms": null,
+            "item_count": null,
+            "numeric_metrics": {
+              "create_vault_dir_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "embedding_dimensions_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "fact_count": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "ingest_ms": {
+                "avg": 10247.0,
+                "count": 1,
+                "max": 10247.0,
+                "p50": 10247.0,
+                "p95": 10247.0,
+                "sum": 10247.0
+              },
+              "load_counts_ms": {
+                "avg": 1.0,
+                "count": 1,
+                "max": 1.0,
+                "p50": 1.0,
+                "p95": 1.0,
+                "sum": 1.0
+              },
+              "load_existing_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "manifest_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "source_hash_ms": {
+                "avg": 3.0,
+                "count": 1,
+                "max": 3.0,
+                "p50": 3.0,
+                "p95": 3.0,
+                "sum": 3.0
+              },
+              "store_open_ms": {
+                "avg": 637.0,
+                "count": 1,
+                "max": 637.0,
+                "p50": 637.0,
+                "p95": 637.0,
+                "sum": 637.0
+              },
+              "turn_count": {
+                "avg": 413.0,
+                "count": 1,
+                "max": 413.0,
+                "p50": 413.0,
+                "p95": 413.0,
+                "sum": 413.0
+              },
+              "zvec_cache_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              }
+            },
+            "operation": "adapter_call",
+            "started": 0,
+            "succeeded": 1,
+            "worst_case_duration_ms": {
+              "avg": 10890.0,
+              "count": 1,
+              "max": 10890,
+              "p50": 10890.0,
+              "p95": 10890.0,
+              "sum": 10890
+            }
+          }
+        ],
+        "question_id": "6a1eabeb",
+        "summary": {
+          "answer_chars": null,
+          "answer_ms": null,
+          "context_chars": null,
+          "context_item_count": null,
+          "dense_query_count": null,
+          "fact_searches": 0,
+          "query_plan_ms": null,
+          "raw_searches": 0,
+          "retrieval_query_count": null,
+          "sparse_term_count": null
+        },
+        "trace_span": {
+          "duration_ms": 0,
+          "first_timestamp": "2026-06-23T09:50:10.962597+00:00",
+          "last_timestamp": "2026-06-23T09:50:10.962597+00:00"
+        }
+      },
+      {
+        "events": 1,
+        "operations": [
+          {
+            "duration_ms": {
+              "avg": 13825.0,
+              "count": 1,
+              "max": 13825,
+              "p50": 13825.0,
+              "p95": 13825.0,
+              "sum": 13825
+            },
+            "failed": 0,
+            "failed_duration_ms": null,
+            "item_count": null,
+            "numeric_metrics": {
+              "create_vault_dir_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "embedding_dimensions_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "fact_count": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "ingest_ms": {
+                "avg": 13183.0,
+                "count": 1,
+                "max": 13183.0,
+                "p50": 13183.0,
+                "p95": 13183.0,
+                "sum": 13183.0
+              },
+              "load_counts_ms": {
+                "avg": 2.0,
+                "count": 1,
+                "max": 2.0,
+                "p50": 2.0,
+                "p95": 2.0,
+                "sum": 2.0
+              },
+              "load_existing_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "manifest_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "source_hash_ms": {
+                "avg": 5.0,
+                "count": 1,
+                "max": 5.0,
+                "p50": 5.0,
+                "p95": 5.0,
+                "sum": 5.0
+              },
+              "store_open_ms": {
+                "avg": 634.0,
+                "count": 1,
+                "max": 634.0,
+                "p50": 634.0,
+                "p95": 634.0,
+                "sum": 634.0
+              },
+              "turn_count": {
+                "avg": 505.0,
+                "count": 1,
+                "max": 505.0,
+                "p50": 505.0,
+                "p95": 505.0,
+                "sum": 505.0
+              },
+              "zvec_cache_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              }
+            },
+            "operation": "adapter_call",
+            "started": 0,
+            "succeeded": 1,
+            "worst_case_duration_ms": {
+              "avg": 13825.0,
+              "count": 1,
+              "max": 13825,
+              "p50": 13825.0,
+              "p95": 13825.0,
+              "sum": 13825
+            }
+          }
+        ],
+        "question_id": "6d550036",
+        "summary": {
+          "answer_chars": null,
+          "answer_ms": null,
+          "context_chars": null,
+          "context_item_count": null,
+          "dense_query_count": null,
+          "fact_searches": 0,
+          "query_plan_ms": null,
+          "raw_searches": 0,
+          "retrieval_query_count": null,
+          "sparse_term_count": null
+        },
+        "trace_span": {
+          "duration_ms": 0,
+          "first_timestamp": "2026-06-23T09:50:15.802801+00:00",
+          "last_timestamp": "2026-06-23T09:50:15.802801+00:00"
+        }
+      },
+      {
+        "events": 1,
+        "operations": [
+          {
+            "duration_ms": {
+              "avg": 10919.0,
+              "count": 1,
+              "max": 10919,
+              "p50": 10919.0,
+              "p95": 10919.0,
+              "sum": 10919
+            },
+            "failed": 0,
+            "failed_duration_ms": null,
+            "item_count": null,
+            "numeric_metrics": {
+              "create_vault_dir_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "embedding_dimensions_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "fact_count": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "ingest_ms": {
+                "avg": 10301.0,
+                "count": 1,
+                "max": 10301.0,
+                "p50": 10301.0,
+                "p95": 10301.0,
+                "sum": 10301.0
+              },
+              "load_counts_ms": {
+                "avg": 1.0,
+                "count": 1,
+                "max": 1.0,
+                "p50": 1.0,
+                "p95": 1.0,
+                "sum": 1.0
+              },
+              "load_existing_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "manifest_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "source_hash_ms": {
+                "avg": 4.0,
+                "count": 1,
+                "max": 4.0,
+                "p50": 4.0,
+                "p95": 4.0,
+                "sum": 4.0
+              },
+              "store_open_ms": {
+                "avg": 611.0,
+                "count": 1,
+                "max": 611.0,
+                "p50": 611.0,
+                "p95": 611.0,
+                "sum": 611.0
+              },
+              "turn_count": {
+                "avg": 550.0,
+                "count": 1,
+                "max": 550.0,
+                "p50": 550.0,
+                "p95": 550.0,
+                "sum": 550.0
+              },
+              "zvec_cache_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              }
+            },
+            "operation": "adapter_call",
+            "started": 0,
+            "succeeded": 1,
+            "worst_case_duration_ms": {
+              "avg": 10919.0,
+              "count": 1,
+              "max": 10919,
+              "p50": 10919.0,
+              "p95": 10919.0,
+              "sum": 10919
+            }
+          }
+        ],
+        "question_id": "7161e7e2",
+        "summary": {
+          "answer_chars": null,
+          "answer_ms": null,
+          "context_chars": null,
+          "context_item_count": null,
+          "dense_query_count": null,
+          "fact_searches": 0,
+          "query_plan_ms": null,
+          "raw_searches": 0,
+          "retrieval_query_count": null,
+          "sparse_term_count": null
+        },
+        "trace_span": {
+          "duration_ms": 0,
+          "first_timestamp": "2026-06-23T09:50:11.646026+00:00",
+          "last_timestamp": "2026-06-23T09:50:11.646026+00:00"
+        }
+      },
+      {
+        "events": 1,
+        "operations": [
+          {
+            "duration_ms": {
+              "avg": 12223.0,
+              "count": 1,
+              "max": 12223,
+              "p50": 12223.0,
+              "p95": 12223.0,
+              "sum": 12223
+            },
+            "failed": 0,
+            "failed_duration_ms": null,
+            "item_count": null,
+            "numeric_metrics": {
+              "create_vault_dir_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "embedding_dimensions_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "fact_count": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "ingest_ms": {
+                "avg": 11281.0,
+                "count": 1,
+                "max": 11281.0,
+                "p50": 11281.0,
+                "p95": 11281.0,
+                "sum": 11281.0
+              },
+              "load_counts_ms": {
+                "avg": 1.0,
+                "count": 1,
+                "max": 1.0,
+                "p50": 1.0,
+                "p95": 1.0,
+                "sum": 1.0
+              },
+              "load_existing_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "manifest_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "source_hash_ms": {
+                "avg": 4.0,
+                "count": 1,
+                "max": 4.0,
+                "p50": 4.0,
+                "p95": 4.0,
+                "sum": 4.0
+              },
+              "store_open_ms": {
+                "avg": 935.0,
+                "count": 1,
+                "max": 935.0,
+                "p50": 935.0,
+                "p95": 935.0,
+                "sum": 935.0
+              },
+              "turn_count": {
+                "avg": 508.0,
+                "count": 1,
+                "max": 508.0,
+                "p50": 508.0,
+                "p95": 508.0,
+                "sum": 508.0
+              },
+              "zvec_cache_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              }
+            },
+            "operation": "adapter_call",
+            "started": 0,
+            "succeeded": 1,
+            "worst_case_duration_ms": {
+              "avg": 12223.0,
+              "count": 1,
+              "max": 12223,
+              "p50": 12223.0,
+              "p95": 12223.0,
+              "sum": 12223
+            }
+          }
+        ],
+        "question_id": "8a2466db",
+        "summary": {
+          "answer_chars": null,
+          "answer_ms": null,
+          "context_chars": null,
+          "context_item_count": null,
+          "dense_query_count": null,
+          "fact_searches": 0,
+          "query_plan_ms": null,
+          "raw_searches": 0,
+          "retrieval_query_count": null,
+          "sparse_term_count": null
+        },
+        "trace_span": {
+          "duration_ms": 0,
+          "first_timestamp": "2026-06-23T09:50:10.431079+00:00",
+          "last_timestamp": "2026-06-23T09:50:10.431079+00:00"
+        }
+      },
+      {
+        "events": 1,
+        "operations": [
+          {
+            "duration_ms": {
+              "avg": 9410.0,
+              "count": 1,
+              "max": 9410,
+              "p50": 9410.0,
+              "p95": 9410.0,
+              "sum": 9410
+            },
+            "failed": 0,
+            "failed_duration_ms": null,
+            "item_count": null,
+            "numeric_metrics": {
+              "create_vault_dir_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "embedding_dimensions_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "fact_count": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "ingest_ms": {
+                "avg": 8686.0,
+                "count": 1,
+                "max": 8686.0,
+                "p50": 8686.0,
+                "p95": 8686.0,
+                "sum": 8686.0
+              },
+              "load_counts_ms": {
+                "avg": 2.0,
+                "count": 1,
+                "max": 2.0,
+                "p50": 2.0,
+                "p95": 2.0,
+                "sum": 2.0
+              },
+              "load_existing_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "manifest_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "source_hash_ms": {
+                "avg": 7.0,
+                "count": 1,
+                "max": 7.0,
+                "p50": 7.0,
+                "p95": 7.0,
+                "sum": 7.0
+              },
+              "store_open_ms": {
+                "avg": 712.0,
+                "count": 1,
+                "max": 712.0,
+                "p50": 712.0,
+                "p95": 712.0,
+                "sum": 712.0
+              },
+              "turn_count": {
+                "avg": 550.0,
+                "count": 1,
+                "max": 550.0,
+                "p50": 550.0,
+                "p95": 550.0,
+                "sum": 550.0
+              },
+              "zvec_cache_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              }
+            },
+            "operation": "adapter_call",
+            "started": 0,
+            "succeeded": 1,
+            "worst_case_duration_ms": {
+              "avg": 9410.0,
+              "count": 1,
+              "max": 9410,
+              "p50": 9410.0,
+              "p95": 9410.0,
+              "sum": 9410
+            }
+          }
+        ],
+        "question_id": "e47becba",
+        "summary": {
+          "answer_chars": null,
+          "answer_ms": null,
+          "context_chars": null,
+          "context_item_count": null,
+          "dense_query_count": null,
+          "fact_searches": 0,
+          "query_plan_ms": null,
+          "raw_searches": 0,
+          "retrieval_query_count": null,
+          "sparse_term_count": null
+        },
+        "trace_span": {
+          "duration_ms": 0,
+          "first_timestamp": "2026-06-23T09:50:05.945369+00:00",
+          "last_timestamp": "2026-06-23T09:50:05.945369+00:00"
+        }
+      },
+      {
+        "events": 1,
+        "operations": [
+          {
+            "duration_ms": {
+              "avg": 8968.0,
+              "count": 1,
+              "max": 8968,
+              "p50": 8968.0,
+              "p95": 8968.0,
+              "sum": 8968
+            },
+            "failed": 0,
+            "failed_duration_ms": null,
+            "item_count": null,
+            "numeric_metrics": {
+              "create_vault_dir_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "embedding_dimensions_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "fact_count": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "ingest_ms": {
+                "avg": 8075.0,
+                "count": 1,
+                "max": 8075.0,
+                "p50": 8075.0,
+                "p95": 8075.0,
+                "sum": 8075.0
+              },
+              "load_counts_ms": {
+                "avg": 2.0,
+                "count": 1,
+                "max": 2.0,
+                "p50": 2.0,
+                "p95": 2.0,
+                "sum": 2.0
+              },
+              "load_existing_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "manifest_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "source_hash_ms": {
+                "avg": 5.0,
+                "count": 1,
+                "max": 5.0,
+                "p50": 5.0,
+                "p95": 5.0,
+                "sum": 5.0
+              },
+              "store_open_ms": {
+                "avg": 884.0,
+                "count": 1,
+                "max": 884.0,
+                "p50": 884.0,
+                "p95": 884.0,
+                "sum": 884.0
+              },
+              "turn_count": {
+                "avg": 484.0,
+                "count": 1,
+                "max": 484.0,
+                "p50": 484.0,
+                "p95": 484.0,
+                "sum": 484.0
+              },
+              "zvec_cache_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              }
+            },
+            "operation": "adapter_call",
+            "started": 0,
+            "succeeded": 1,
+            "worst_case_duration_ms": {
+              "avg": 8968.0,
+              "count": 1,
+              "max": 8968,
+              "p50": 8968.0,
+              "p95": 8968.0,
+              "sum": 8968
+            }
+          }
+        ],
+        "question_id": "gpt4_59149c77",
+        "summary": {
+          "answer_chars": null,
+          "answer_ms": null,
+          "context_chars": null,
+          "context_item_count": null,
+          "dense_query_count": null,
+          "fact_searches": 0,
+          "query_plan_ms": null,
+          "raw_searches": 0,
+          "retrieval_query_count": null,
+          "sparse_term_count": null
+        },
+        "trace_span": {
+          "duration_ms": 0,
+          "first_timestamp": "2026-06-23T09:50:08.131663+00:00",
+          "last_timestamp": "2026-06-23T09:50:08.131663+00:00"
+        }
+      },
+      {
+        "events": 1,
+        "operations": [
+          {
+            "duration_ms": {
+              "avg": 16843.0,
+              "count": 1,
+              "max": 16843,
+              "p50": 16843.0,
+              "p95": 16843.0,
+              "sum": 16843
+            },
+            "failed": 0,
+            "failed_duration_ms": null,
+            "item_count": null,
+            "numeric_metrics": {
+              "create_vault_dir_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "embedding_dimensions_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "fact_count": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "ingest_ms": {
+                "avg": 16173.0,
+                "count": 1,
+                "max": 16173.0,
+                "p50": 16173.0,
+                "p95": 16173.0,
+                "sum": 16173.0
+              },
+              "load_counts_ms": {
+                "avg": 1.0,
+                "count": 1,
+                "max": 1.0,
+                "p50": 1.0,
+                "p95": 1.0,
+                "sum": 1.0
+              },
+              "load_existing_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "manifest_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              },
+              "source_hash_ms": {
+                "avg": 4.0,
+                "count": 1,
+                "max": 4.0,
+                "p50": 4.0,
+                "p95": 4.0,
+                "sum": 4.0
+              },
+              "store_open_ms": {
+                "avg": 663.0,
+                "count": 1,
+                "max": 663.0,
+                "p50": 663.0,
+                "p95": 663.0,
+                "sum": 663.0
+              },
+              "turn_count": {
+                "avg": 498.0,
+                "count": 1,
+                "max": 498.0,
+                "p50": 498.0,
+                "p95": 498.0,
+                "sum": 498.0
+              },
+              "zvec_cache_ms": {
+                "avg": 0.0,
+                "count": 1,
+                "max": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "sum": 0.0
+              }
+            },
+            "operation": "adapter_call",
+            "started": 0,
+            "succeeded": 1,
+            "worst_case_duration_ms": {
+              "avg": 16843.0,
+              "count": 1,
+              "max": 16843,
+              "p50": 16843.0,
+              "p95": 16843.0,
+              "sum": 16843
+            }
+          }
+        ],
+        "question_id": "gpt4_f49edff3",
+        "summary": {
+          "answer_chars": null,
+          "answer_ms": null,
+          "context_chars": null,
+          "context_item_count": null,
+          "dense_query_count": null,
+          "fact_searches": 0,
+          "query_plan_ms": null,
+          "raw_searches": 0,
+          "retrieval_query_count": null,
+          "sparse_term_count": null
+        },
+        "trace_span": {
+          "duration_ms": 0,
+          "first_timestamp": "2026-06-23T09:50:20.086063+00:00",
+          "last_timestamp": "2026-06-23T09:50:20.086063+00:00"
+        }
+      }
+    ],
+    "trace_span": {
+      "duration_ms": 54302,
+      "first_timestamp": "2026-06-23T09:49:57.265483+00:00",
+      "last_timestamp": "2026-06-23T09:50:51.568209+00:00"
+    }
+  },
+  "model": {
+    "by_model": [
+      {
+        "failed_items": 0,
+        "failed_queue_duration_ms": null,
+        "failed_timing_total_ms": null,
+        "items": 167,
+        "name": "unknown",
+        "queue_duration_ms": {
+          "avg": 6680.161676646707,
+          "count": 167,
+          "max": 48306,
+          "p50": 5741.0,
+          "p95": 11708.499999999996,
+          "sum": 1115587
+        },
+        "timing_total_ms": null,
+        "worst_case_queue_duration_ms": {
+          "avg": 6680.161676646707,
+          "count": 167,
+          "max": 48306,
+          "p50": 5741.0,
+          "p95": 11708.499999999996,
+          "sum": 1115587
+        },
+        "worst_case_timing_total_ms": null
+      }
+    ],
+    "by_queue": [
+      {
+        "failed_items": 0,
+        "failed_queue_duration_ms": null,
+        "failed_timing_total_ms": null,
+        "items": 167,
+        "name": "embedding:openrouter:qwen/qwen3-embedding-8b",
+        "queue_duration_ms": {
+          "avg": 6680.161676646707,
+          "count": 167,
+          "max": 48306,
+          "p50": 5741.0,
+          "p95": 11708.499999999996,
+          "sum": 1115587
+        },
+        "timing_total_ms": null,
+        "worst_case_queue_duration_ms": {
+          "avg": 6680.161676646707,
+          "count": 167,
+          "max": 48306,
+          "p50": 5741.0,
+          "p95": 11708.499999999996,
+          "sum": 1115587
+        },
+        "worst_case_timing_total_ms": null
+      }
+    ],
+    "by_role": [
+      {
+        "failed_items": 0,
+        "failed_queue_duration_ms": null,
+        "failed_timing_total_ms": null,
+        "items": 167,
+        "name": "unknown",
+        "queue_duration_ms": {
+          "avg": 6680.161676646707,
+          "count": 167,
+          "max": 48306,
+          "p50": 5741.0,
+          "p95": 11708.499999999996,
+          "sum": 1115587
+        },
+        "timing_total_ms": null,
+        "worst_case_queue_duration_ms": {
+          "avg": 6680.161676646707,
+          "count": 167,
+          "max": 48306,
+          "p50": 5741.0,
+          "p95": 11708.499999999996,
+          "sum": 1115587
+        },
+        "worst_case_timing_total_ms": null
+      }
+    ],
+    "items": {
+      "failed": 0,
+      "terminal": 167,
+      "total": 167
+    },
+    "trace_span": {
+      "duration_ms": 54278,
+      "first_timestamp": "2026-06-23T09:49:57.268150+00:00",
+      "last_timestamp": "2026-06-23T09:50:51.546311+00:00"
+    }
+  },
+  "schema": "membench.step_analytics.v1",
+  "sources": {
+    "memory_traces": true,
+    "model_traces": true,
+    "question_debug": true
+  }
+}

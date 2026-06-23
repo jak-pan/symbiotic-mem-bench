@@ -19,7 +19,7 @@ Common fields:
 | `limit` | Intended or scored question count. |
 
 Native Symbiotic Memory runs also record adapter settings such as `dataset`, `distiller`,
-`embedder`, `store`, `answer_output`, `generative_answerer_enabled`, `routed`, `query_planner`,
+`embedder`, `store`, `answer_output`, `generative_answerer_enabled`, `query_planner`,
 `score_output`, `scorer`, and `judge_workers`. `answer_output=true` means the benchmark run writes
 hypotheses and emits the memory `answer` stage; `generative_answerer_enabled` controls whether the
 memory engine uses its generative answerer policy. The older `answerer` field is retained as a
@@ -100,6 +100,27 @@ These fields are additive to `membench.report.v1`; readers that do not understan
 and runs written before the upgrade simply omit them (the explorer derives them on the fly from
 artifacts).
 
+## Native Trace Stage Labels
+
+Native Symbiotic Memory traces normalize a few adapter and memory operations before rendering them
+in Live and Traces:
+
+| Rendered stage | Trace source | Meaning |
+|---|---|---|
+| `setup` | `operation=adapter_call`, `stage=pre_capture_setup` | Vault directory creation, source hashing, manifest read/write, embedder dimension lookup, zvec cache validation, store open, and existing-state load before `capture` starts. |
+| `capture` | `operation=capture` | First memory-pipeline stage emitted by the native ingest pipeline. |
+| `briefs` | `operation=embed_facts`, `metrics.kind=brief` normalized to `consolidate` | Source-backed extractive brief pass. |
+| `recall setup` | `operation=adapter_call`, `stage=pre_recall_setup` | Post-ingest count loading and recall-index readiness before query planning, search, support, and answer stages. |
+| `prompt plan` | `operation=query_plan` | Query planner trace emitted by the memory engine recall debug path. |
+
+Setup stages are intentionally separate from ingest timing. If loading 50 vaults is slow before any
+capture bar moves, inspect `setup` p80/p98 and its numeric metrics such as `store_open_ms`,
+`zvec_cache_ms`, `load_existing_ms`, and `manifest_ms`.
+
+Legacy `adapter_call` rows without one of the typed setup stage names are ignored by dashboard
+summaries and unified trace logs. Raw trace artifacts keep those rows for archeology, but old runs
+should not render a misleading generic adapter stage.
+
 ## Machine-readable Index
 
 ```bash
@@ -109,6 +130,117 @@ cargo run --bin membench -- explore --json
 Emits the normalized run index (one `RunSummary` per run) as JSON — the same shape the dashboard
 backend serves at `GET /api/runs`. Without `--run-root` it scans both `runs/` and `records/`.
 
+## Trials
+
+Trials are typed analysis artifacts for improving a memory system from observed failures. Use this
+term instead of "fine-tuning": no model weights are trained, and no question-specific answers are
+patched. A trial tests a generic prompt, retrieval, storage, or scoring change against a declared
+failure stack and records both wins and regressions.
+
+Trial stack size carries scope:
+
+| Size | Classification | Use |
+|---|---|---|
+| `<25Q` | `focused_trial` | Tight failure-class forensics or prompt iteration. Valid, but intentionally narrow. |
+| `25-50Q` | `diagnostic_trial` | Normal trial band for broader diagnostic decisions; should be stratified by failure bucket and question type. |
+| `51-499Q` | `broad_diagnostic` | Confirmation sweep before full benchmark scale. |
+| `500Q+` | `benchmark_scale` | Candidate benchmark claim only with complete artifacts, provenance, and no-cheating review. |
+
+Trial analysis folders live under:
+
+```text
+runs/analysis/{stack_id}/
+```
+
+The typed files are:
+
+| File | Schema | Meaning |
+|---|---|---|
+| `trial-stack.json` | `membench.trial_stack.v1` | The baseline failure stack, comparison runs, subset, terminology, and rules. |
+| `trials.jsonl` | `membench.trial.v1` | One row per improvement run, including reasoning, changed files, tests, aggregate score, improvements, regressions, risks, and decision. |
+| `trial-question-deltas.jsonl` | `membench.trial_question_delta.v1` | One row per question per trial run, comparing current result to the declared comparison run and original baseline stack. |
+| `LEDGER.md` | Markdown render | Human-readable summary. The JSON/JSONL files are the structured source of truth. |
+
+`trial-stack.json` common fields:
+
+| Field | Meaning |
+|---|---|
+| `schema` | Schema id, currently `membench.trial_stack.v1`. |
+| `stack_id` | Folder-safe id for the analyzed failure stack. |
+| `terminology` | Preferred name and avoided names with rationale. |
+| `system` / `benchmark` | System and benchmark under analysis. |
+| `baseline_runs` | Full-run references used to define the original stack. |
+| `failure_buckets` / `by_type` | Counts for baseline overlap and question-type distribution. |
+| `sample_policy` | Question count, classification, recommended 25-50Q diagnostic range, and whether the stack is focused. |
+| `tuning_subset` | Optional smaller question set used for diagnostic trials. |
+| `rules` | Anti-cheating and comparability rules for this stack. |
+
+`trials.jsonl` rows use:
+
+| Field | Meaning |
+|---|---|
+| `schema` | Schema id, currently `membench.trial.v1`. |
+| `stack_id` | Parent trial stack id. |
+| `run_id` / `run_path` | Benchmark run tested by this trial. |
+| `change_id` / `change_title` | Stable change identity. Multiple model settings may test the same change. |
+| `answerer` | Model and reasoning/thinking setting when relevant. |
+| `compared_to_run_id` | Immediate comparison run for wins/regressions. |
+| `reasoning` | Why this change was made and what failure class it targets. |
+| `changed_files` | Structured list of paths, areas, and summaries. |
+| `verification` | Tests and commands run before or with the trial. |
+| `sample_policy` | Sample-size classification for this trial row. |
+| `aggregate` | Score metrics for the trial run. |
+| `outcomes.improvements` | Questions fixed versus `compared_to_run_id`. |
+| `outcomes.regressions` | Questions broken versus `compared_to_run_id`. |
+| `outcomes.unchanged_wrong` / `unchanged_correct` | Stable failures/successes. |
+| `risks` | Known ways the change could overgeneralize or mislead. |
+| `decision` | What to do with the trial result. |
+
+`trial-question-deltas.jsonl` rows use:
+
+| Field | Meaning |
+|---|---|
+| `schema` | Schema id, currently `membench.trial_question_delta.v1`. |
+| `run_id` / `change_id` | Trial run and change identity. |
+| `question_id`, `question_type`, `question`, `gold_answer` | Question metadata for forensic inspection. |
+| `comparison_run_id` / `comparison` | Immediate comparison answer and label. |
+| `original_baseline_run_id` / `original_baseline` | Original full-stack baseline answer and label for this model path. |
+| `current` | Trial answer, judge label, and raw judge output when available. |
+| `outcome` | `improved_vs_comparison`, `regressed_vs_comparison`, `unchanged_correct_vs_comparison`, or `unchanged_wrong_vs_comparison`. |
+| `original_outcome` | Fixed/regressed/still-correct/still-wrong relative to the original baseline stack. |
+| `notes` | Optional human notes; keep empty instead of inventing explanations. |
+
+Trial files are intended to be appendable. When adding a new run, append one
+`membench.trial.v1` row and one `membench.trial_question_delta.v1` row for each question being
+compared. Do not overwrite prior rows unless correcting malformed metadata; write corrections as
+new rows when the answer content or scoring changed.
+
+Generate or update these files from existing run artifacts with:
+
+```bash
+cargo run --bin membench -- trials derive \
+  --trial-run-root runs/{system}/{benchmark}/{limit}/{candidate_run} \
+  --comparison-run-root runs/{system}/{benchmark}/{limit}/{previous_run} \
+  --original-baseline-run-root runs/{system}/{benchmark}/{limit}/{baseline_run} \
+  --change-title "{short title}" \
+  --reasoning "{why this generic change is being tested}" \
+  --changed-file "../symbiotic-memory/src/recall/prompt_policy.rs:120|answer prompt|Clarify evidence grouping" \
+  --verification "cargo test --manifest-path ../symbiotic-memory/Cargo.toml prompt_ --features cli" \
+  --decision "diagnostic_only"
+```
+
+The command reads standard run artifacts (`scored.json`, verdicts, hypotheses, provenance, memory
+traces, model traces, and question-debug bundles when present) and computes the per-question deltas.
+`--stack-id` and `--change-id` are generated by default from the change title and compared run roots;
+pass explicit ids only when intentionally grouping several trial rows into one ledger.
+Question-debug content is referenced by path and hash; raw prompt bodies are not copied into the trial
+ledger.
+
+Dashboard registry rows are flagged as `TRIAL` when a `membench.trial.v1` row references that run via
+`run_path`. The badge means "diagnostic improvement trial", not a promoted benchmark claim. The run
+still keeps its ordinary `benchmark-report.json`; the trial context is an overlay from
+`runs/analysis/{stack_id}/trials.jsonl`.
+
 ## Artifact Manifest
 
 `artifact_manifest` answers two questions: what did this run capture, and what is missing?
@@ -116,7 +248,7 @@ backend serves at `GET /api/runs`. Without `--run-root` it scans both `runs/` an
 ```json
 {
   "available": ["hypotheses", "scored", "verdicts"],
-  "missing": ["provenance", "memory_traces", "model_traces", "score_summary"],
+  "missing": ["provenance", "memory_traces", "model_traces", "step_analytics", "score_summary"],
   "native_state_available": false,
   "native_state_note": "Imported artifact runs preserve copied benchmark artifacts only; native state folders such as raw, vaults, workflow, and provider-queue may be absent."
 }
@@ -133,6 +265,7 @@ Common artifact kinds:
 | `provenance` | `artifacts/provenance.jsonl` |
 | `memory_traces` | `artifacts/memory-traces.jsonl` |
 | `model_traces` | `artifacts/model-traces.jsonl` |
+| `step_analytics` | `artifacts/step-analytics.json` |
 | `score_summary` | `artifacts/score-summary.json` |
 
 For native Symbiotic Memory runs, `model_traces` may use the provider queue event schema copied from
@@ -144,6 +277,28 @@ Native answer-only reruns may include `run_params.source_vault_root`. When prese
 `vaults/` tree is an isolated view over an existing ingested substrate: heavy immutable files such
 as `memory.sqlite` and `archive/` may be filesystem links, while mutable files such as
 `manifest.json`, `answer.json`, and `debug/` belong to the rerun.
+
+Per-question debug bundles under
+`vaults/{question_id}/debug/hypotheses/{run_id}/question-debug.json` may include raw prompts and
+model responses for local diagnosis. For the query planner, inspect
+`recall.query_planner_call.system_prompt`, `recall.query_planner_call.user_prompt`, and
+`recall.query_planner_call.response_text`. For the search response, inspect
+`recall.retrieval_queries`, `recall.query_plan`, `recall.initial_profile`, and optional
+`recall.fallback_profile`; the profile entries carry scores plus fact/raw-turn evidence. Portable
+memory traces should point to that bundle and record prompt/response hashes instead of duplicating
+raw prompt text.
+
+`step_analytics` is a derived JSON rollup over `memory_traces`, `model_traces`, and local
+per-question debug bundles when present. It stores per-operation and per-question timing summaries,
+numeric metric summaries (`p50`, `p80`, `p95`, `p98`, `max`), model queue/item timing summaries,
+context/answer sizes, retrieval-query counts, and hashes of query plans/retrieval query lists. Use
+numeric metric summaries for stage sub-timings such as provider embed time, local store upsert time,
+and post-provider work. It must not duplicate raw prompts, raw retrieval query text, raw source
+documents, or secrets. Backfill or refresh it for an existing run with:
+
+```bash
+cargo run --bin membench -- analytics --run-root runs/{system}/{benchmark}/{limit}/{run_name}
+```
 
 The live monitor derives model-queue diagnostics from provider queue events:
 
@@ -220,6 +375,7 @@ Native adapters should emit enough trace and state to show the asynchronous flow
 | `embed_facts` | fact/search text embeddings produced and persisted |
 | `index` | derived recall index updated |
 | `consolidate` | source-backed extractive briefs written for smaller grounded recall context |
+| `query_plan` | optional prompt-planning/query-planning result used to build retrieval probes; trace metrics include prompt/response hashes and point to the question debug bundle |
 | `retrieve` | retrieval query and candidates produced |
 | `answer` | final answer or explicit unavailable result produced |
 | `score` | benchmark judgment produced |
@@ -229,6 +385,12 @@ Expected event progression is `operation_started` followed by `operation_succeed
 or queue item id. Branches such as `embed_raw` and `distill -> write_archive -> embed_facts` may
 overlap and may emit `branch_started` / `branch_joined` instead of operation events. Tools must not
 infer failure from missing later stages alone; use durable state and trace events.
+
+Embedding batch progress is request-oriented. `embed_raw` and `embed_facts` success events may carry
+batch item counts and total item counts; these represent persisted embedding batches, not source-row
+completion. Batch sizing defaults are code-owned. The separate per-input local cap is
+`SYMEM_EMBED_MAX_CHARS`. Dashboards should display both concepts without implying that the batch text
+budget is the per-item model window.
 
 ## Queue Events
 

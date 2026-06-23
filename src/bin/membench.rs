@@ -1,7 +1,15 @@
+#![recursion_limit = "256"]
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+use anyhow::Context;
 use chrono::Utc;
 use clap::{Parser, Subcommand};
 #[cfg(feature = "symbiotic-memory-adapter")]
 use futures::StreamExt;
+#[cfg(feature = "symbiotic-memory-adapter")]
+use reqwest::Client;
+#[cfg(feature = "symbiotic-memory-adapter")]
+use serde::Serialize;
 #[cfg(feature = "symbiotic-memory-adapter")]
 use serde_json::Value;
 use serde_json::json;
@@ -9,12 +17,16 @@ use sha2::{Digest, Sha256};
 #[cfg(feature = "symbiotic-memory-adapter")]
 use std::collections::VecDeque;
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(feature = "symbiotic-memory-adapter")]
+use std::io::Write;
 use std::path::{Path, PathBuf};
 #[cfg(feature = "symbiotic-memory-adapter")]
 use std::sync::Arc;
 #[cfg(feature = "symbiotic-memory-adapter")]
-use std::time::Duration;
-use symbiotic_mem_bench::{BenchQueueEvent, cost, registry, runner, summarize_queue_timing};
+use std::time::{Duration, Instant};
+use symbiotic_mem_bench::{
+    BenchQueueEvent, cost, registry, runner, step_analytics, summarize_queue_timing, trials,
+};
 
 const LONGMEMEVAL_CLEANED_S_URL: &str = "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json";
 const LONGMEMEVAL_CLEANED_S_BYTES: u64 = 277_383_467;
@@ -27,6 +39,7 @@ const COMMON_ARTIFACT_KINDS: &[&str] = &[
     "provenance",
     "memory_traces",
     "model_traces",
+    "step_analytics",
     "score_summary",
 ];
 
@@ -69,7 +82,7 @@ struct Cli {
     distiller: String,
     #[arg(long, default_value = "gemini")]
     embedder: String,
-    #[arg(long, default_value = "sqlite")]
+    #[arg(long, default_value = "zvec-hybrid")]
     store: String,
     #[arg(long)]
     prompt_dir: Option<PathBuf>,
@@ -90,12 +103,30 @@ struct Cli {
     consolidate_briefs: bool,
     #[arg(long)]
     no_consolidate_briefs: bool,
+    /// Stop ingest after raw-turn embedding for provider/transport diagnostics.
+    #[arg(long)]
+    stop_after_raw_embed: bool,
+    /// Stage-isolated ingest diagnostic: raw-embed, distill, or raw-embed-distill.
+    #[arg(long, value_parser = ["raw-embed", "distill", "raw-embed-distill"])]
+    ingest_diagnostic: Option<String>,
     #[arg(long)]
     resume: bool,
     #[arg(long)]
     fresh: bool,
-    #[arg(long, default_value = "scripted")]
+    #[arg(long, default_value = "flash")]
     query_planner: Option<String>,
+    /// Enable Symbiotic Memory's generic evidence-ledger answer support stage for this named trial.
+    #[arg(long)]
+    evidence_ledger: bool,
+    /// Enable Symbiotic Memory's generic answer verifier pass for this named trial.
+    #[arg(long)]
+    answer_verifier: bool,
+    /// Enable Symbiotic Memory's generic answer gap retry pass for this named trial.
+    #[arg(long)]
+    answer_gap_retry: bool,
+    /// Enable Symbiotic Memory's answer gap retry only when the primary answer abstains.
+    #[arg(long)]
+    answer_unavailable_retry: bool,
     #[arg(long)]
     score: bool,
     #[arg(long)]
@@ -176,6 +207,93 @@ enum Command {
         #[arg(long)]
         jsonl: PathBuf,
     },
+    Analytics {
+        #[arg(long)]
+        run_root: PathBuf,
+    },
+    ProviderEmbedProbe {
+        #[arg(long)]
+        dataset: Option<PathBuf>,
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        #[arg(long, default_value = "stratified")]
+        sample: String,
+        #[arg(long)]
+        run_root: Option<PathBuf>,
+        #[arg(long, default_value = "qwen/qwen3-embedding-8b")]
+        model: String,
+        #[arg(long, default_value_t = 1024)]
+        dimensions: usize,
+        #[arg(long, default_value_t = 250)]
+        batch_size: usize,
+        #[arg(long, default_value_t = 32_000)]
+        batch_max_chars: usize,
+        /// Batch packing scope: source matches ingest; global is useful for theoretical transport probes.
+        #[arg(long, default_value = "source")]
+        pack_scope: String,
+        #[arg(long)]
+        concurrency: Option<usize>,
+        #[arg(long, default_value_t = 4)]
+        client_pool_size: usize,
+        /// Transport mode: default, h1, h2, h1-fresh, or h2-fresh.
+        #[arg(long, default_value = "h2")]
+        http_mode: String,
+        #[arg(long, default_value_t = 120)]
+        timeout_secs: u64,
+        #[arg(long, default_value_t = 15)]
+        connect_timeout_secs: u64,
+        #[arg(long, default_value_t = 64)]
+        pool_max_idle_per_host: usize,
+        #[arg(long)]
+        env_file: Option<PathBuf>,
+        #[arg(long, default_value = "https://openrouter.ai/api/v1")]
+        base_url: String,
+        #[arg(long)]
+        print_order: bool,
+    },
+    Trials {
+        #[command(subcommand)]
+        command: TrialsCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum TrialsCommand {
+    /// Derive typed trial stack/delta artifacts from existing benchmark run artifacts.
+    Derive {
+        /// Stable trial-stack id. Generated from the change title and run roots when omitted.
+        #[arg(long)]
+        stack_id: Option<String>,
+        #[arg(long)]
+        trial_run_root: PathBuf,
+        #[arg(long)]
+        comparison_run_root: PathBuf,
+        #[arg(long)]
+        original_baseline_run_root: Option<PathBuf>,
+        #[arg(long)]
+        output_dir: Option<PathBuf>,
+        /// Stable change id. Generated from the change title and run roots when omitted.
+        #[arg(long)]
+        change_id: Option<String>,
+        #[arg(long)]
+        change_title: String,
+        #[arg(long)]
+        reasoning: String,
+        /// Repeatable: `path[:line]|area|summary`.
+        #[arg(long)]
+        changed_file: Vec<String>,
+        /// Repeatable command or check used to validate this change.
+        #[arg(long)]
+        verification: Vec<String>,
+        /// Repeatable known risk or possible overgeneralization.
+        #[arg(long)]
+        risk: Vec<String>,
+        #[arg(long, default_value = "diagnostic_only")]
+        decision: String,
+        /// Replace existing rows for this trial run id.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -207,10 +325,957 @@ fn main() -> anyhow::Result<()> {
             ),
             Command::SummarizeQueueEvents { jsonl } => summarize_queue_events(jsonl),
             Command::SummarizeModelTraces { jsonl } => summarize_model_traces(jsonl),
+            Command::Analytics { run_root } => {
+                write_analytics_for_run(resolve_repo_path(&run_root))
+            }
+            Command::ProviderEmbedProbe {
+                dataset,
+                limit,
+                sample,
+                run_root,
+                model,
+                dimensions,
+                batch_size,
+                batch_max_chars,
+                pack_scope,
+                concurrency,
+                client_pool_size,
+                http_mode,
+                timeout_secs,
+                connect_timeout_secs,
+                pool_max_idle_per_host,
+                env_file,
+                base_url,
+                print_order,
+            } => provider_embed_probe(ProviderEmbedProbeCli {
+                dataset,
+                limit,
+                sample,
+                run_root,
+                model,
+                dimensions,
+                batch_size,
+                batch_max_chars,
+                pack_scope,
+                concurrency,
+                client_pool_size,
+                http_mode,
+                timeout_secs,
+                connect_timeout_secs,
+                pool_max_idle_per_host,
+                env_file,
+                base_url,
+                print_order,
+            }),
+            Command::Trials { command } => match command {
+                TrialsCommand::Derive {
+                    stack_id,
+                    trial_run_root,
+                    comparison_run_root,
+                    original_baseline_run_root,
+                    output_dir,
+                    change_id,
+                    change_title,
+                    reasoning,
+                    changed_file,
+                    verification,
+                    risk,
+                    decision,
+                    force,
+                } => derive_trials(TrialDeriveCli {
+                    stack_id,
+                    trial_run_root,
+                    comparison_run_root,
+                    original_baseline_run_root,
+                    output_dir,
+                    change_id,
+                    change_title,
+                    reasoning,
+                    changed_file,
+                    verification,
+                    risk,
+                    decision,
+                    force,
+                }),
+            },
         };
     }
 
     run_selected_benchmark(cli)
+}
+
+#[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
+struct ProviderEmbedProbeCli {
+    dataset: Option<PathBuf>,
+    limit: usize,
+    sample: String,
+    run_root: Option<PathBuf>,
+    model: String,
+    dimensions: usize,
+    batch_size: usize,
+    batch_max_chars: usize,
+    pack_scope: String,
+    concurrency: Option<usize>,
+    client_pool_size: usize,
+    http_mode: String,
+    timeout_secs: u64,
+    connect_timeout_secs: u64,
+    pool_max_idle_per_host: usize,
+    env_file: Option<PathBuf>,
+    base_url: String,
+    print_order: bool,
+}
+
+#[cfg(not(feature = "symbiotic-memory-adapter"))]
+fn provider_embed_probe(_cli: ProviderEmbedProbeCli) -> anyhow::Result<()> {
+    anyhow::bail!("provider-embed-probe requires --features symbiotic-memory-adapter")
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn provider_embed_probe(cli: ProviderEmbedProbeCli) -> anyhow::Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(provider_embed_probe_async(cli))
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+#[derive(Clone, Copy, Debug)]
+enum ProbeHttpMode {
+    Default,
+    H1,
+    H2,
+    H1Fresh,
+    H2Fresh,
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+impl ProbeHttpMode {
+    fn parse(raw: &str) -> anyhow::Result<Self> {
+        match raw {
+            "default" => Ok(Self::Default),
+            "h1" | "http1" => Ok(Self::H1),
+            "h2" | "http2" => Ok(Self::H2),
+            "h1-fresh" | "http1-fresh" => Ok(Self::H1Fresh),
+            "h2-fresh" | "http2-fresh" => Ok(Self::H2Fresh),
+            other => anyhow::bail!(
+                "unknown --http-mode {other}; use default, h1, h2, h1-fresh, or h2-fresh"
+            ),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::H1 => "h1",
+            Self::H2 => "h2",
+            Self::H1Fresh => "h1-fresh",
+            Self::H2Fresh => "h2-fresh",
+        }
+    }
+
+    fn fresh_client_per_request(self) -> bool {
+        matches!(self, Self::H1Fresh | Self::H2Fresh)
+    }
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+#[derive(Clone)]
+struct ProbeBatch {
+    batch_index: usize,
+    labels: Vec<String>,
+    texts: Vec<String>,
+    chars: usize,
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+#[derive(Clone)]
+struct ProbeRequest {
+    batch_index: usize,
+    batch_items: usize,
+    batch_chars: usize,
+    request_bytes: usize,
+    labels: Vec<String>,
+    body: Vec<u8>,
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+#[derive(Serialize)]
+struct ProbeRequestSample {
+    request_index: usize,
+    batch_index: usize,
+    batch_items: usize,
+    batch_chars: usize,
+    request_bytes: usize,
+    response_bytes: usize,
+    start_offset_ms: u128,
+    headers_ms: Option<u128>,
+    body_ms: Option<u128>,
+    decode_ms: Option<u128>,
+    total_ms: u128,
+    completion_offset_ms: u128,
+    http_version: Option<String>,
+    status: Option<u16>,
+    ok: bool,
+    error_class: Option<String>,
+    response_items: Option<usize>,
+    first_labels: Vec<String>,
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+#[derive(Serialize)]
+struct ProbeSummary {
+    run_root: String,
+    dataset: String,
+    limit: usize,
+    sample: String,
+    model: String,
+    dimensions: usize,
+    http_mode: String,
+    client_pool_size: usize,
+    concurrency: usize,
+    batch_size: usize,
+    batch_max_chars: usize,
+    pack_scope: String,
+    text_count: usize,
+    request_count: usize,
+    ok: usize,
+    failed: usize,
+    wall_ms: u128,
+    response_bytes_total: usize,
+    request_bytes_total: usize,
+    statuses: BTreeMap<String, usize>,
+    versions: BTreeMap<String, usize>,
+    errors: BTreeMap<String, usize>,
+    request_ms: PercentileSummary,
+    headers_ms: PercentileSummary,
+    body_ms: PercentileSummary,
+    decode_ms: PercentileSummary,
+    completion_gap_ms: PercentileSummary,
+    batch_items: PercentileSummary,
+    batch_chars: PercentileSummary,
+    request_bytes: PercentileSummary,
+    response_bytes: PercentileSummary,
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+#[derive(Serialize)]
+struct PercentileSummary {
+    min: u128,
+    p50: u128,
+    p80: u128,
+    p95: u128,
+    p98: u128,
+    max: u128,
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+async fn provider_embed_probe_async(cli: ProviderEmbedProbeCli) -> anyhow::Result<()> {
+    let mode = ProbeHttpMode::parse(&cli.http_mode)?;
+    let dataset = resolve_longmemeval_dataset(cli.dataset.clone())?;
+    let rows = symbiotic_mem_bench::symbiotic_memory_adapter::load_longmemeval(&dataset, None)?;
+    let rows = select_longmemeval_rows(rows, cli.limit, &cli.sample)?;
+    let groups = raw_embedding_text_groups(&rows);
+    let pack_scope = parse_probe_pack_scope(&cli.pack_scope)?;
+    let text_count = groups.iter().map(|(_, texts)| texts.len()).sum();
+    let batches = match pack_scope {
+        ProbePackScope::Source => {
+            let mut batches = Vec::new();
+            for (_source_id, texts) in groups {
+                batches.extend(probe_embedding_batches(
+                    texts,
+                    cli.batch_size.clamp(1, 250),
+                    cli.batch_max_chars,
+                ));
+            }
+            for (batch_index, batch) in batches.iter_mut().enumerate() {
+                batch.batch_index = batch_index;
+            }
+            batches
+        }
+        ProbePackScope::Global => {
+            let texts = groups
+                .into_iter()
+                .flat_map(|(_, texts)| texts)
+                .collect::<Vec<_>>();
+            probe_embedding_batches(texts, cli.batch_size.clamp(1, 250), cli.batch_max_chars)
+        }
+    };
+    let requests = probe_requests(&cli.model, cli.dimensions, batches)?;
+    let request_count = requests.len();
+    let concurrency = cli.concurrency.unwrap_or(request_count).max(1);
+    let run_root = cli
+        .run_root
+        .as_ref()
+        .map(|path| resolve_repo_path(path))
+        .unwrap_or_else(|| {
+            repo_root()
+                .join("runs")
+                .join(".tmp")
+                .join("provider-embed-probe")
+                .join(format!(
+                    "{}-{}-{}",
+                    mode.label(),
+                    cli.limit,
+                    Utc::now().format("%Y%m%d-%H%M%S")
+                ))
+        });
+    std::fs::create_dir_all(&run_root)?;
+
+    let api_key = openrouter_api_key(cli.env_file.as_ref())?;
+    let base_url = cli.base_url.trim_end_matches('/').to_string();
+    let clients = Arc::new(
+        (0..cli.client_pool_size.max(1))
+            .map(|_| {
+                build_probe_client(
+                    mode,
+                    cli.timeout_secs,
+                    cli.connect_timeout_secs,
+                    cli.pool_max_idle_per_host,
+                )
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?,
+    );
+    let started = Instant::now();
+    let samples = futures::stream::iter(requests.into_iter().enumerate())
+        .map(|(request_index, request)| {
+            let clients = clients.clone();
+            let api_key = api_key.clone();
+            let base_url = base_url.clone();
+            async move {
+                let fresh_client;
+                let client = if mode.fresh_client_per_request() {
+                    fresh_client = build_probe_client(
+                        mode,
+                        cli.timeout_secs,
+                        cli.connect_timeout_secs,
+                        cli.pool_max_idle_per_host,
+                    )?;
+                    &fresh_client
+                } else {
+                    &clients[request_index % clients.len()]
+                };
+                run_probe_request(client, &base_url, &api_key, request_index, request, started)
+                    .await
+            }
+        })
+        .buffer_unordered(concurrency)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let wall_ms = started.elapsed().as_millis();
+
+    let requests_jsonl = run_root.join("requests.jsonl");
+    let mut out = std::fs::File::create(&requests_jsonl)?;
+    let mut sorted_samples = samples;
+    sorted_samples.sort_by_key(|sample| sample.request_index);
+    for sample in &sorted_samples {
+        writeln!(out, "{}", serde_json::to_string(sample)?)?;
+    }
+    let summary = probe_summary(
+        &run_root,
+        &dataset,
+        &cli,
+        mode,
+        concurrency,
+        wall_ms,
+        text_count,
+        &sorted_samples,
+    );
+    let summary_json = run_root.join("summary.json");
+    std::fs::write(&summary_json, serde_json::to_string_pretty(&summary)?)?;
+
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    if cli.print_order {
+        let mut order = sorted_samples.iter().collect::<Vec<_>>();
+        order.sort_by_key(|sample| sample.completion_offset_ms);
+        for sample in order {
+            println!(
+                "done request={} start={}ms total={}ms complete={}ms items={} chars={} status={:?} err={:?}",
+                sample.request_index,
+                sample.start_offset_ms,
+                sample.total_ms,
+                sample.completion_offset_ms,
+                sample.batch_items,
+                sample.batch_chars,
+                sample.status,
+                sample.error_class
+            );
+        }
+    }
+    println!("wrote {}", portable_path(&requests_jsonl));
+    println!("wrote {}", portable_path(&summary_json));
+    Ok(())
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+#[derive(Clone, Copy)]
+enum ProbePackScope {
+    Source,
+    Global,
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn parse_probe_pack_scope(raw: &str) -> anyhow::Result<ProbePackScope> {
+    match raw {
+        "source" => Ok(ProbePackScope::Source),
+        "global" => Ok(ProbePackScope::Global),
+        other => anyhow::bail!("unknown --pack-scope {other}; use source or global"),
+    }
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn raw_embedding_text_groups(
+    rows: &[symbiotic_mem_bench::symbiotic_memory_adapter::LongMemEvalRecord],
+) -> Vec<(String, Vec<(String, String)>)> {
+    let max_input_tokens = symbiotic_memory::ingest::token_limit_from_env(
+        "SYMEM_EMBED_MAX_INPUT_TOKENS",
+        symbiotic_memory::ingest::DEFAULT_EMBED_MAX_INPUT_TOKENS,
+    );
+    rows.iter()
+        .map(|row| {
+            let source = symbiotic_mem_bench::symbiotic_memory_adapter::longmemeval_to_source(row);
+            let source_id = source.source_id.clone();
+            let texts = symbiotic_memory::ingest::source_turns_with_derived_units(&source)
+                .into_iter()
+                .flat_map(move |turn| {
+                    let formatted = symbiotic_memory::ingest::format_turn_for_embedding(&turn);
+                    if symbiotic_memory::ingest::approx_tokens(&formatted) > max_input_tokens {
+                        symbiotic_memory::ingest::split_turn_by_text_budget(&turn, max_input_tokens)
+                    } else {
+                        vec![turn]
+                    }
+                })
+                .map(|turn| {
+                    let label = format!("turn={}", turn.turn_id);
+                    let text = symbiotic_memory::ingest::format_turn_for_embedding(&turn);
+                    (label, text)
+                })
+                .collect::<Vec<_>>();
+            (source_id, texts)
+        })
+        .collect()
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn probe_embedding_batches(
+    mut inputs: Vec<(String, String)>,
+    max_items: usize,
+    max_chars: usize,
+) -> Vec<ProbeBatch> {
+    let max_items = max_items.max(1);
+    let max_chars = max_chars.max(1);
+    inputs.sort_by(|left, right| {
+        right
+            .1
+            .len()
+            .cmp(&left.1.len())
+            .then_with(|| left.0.cmp(&right.0))
+    });
+
+    let mut bins: Vec<(usize, Vec<(String, String)>)> = Vec::new();
+    for item in inputs {
+        let item_chars = item.1.len();
+        let mut item = Some(item);
+        for (batch_chars, batch) in &mut bins {
+            if batch.len() < max_items && batch_chars.saturating_add(item_chars) <= max_chars {
+                *batch_chars = batch_chars.saturating_add(item_chars);
+                batch.push(item.take().expect("probe item already packed"));
+                break;
+            }
+        }
+        if let Some(item) = item {
+            bins.push((item_chars, vec![item]));
+        }
+    }
+
+    bins.sort_by(|(left_chars, left_batch), (right_chars, right_batch)| {
+        left_chars
+            .cmp(right_chars)
+            .then_with(|| left_batch.len().cmp(&right_batch.len()))
+    });
+    bins.into_iter()
+        .enumerate()
+        .map(|(batch_index, (chars, items))| {
+            let (labels, texts): (Vec<_>, Vec<_>) = items.into_iter().unzip();
+            ProbeBatch {
+                batch_index,
+                labels,
+                texts,
+                chars,
+            }
+        })
+        .collect()
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn probe_requests(
+    model: &str,
+    dimensions: usize,
+    batches: Vec<ProbeBatch>,
+) -> anyhow::Result<Vec<ProbeRequest>> {
+    batches
+        .into_iter()
+        .map(|batch| {
+            let body = serde_json::to_vec(&json!({
+                "model": model,
+                "input": batch.texts,
+                "dimensions": dimensions,
+            }))?;
+            Ok(ProbeRequest {
+                batch_index: batch.batch_index,
+                batch_items: batch.labels.len(),
+                batch_chars: batch.chars,
+                request_bytes: body.len(),
+                labels: batch.labels,
+                body,
+            })
+        })
+        .collect()
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn openrouter_api_key(env_file: Option<&PathBuf>) -> anyhow::Result<String> {
+    if let Some(value) = std::env::var("OPENROUTER_API_KEY")
+        .ok()
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(value);
+    }
+    let env_file = env_file
+        .map(|path| resolve_repo_path(path))
+        .or_else(|| {
+            let path = repo_root().join(".env.test.local");
+            path.exists().then_some(path)
+        })
+        .context("OPENROUTER_API_KEY missing and no .env.test.local found")?;
+    let env = load_env_file(&env_file)?;
+    env.get("OPENROUTER_API_KEY")
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .with_context(|| format!("OPENROUTER_API_KEY missing in {}", env_file.display()))
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn build_probe_client(
+    mode: ProbeHttpMode,
+    timeout_secs: u64,
+    connect_timeout_secs: u64,
+    pool_max_idle_per_host: usize,
+) -> anyhow::Result<Client> {
+    let mut builder = Client::builder()
+        .timeout(Duration::from_secs(timeout_secs))
+        .connect_timeout(Duration::from_secs(connect_timeout_secs))
+        .pool_idle_timeout(Duration::from_secs(90))
+        .pool_max_idle_per_host(pool_max_idle_per_host)
+        .tcp_keepalive(Duration::from_secs(60));
+    match mode {
+        ProbeHttpMode::H1 | ProbeHttpMode::H1Fresh => {
+            builder = builder.http1_only();
+        }
+        ProbeHttpMode::H2 | ProbeHttpMode::H2Fresh => {}
+        ProbeHttpMode::Default => {}
+    }
+    Ok(builder.build()?)
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+async fn run_probe_request(
+    client: &Client,
+    base_url: &str,
+    api_key: &str,
+    request_index: usize,
+    request: ProbeRequest,
+    run_started: Instant,
+) -> anyhow::Result<ProbeRequestSample> {
+    let started = Instant::now();
+    let start_offset_ms = run_started.elapsed().as_millis();
+    let response = client
+        .post(format!("{base_url}/embeddings"))
+        .bearer_auth(api_key)
+        .header("content-type", "application/json")
+        .body(request.body)
+        .send()
+        .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(err) => {
+            let total_ms = started.elapsed().as_millis();
+            return Ok(ProbeRequestSample {
+                request_index,
+                batch_index: request.batch_index,
+                batch_items: request.batch_items,
+                batch_chars: request.batch_chars,
+                request_bytes: request.request_bytes,
+                response_bytes: 0,
+                start_offset_ms,
+                headers_ms: None,
+                body_ms: None,
+                decode_ms: None,
+                total_ms,
+                completion_offset_ms: start_offset_ms + total_ms,
+                http_version: None,
+                status: None,
+                ok: false,
+                error_class: Some(classify_reqwest_error(&err)),
+                response_items: None,
+                first_labels: request.labels.into_iter().take(3).collect(),
+            });
+        }
+    };
+    let headers_ms = started.elapsed().as_millis();
+    let version = response.version();
+    let status = response.status().as_u16();
+    let bytes = match response.bytes().await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            let total_ms = started.elapsed().as_millis();
+            return Ok(ProbeRequestSample {
+                request_index,
+                batch_index: request.batch_index,
+                batch_items: request.batch_items,
+                batch_chars: request.batch_chars,
+                request_bytes: request.request_bytes,
+                response_bytes: 0,
+                start_offset_ms,
+                headers_ms: Some(headers_ms),
+                body_ms: None,
+                decode_ms: None,
+                total_ms,
+                completion_offset_ms: start_offset_ms + total_ms,
+                http_version: Some(format!("{version:?}")),
+                status: Some(status),
+                ok: false,
+                error_class: Some(classify_reqwest_error(&err)),
+                response_items: None,
+                first_labels: request.labels.into_iter().take(3).collect(),
+            });
+        }
+    };
+    let body_ms = started.elapsed().as_millis();
+    let response_bytes = bytes.len();
+    let decoded = serde_json::from_slice::<Value>(&bytes);
+    let decode_ms = started.elapsed().as_millis();
+    let response_items = decoded
+        .as_ref()
+        .ok()
+        .and_then(|value| value.get("data"))
+        .and_then(Value::as_array)
+        .map(Vec::len);
+    let ok = (200..300).contains(&status) && decoded.is_ok();
+    Ok(ProbeRequestSample {
+        request_index,
+        batch_index: request.batch_index,
+        batch_items: request.batch_items,
+        batch_chars: request.batch_chars,
+        request_bytes: request.request_bytes,
+        response_bytes,
+        start_offset_ms,
+        headers_ms: Some(headers_ms),
+        body_ms: Some(body_ms),
+        decode_ms: Some(decode_ms),
+        total_ms: decode_ms,
+        completion_offset_ms: start_offset_ms + decode_ms,
+        http_version: Some(format!("{version:?}")),
+        status: Some(status),
+        ok,
+        error_class: if !(200..300).contains(&status) {
+            Some("http_status".to_string())
+        } else if decoded.is_err() {
+            Some("json_decode".to_string())
+        } else {
+            None
+        },
+        response_items,
+        first_labels: request.labels.into_iter().take(3).collect(),
+    })
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn classify_reqwest_error(err: &reqwest::Error) -> String {
+    if err.is_timeout() {
+        "timeout".to_string()
+    } else if err.is_connect() {
+        "connect".to_string()
+    } else if err.is_decode() {
+        "decode".to_string()
+    } else if err.is_body() {
+        "body".to_string()
+    } else if err.is_request() {
+        "request".to_string()
+    } else {
+        "other".to_string()
+    }
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn probe_summary(
+    run_root: &Path,
+    dataset: &Path,
+    cli: &ProviderEmbedProbeCli,
+    mode: ProbeHttpMode,
+    concurrency: usize,
+    wall_ms: u128,
+    text_count: usize,
+    samples: &[ProbeRequestSample],
+) -> ProbeSummary {
+    let mut statuses = BTreeMap::<String, usize>::new();
+    let mut versions = BTreeMap::<String, usize>::new();
+    let mut errors = BTreeMap::<String, usize>::new();
+    let mut completion_offsets = samples
+        .iter()
+        .map(|sample| sample.completion_offset_ms)
+        .collect::<Vec<_>>();
+    completion_offsets.sort_unstable();
+    let completion_gaps = completion_offsets
+        .windows(2)
+        .map(|window| window[1].saturating_sub(window[0]))
+        .collect::<Vec<_>>();
+    for sample in samples {
+        *statuses
+            .entry(
+                sample
+                    .status
+                    .map_or_else(|| "none".to_string(), |s| s.to_string()),
+            )
+            .or_default() += 1;
+        *versions
+            .entry(
+                sample
+                    .http_version
+                    .clone()
+                    .unwrap_or_else(|| "none".to_string()),
+            )
+            .or_default() += 1;
+        if let Some(error) = &sample.error_class {
+            *errors.entry(error.clone()).or_default() += 1;
+        }
+    }
+    ProbeSummary {
+        run_root: portable_path(run_root),
+        dataset: portable_path(dataset),
+        limit: cli.limit,
+        sample: cli.sample.clone(),
+        model: cli.model.clone(),
+        dimensions: cli.dimensions,
+        http_mode: mode.label().to_string(),
+        client_pool_size: cli.client_pool_size.max(1),
+        concurrency,
+        batch_size: cli.batch_size.clamp(1, 250),
+        batch_max_chars: cli.batch_max_chars,
+        pack_scope: cli.pack_scope.clone(),
+        text_count,
+        request_count: samples.len(),
+        ok: samples.iter().filter(|sample| sample.ok).count(),
+        failed: samples.iter().filter(|sample| !sample.ok).count(),
+        wall_ms,
+        response_bytes_total: samples.iter().map(|sample| sample.response_bytes).sum(),
+        request_bytes_total: samples.iter().map(|sample| sample.request_bytes).sum(),
+        statuses,
+        versions,
+        errors,
+        request_ms: summarize_u128(
+            samples
+                .iter()
+                .filter(|sample| sample.ok)
+                .map(|s| s.total_ms),
+        ),
+        headers_ms: summarize_u128(samples.iter().filter_map(|sample| sample.headers_ms)),
+        body_ms: summarize_u128(samples.iter().filter_map(|sample| sample.body_ms)),
+        decode_ms: summarize_u128(samples.iter().filter_map(|sample| sample.decode_ms)),
+        completion_gap_ms: summarize_u128(completion_gaps),
+        batch_items: summarize_u128(samples.iter().map(|sample| sample.batch_items as u128)),
+        batch_chars: summarize_u128(samples.iter().map(|sample| sample.batch_chars as u128)),
+        request_bytes: summarize_u128(samples.iter().map(|sample| sample.request_bytes as u128)),
+        response_bytes: summarize_u128(samples.iter().map(|sample| sample.response_bytes as u128)),
+    }
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn summarize_u128(values: impl IntoIterator<Item = u128>) -> PercentileSummary {
+    let mut values = values.into_iter().collect::<Vec<_>>();
+    values.sort_unstable();
+    PercentileSummary {
+        min: values.first().copied().unwrap_or(0),
+        p50: percentile_u128(&values, 0.50),
+        p80: percentile_u128(&values, 0.80),
+        p95: percentile_u128(&values, 0.95),
+        p98: percentile_u128(&values, 0.98),
+        max: values.last().copied().unwrap_or(0),
+    }
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn percentile_u128(sorted: &[u128], p: f64) -> u128 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let idx = ((sorted.len() - 1) as f64 * p).ceil() as usize;
+    sorted[idx.min(sorted.len() - 1)]
+}
+
+struct TrialDeriveCli {
+    stack_id: Option<String>,
+    trial_run_root: PathBuf,
+    comparison_run_root: PathBuf,
+    original_baseline_run_root: Option<PathBuf>,
+    output_dir: Option<PathBuf>,
+    change_id: Option<String>,
+    change_title: String,
+    reasoning: String,
+    changed_file: Vec<String>,
+    verification: Vec<String>,
+    risk: Vec<String>,
+    decision: String,
+    force: bool,
+}
+
+fn derive_trials(cli: TrialDeriveCli) -> anyhow::Result<()> {
+    let trial_run_root = resolve_repo_path(&cli.trial_run_root);
+    let comparison_run_root = resolve_repo_path(&cli.comparison_run_root);
+    let original_baseline_run_root = cli
+        .original_baseline_run_root
+        .as_ref()
+        .map(|path| resolve_repo_path(path));
+    let change_id = cli.change_id.unwrap_or_else(|| {
+        generated_trial_id(
+            &cli.change_title,
+            &trial_run_root,
+            &comparison_run_root,
+            original_baseline_run_root.as_deref(),
+        )
+    });
+    let stack_id = cli.stack_id.unwrap_or_else(|| format!("trial-{change_id}"));
+    let output_dir = cli
+        .output_dir
+        .map(|path| resolve_repo_path(&path))
+        .unwrap_or_else(|| {
+            repo_root()
+                .join("runs")
+                .join("analysis")
+                .join(stack_id.clone())
+        });
+    trials::derive_trial(trials::TrialDeriveOptions {
+        stack_id,
+        output_dir: output_dir.clone(),
+        trial_run_root,
+        comparison_run_root,
+        original_baseline_run_root,
+        change_id,
+        change_title: cli.change_title,
+        reasoning: cli.reasoning,
+        changed_files: cli
+            .changed_file
+            .iter()
+            .map(|raw| parse_changed_file(raw))
+            .collect::<anyhow::Result<Vec<_>>>()?,
+        verification: cli.verification,
+        risks: cli.risk,
+        decision: cli.decision,
+        force: cli.force,
+    })?;
+    println!("wrote trial artifacts to {}", portable_path(&output_dir));
+    Ok(())
+}
+
+fn generated_trial_id(
+    title: &str,
+    trial_run_root: &Path,
+    comparison_run_root: &Path,
+    original_baseline_run_root: Option<&Path>,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(title.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(portable_display_path(trial_run_root).as_bytes());
+    hasher.update(b"\n");
+    hasher.update(portable_display_path(comparison_run_root).as_bytes());
+    if let Some(root) = original_baseline_run_root {
+        hasher.update(b"\n");
+        hasher.update(portable_display_path(root).as_bytes());
+    }
+    let hash = short_hex(&hasher.finalize());
+    let slug = slugify_id(title);
+    format!("{slug}-{}", &hash[..10])
+}
+
+fn short_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn slugify_id(value: &str) -> String {
+    let mut out = String::new();
+    let mut last_dash = false;
+    for ch in value.chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+            last_dash = false;
+        } else if !last_dash && !out.is_empty() {
+            out.push('-');
+            last_dash = true;
+        }
+        if out.len() >= 56 {
+            break;
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    if out.is_empty() {
+        "trial".to_string()
+    } else {
+        out
+    }
+}
+
+fn portable_display_path(path: &Path) -> String {
+    path.strip_prefix(repo_root())
+        .unwrap_or(path)
+        .to_string_lossy()
+        .to_string()
+}
+
+fn parse_changed_file(raw: &str) -> anyhow::Result<trials::ChangedFileInput> {
+    let mut parts = raw.splitn(3, '|');
+    let path_and_line = parts.next().unwrap_or_default();
+    if path_and_line.trim().is_empty() {
+        anyhow::bail!("--changed-file requires a path");
+    }
+    let area = parts
+        .next()
+        .filter(|value| !value.trim().is_empty())
+        .map(ToOwned::to_owned);
+    let summary = parts
+        .next()
+        .filter(|value| !value.trim().is_empty())
+        .map(ToOwned::to_owned);
+    let (path, line) = parse_path_line(path_and_line)?;
+    Ok(trials::ChangedFileInput {
+        path,
+        line,
+        area,
+        summary,
+    })
+}
+
+fn parse_path_line(raw: &str) -> anyhow::Result<(String, Option<u64>)> {
+    let Some((path, line)) = raw.rsplit_once(':') else {
+        return Ok((raw.to_string(), None));
+    };
+    if path.is_empty() {
+        return Ok((raw.to_string(), None));
+    }
+    match line.parse::<u64>() {
+        Ok(line) => Ok((path.to_string(), Some(line))),
+        Err(_) => Ok((raw.to_string(), None)),
+    }
 }
 
 fn run_selected_benchmark(cli: Cli) -> anyhow::Result<()> {
@@ -292,11 +1357,7 @@ fn run_selected_benchmark(cli: Cli) -> anyhow::Result<()> {
             } else {
                 enabled_by_default("answerer", cli.answerer, cli.no_answerer)?
             };
-            let routed = if cli.smoke {
-                false
-            } else {
-                enabled_by_default("routed", cli.routed, cli.no_routed)?
-            };
+            let routed = false;
             let consolidate_briefs = if cli.smoke {
                 false
             } else {
@@ -305,6 +1366,11 @@ fn run_selected_benchmark(cli: Cli) -> anyhow::Result<()> {
                     cli.consolidate_briefs,
                     cli.no_consolidate_briefs,
                 )?
+            };
+            let query_planner = if cli.smoke {
+                Some("off".to_string())
+            } else {
+                cli.query_planner.clone()
             };
             let ephemeral_smoke_run = is_ephemeral_native_smoke_run(
                 &cli,
@@ -359,9 +1425,15 @@ fn run_selected_benchmark(cli: Cli) -> anyhow::Result<()> {
                 routed,
                 answer_only: cli.answer_only,
                 consolidate_briefs,
+                stop_after_raw_embed: cli.stop_after_raw_embed,
+                ingest_diagnostic: cli.ingest_diagnostic,
                 resume: cli.resume,
                 fresh,
-                query_planner: cli.query_planner,
+                query_planner,
+                evidence_ledger: cli.evidence_ledger,
+                answer_verifier: cli.answer_verifier,
+                answer_gap_retry: cli.answer_gap_retry,
+                answer_unavailable_retry: cli.answer_unavailable_retry,
                 score,
                 oracle: cli.oracle,
                 judge_workers: cli.judge_workers,
@@ -602,7 +1674,7 @@ fn import_benchmark_report(import: ImportedBenchmarkReport) -> anyhow::Result<()
         .as_ref()
         .map(|path| copy_artifact(&import.run_root, path, "model_traces", "model-traces.jsonl"))
         .transpose()?;
-    let artifact_manifest = imported_artifact_manifest(&import);
+    let imported_manifest = imported_artifact_manifest(&import);
     let run_params = imported_run_params(&import, total);
     write_run_params(&import.run_root, &run_params)?;
 
@@ -626,7 +1698,7 @@ fn import_benchmark_report(import: ImportedBenchmarkReport) -> anyhow::Result<()
                 "value": abstention_accuracy,
             }
         },
-        "artifact_manifest": artifact_manifest,
+        "artifact_manifest": imported_manifest,
         "artifacts": {
             "hypotheses": hypotheses_artifact,
             "scored": scored_artifact,
@@ -646,6 +1718,19 @@ fn import_benchmark_report(import: ImportedBenchmarkReport) -> anyhow::Result<()
     }
     if let Some(model_traces_artifact) = model_traces_artifact {
         report["artifacts"]["model_traces"] = model_traces_artifact;
+    }
+    if let Some(step_analytics_artifact) = write_step_analytics_artifact(&import.run_root)? {
+        report["artifacts"]["step_analytics"] = step_analytics_artifact;
+        let available = report["artifacts"]
+            .as_object()
+            .into_iter()
+            .flat_map(|object| object.keys().cloned())
+            .collect::<Vec<_>>();
+        report["artifact_manifest"] = artifact_manifest(
+            available.iter().map(String::as_str),
+            false,
+            "Imported artifact runs preserve copied benchmark artifacts only; native state folders such as raw, vaults, workflow, and provider-queue may be absent.",
+        );
     }
     enrich_report_with_cohort(&mut report, &import.run_root, &run_params);
     let out = import.run_root.join("benchmark-report.json");
@@ -845,6 +1930,19 @@ fn copy_artifact(
     Ok(summary)
 }
 
+fn write_step_analytics_artifact(run_root: &Path) -> anyhow::Result<Option<serde_json::Value>> {
+    let Some(analytics) = step_analytics::derive_run_step_analytics(run_root)? else {
+        return Ok(None);
+    };
+    let artifact_dir = run_root.join("artifacts");
+    std::fs::create_dir_all(&artifact_dir)?;
+    let path = artifact_dir.join("step-analytics.json");
+    std::fs::write(&path, serde_json::to_string_pretty(&analytics)? + "\n")?;
+    let mut summary = artifact_summary(&path)?;
+    summary["kind"] = json!("step_analytics");
+    Ok(Some(summary))
+}
+
 #[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
 fn write_native_provenance(
     run: &SymbioticMemoryCliRun,
@@ -1020,6 +2118,9 @@ fn write_native_benchmark_report(run: &SymbioticMemoryCliRun) -> anyhow::Result<
             );
         }
     }
+    if let Some(step_analytics_artifact) = write_step_analytics_artifact(&run.run_root)? {
+        artifacts.insert("step_analytics".to_string(), step_analytics_artifact);
+    }
     let artifact_manifest = artifact_manifest(
         artifacts.keys().map(String::as_str),
         true,
@@ -1169,7 +2270,11 @@ fn explore_runs_json(run_root: Option<PathBuf>) -> anyhow::Result<()> {
         None => vec![repo.join("runs"), repo.join("records")],
     };
     let records = registry::scan_registry(&roots, &repo);
-    let summaries: Vec<registry::RunSummary> = records.iter().map(registry::summarize).collect();
+    let trial_index = registry::scan_trial_markers(&repo);
+    let summaries: Vec<registry::RunSummary> = records
+        .iter()
+        .map(|record| registry::summarize_with_trials(record, &trial_index))
+        .collect();
     println!("{}", serde_json::to_string_pretty(&summaries)?);
     Ok(())
 }
@@ -1195,6 +2300,59 @@ fn explore_run(run_root: PathBuf) -> anyhow::Result<()> {
         .map_err(|err| anyhow::anyhow!("failed to read {}: {err}", params_path.display()))?;
     let params: serde_json::Value = serde_json::from_str(&raw)?;
     println!("{}", render_run_params(&params));
+    Ok(())
+}
+
+fn write_analytics_for_run(run_root: PathBuf) -> anyhow::Result<()> {
+    let Some(artifact) = write_step_analytics_artifact(&run_root)? else {
+        anyhow::bail!(
+            "cannot derive step analytics: no memory/model traces found under {}",
+            portable_path(&run_root)
+        );
+    };
+    update_report_with_step_analytics(&run_root, artifact.clone())?;
+    println!(
+        "wrote {}",
+        artifact
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("artifacts/step-analytics.json")
+    );
+    Ok(())
+}
+
+fn update_report_with_step_analytics(
+    run_root: &Path,
+    artifact: serde_json::Value,
+) -> anyhow::Result<()> {
+    let report_path = run_root.join("benchmark-report.json");
+    if !report_path.is_file() {
+        return Ok(());
+    }
+    let mut report = read_json(&report_path)?;
+    report["artifacts"]["step_analytics"] = artifact;
+    let available = report["artifacts"]
+        .as_object()
+        .into_iter()
+        .flat_map(|object| object.keys().cloned())
+        .collect::<Vec<_>>();
+    let native_state_available = report
+        .get("artifact_manifest")
+        .and_then(|manifest| manifest.get("native_state_available"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let native_state_note = report
+        .get("artifact_manifest")
+        .and_then(|manifest| manifest.get("native_state_note"))
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+        .unwrap_or_default();
+    report["artifact_manifest"] = artifact_manifest(
+        available.iter().map(String::as_str),
+        native_state_available,
+        &native_state_note,
+    );
+    std::fs::write(report_path, serde_json::to_string_pretty(&report)? + "\n")?;
     Ok(())
 }
 
@@ -1390,6 +2548,9 @@ fn render_params_body(params: &serde_json::Value) -> String {
         "answerer",
         "configured_models",
         "runtime_models",
+        "workflow",
+        "transport",
+        "thinking",
         "runtime_provider_note",
         "provider_queue_available",
         "workflow_queue_available",
@@ -1398,6 +2559,10 @@ fn render_params_body(params: &serde_json::Value) -> String {
         "answer_only",
         "consolidate_briefs",
         "query_planner",
+        "evidence_ledger",
+        "answer_verifier",
+        "answer_gap_retry",
+        "answer_unavailable_retry",
         "score_output",
         "score",
         "scorer",
@@ -1536,9 +2701,15 @@ struct SymbioticMemoryCliRun {
     routed: bool,
     answer_only: bool,
     consolidate_briefs: bool,
+    stop_after_raw_embed: bool,
+    ingest_diagnostic: Option<String>,
     resume: bool,
     fresh: bool,
     query_planner: Option<String>,
+    evidence_ledger: bool,
+    answer_verifier: bool,
+    answer_gap_retry: bool,
+    answer_unavailable_retry: bool,
     score: bool,
     oracle: Option<PathBuf>,
     judge_workers: usize,
@@ -1552,6 +2723,7 @@ struct SymbioticMemoryCliRun {
 }
 
 fn run_symbiotic_memory_longmemeval(run: SymbioticMemoryCliRun) -> anyhow::Result<()> {
+    validate_provider_role_selection(&run)?;
     #[cfg(not(feature = "symbiotic-memory-adapter"))]
     {
         let _ = run;
@@ -1565,8 +2737,28 @@ fn run_symbiotic_memory_longmemeval(run: SymbioticMemoryCliRun) -> anyhow::Resul
     }
 }
 
+fn validate_provider_role_selection(run: &SymbioticMemoryCliRun) -> anyhow::Result<()> {
+    if run.embedder == "gemini" {
+        let operator = run_env_value(run, "SYMEM_EMBED_OPERATOR");
+        let model = run_env_value(run, "SYMEM_EMBED_MODEL");
+        if operator.as_deref() == Some("openrouter")
+            || model.as_deref().is_some_and(|model| model.contains('/'))
+        {
+            anyhow::bail!(
+                "invalid embedding provider selection: --embedder gemini cannot use OpenRouter embedding settings (SYMEM_EMBED_OPERATOR={operator:?}, SYMEM_EMBED_MODEL={model:?}); pass --embedder openrouter for qwen embeddings"
+            );
+        }
+    }
+    Ok(())
+}
+
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow::Result<()> {
+    let _paid_run_lock = if requires_paid_provider_lock(&run) {
+        Some(PaidProviderRunLock::acquire(&run)?)
+    } else {
+        None
+    };
     if run.fresh && run.run_root.exists() {
         std::fs::remove_dir_all(&run.run_root)?;
     }
@@ -1574,14 +2766,35 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
     if run.answer_only && !run.resume {
         clear_answer_only_run_outputs(&run.run_root)?;
     }
-    write_run_params(&run.run_root, &symbiotic_memory_run_params(&run))?;
-
     let config = run
         .memory_config
         .as_ref()
         .map(symbiotic_memory::MemoryConfig::load_yaml)
         .transpose()?
         .unwrap_or_default();
+    let workflow_max_in_flight =
+        effective_workflow_max_in_flight_for_run(&run, Some(config.queue.workflow_max_in_flight));
+    write_run_params(&run.run_root, &symbiotic_memory_run_params(&run))?;
+    eprintln!(
+        "[longmemeval] launch settings workflow_max_in_flight={} embed_transport={} chat_transport={} thinking={}",
+        workflow_max_in_flight,
+        transport_label(
+            run_env_bool(
+                &run,
+                "SYMEM_OPENROUTER_HTTP_HTTP1_ONLY",
+                run.embedder == "openrouter"
+            ),
+            run_env_value(&run, "SYMEM_OPENROUTER_HTTP_CLIENT_POOL_SIZE").as_deref(),
+            run_env_value(&run, "SYMEM_OPENROUTER_HTTP_POOL_MAX_IDLE_PER_HOST").as_deref(),
+        ),
+        transport_label(
+            run_env_bool(&run, "SYMEM_CHAT_HTTP_HTTP1_ONLY", false),
+            run_env_value(&run, "SYMEM_CHAT_HTTP_CLIENT_POOL_SIZE").as_deref(),
+            run_env_value(&run, "SYMEM_CHAT_HTTP_POOL_MAX_IDLE_PER_HOST").as_deref(),
+        ),
+        thinking_summary_label(&run),
+    );
+
     let provider_runtime = ProviderRuntime::new(&run, &config)?;
     let rows = symbiotic_mem_bench::symbiotic_memory_adapter::load_longmemeval(&run.dataset, None)?;
     let rows = select_longmemeval_rows(rows, run.limit, &run.sample)?;
@@ -1601,29 +2814,50 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
     if let Some(query_planner) = &run.query_planner {
         policy.query_planner = match query_planner.as_str() {
             "off" => symbiotic_memory::QueryPlannerMode::Off,
-            "scripted" => symbiotic_memory::QueryPlannerMode::Scripted,
+            "compact" | "local" | "scripted" => symbiotic_memory::QueryPlannerMode::Compact,
             "flash" => symbiotic_memory::QueryPlannerMode::Flash,
             other => anyhow::bail!("unknown --query-planner value: {other}"),
         };
+    }
+    if run.evidence_ledger {
+        policy.evidence_ledger = true;
+    }
+    if run.answer_verifier {
+        policy.answer_verifier = true;
+    }
+    if run.answer_gap_retry {
+        policy.answer_gap_retry = true;
+    }
+    if run.answer_unavailable_retry {
+        policy.answer_unavailable_retry = true;
     }
     symbiotic_mem_bench::symbiotic_memory_adapter::clear_score_artifacts(
         &run.run_root,
         native_hypotheses_path(&run.run_root),
     )?;
-    let memory_trace_sink: Option<std::sync::Arc<dyn symbiotic_memory::MemoryTraceSink>> = Some(
-        std::sync::Arc::new(symbiotic_memory::JsonlMemoryTraceSink::open(
+    let memory_trace_writer =
+        std::sync::Arc::new(symbiotic_memory::AsyncJsonlMemoryTraceSink::open(
             run.run_root.join("traces").join("memory-events.jsonl"),
-        )?),
-    );
+        )?);
+    let memory_trace_sink: Option<std::sync::Arc<dyn symbiotic_memory::MemoryTraceSink>> =
+        Some(memory_trace_writer.clone());
     let runtime = tokio::runtime::Runtime::new()?;
     let hypotheses_path = native_hypotheses_path(&run.run_root);
     if let Some(parent) = hypotheses_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    if run.store == "sqlite" {
+    if matches!(run.store.as_str(), "sqlite" | "zvec" | "zvec-hybrid") {
+        let zvec_marker = run.run_root.join(".store-zvec");
+        let selected_backend = match run.store.as_str() {
+            "sqlite" => "sqlite",
+            "zvec" | "zvec-hybrid" => "zvec-hybrid",
+            _ => "zvec-hybrid",
+        };
+        std::fs::write(&zvec_marker, format!("{selected_backend}\n"))?;
         let embedder_factory = provider_runtime.embedding_factory(&run)?;
         let distiller_factory = provider_runtime.distiller_factory(&run)?;
         let answer_factory = provider_runtime.answer_factory(&run)?;
+        let answer_retry_factory = provider_runtime.answer_retry_factory(&run)?;
         let planner_factory = provider_runtime.query_planner_factory(&run)?;
         runtime.block_on(
             symbiotic_mem_bench::symbiotic_memory_adapter::run_longmemeval_sqlite_with_planner(
@@ -1633,15 +2867,18 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
                 move || distiller_factory(),
                 None,
                 move || answer_factory(),
+                answer_retry_factory,
                 planner_factory,
-                None,
+                Some(provider_runtime.debug_metadata(&run)),
                 memory_trace_sink,
                 policy,
                 hypotheses_path.clone(),
                 run.routed,
                 run.answer_only,
                 run.consolidate_briefs,
-                Some(config.queue.workflow_max_in_flight),
+                effective_stop_after_raw_embed(&run),
+                adapter_ingest_diagnostic_mode(&run),
+                Some(workflow_max_in_flight),
                 run.resume,
             ),
         )?;
@@ -1674,6 +2911,14 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
             &hypotheses_path,
             judge_factory,
         ))?;
+    }
+    provider_runtime.flush_trace_writers(Duration::from_secs(30));
+    if !memory_trace_writer.flush_blocking(Duration::from_secs(30)) {
+        eprintln!("[longmemeval] timed out waiting for memory trace writer to drain");
+    }
+    let dropped_memory_traces = memory_trace_writer.dropped();
+    if dropped_memory_traces > 0 {
+        eprintln!("[longmemeval] dropped {dropped_memory_traces} memory trace events");
     }
     write_native_benchmark_report(&run)?;
     if run.ephemeral_smoke_run {
@@ -1709,6 +2954,134 @@ impl symbiotic_memory::Distiller for DynDistiller {
         sink: &mut dyn symbiotic_memory::ingest::DistillSink,
     ) -> anyhow::Result<()> {
         self.0.distill_into(source, receipt, sink).await
+    }
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn requires_paid_provider_lock(run: &SymbioticMemoryCliRun) -> bool {
+    if run.ephemeral_smoke_run {
+        return false;
+    }
+    run.distiller == "llm"
+        || matches!(run.embedder.as_str(), "gemini" | "openrouter")
+        || run.score
+        || run.scorer.starts_with("queued-")
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+#[derive(Debug)]
+struct PaidProviderRunLock {
+    path: PathBuf,
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+impl PaidProviderRunLock {
+    fn acquire(run: &SymbioticMemoryCliRun) -> anyhow::Result<Self> {
+        let lock_root = repo_root().join("runs").join(".locks");
+        Self::acquire_in(lock_root, run)
+    }
+
+    fn acquire_in(lock_root: PathBuf, run: &SymbioticMemoryCliRun) -> anyhow::Result<Self> {
+        std::fs::create_dir_all(&lock_root)?;
+        let path = lock_root.join("paid-provider-run.lock");
+        match std::fs::create_dir(&path) {
+            Ok(()) => {
+                let metadata = json!({
+                    "schema": "membench.paid_provider_run_lock.v1",
+                    "pid": std::process::id(),
+                    "created_at": Utc::now().to_rfc3339(),
+                    "run_name": run.run_name,
+                    "run_root": portable_path(&run.run_root),
+                    "system": "symbiotic-memory",
+                    "benchmark": "long-mem-eval",
+                    "limit": run.limit,
+                    "score": run.score,
+                    "answer_only": run.answer_only,
+                    "distiller": run.distiller,
+                    "embedder": run.embedder,
+                    "scorer": run.scorer,
+                });
+                std::fs::write(
+                    path.join("owner.json"),
+                    serde_json::to_vec_pretty(&metadata)?,
+                )?;
+                Ok(Self { path })
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                let owner = path.join("owner.json");
+                if let Some(pid) = paid_provider_lock_owner_pid(&owner)?
+                    && !process_is_running(pid)
+                {
+                    std::fs::remove_dir_all(&path).with_context(|| {
+                        format!(
+                            "failed to remove stale paid provider run lock at {}",
+                            path.display()
+                        )
+                    })?;
+                    return Self::acquire_in(lock_root, run);
+                }
+                anyhow::bail!(
+                    "another paid provider-backed membench run appears to be active; refusing to start a second one. Inspect {} and remove {} only after confirming the recorded process is dead.",
+                    portable_path(&owner),
+                    portable_path(&path)
+                )
+            }
+            Err(err) => Err(err).with_context(|| {
+                format!(
+                    "failed to acquire paid provider run lock at {}",
+                    path.display()
+                )
+            }),
+        }
+    }
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn paid_provider_lock_owner_pid(owner: &Path) -> anyhow::Result<Option<u32>> {
+    if !owner.exists() {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(owner).with_context(|| {
+        format!(
+            "failed to read paid provider run lock owner {}",
+            owner.display()
+        )
+    })?;
+    let value: Value = serde_json::from_slice(&bytes).with_context(|| {
+        format!(
+            "failed to parse paid provider run lock owner {}",
+            owner.display()
+        )
+    })?;
+    let schema_ok =
+        value.get("schema").and_then(Value::as_str) == Some("membench.paid_provider_run_lock.v1");
+    if !schema_ok {
+        return Ok(None);
+    }
+    Ok(value
+        .get("pid")
+        .and_then(Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok()))
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn process_is_running(pid: u32) -> bool {
+    if pid == std::process::id() {
+        return true;
+    }
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+impl Drop for PaidProviderRunLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
     }
 }
 
@@ -1757,13 +3130,20 @@ fn prepare_answer_only_linked_vaults(
             );
         }
 
-        remove_path_if_exists(&target_vault)?;
         std::fs::create_dir_all(&target_vault)?;
+        remove_path_if_exists(&target_vault.join("manifest.json"))?;
+        remove_path_if_exists(&target_vault.join("memory.sqlite"))?;
+        remove_path_if_exists(&target_vault.join("archive"))?;
+        remove_path_if_exists(&target_vault.join("zvec-hybrid"))?;
         std::fs::copy(source_manifest, target_vault.join("manifest.json"))?;
         link_path(&source_memory, &target_vault.join("memory.sqlite"))?;
         let source_archive = source_vault.join("archive");
         if source_archive.exists() {
             link_path(&source_archive, &target_vault.join("archive"))?;
+        }
+        let source_zvec = source_vault.join("zvec-hybrid");
+        if source_zvec.exists() {
+            link_path(&source_zvec, &target_vault.join("zvec-hybrid"))?;
         }
     }
     Ok(())
@@ -1788,13 +3168,15 @@ fn link_path(source: &Path, target: &Path) -> anyhow::Result<()> {
 
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn remove_path_if_exists(path: &Path) -> anyhow::Result<()> {
-    if !path.exists() {
-        return Ok(());
-    }
-    if path.is_dir() {
-        std::fs::remove_dir_all(path)?;
-    } else {
-        std::fs::remove_file(path)?;
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
+            std::fs::remove_dir_all(path)?;
+        }
+        Ok(_) => {
+            std::fs::remove_file(path)?;
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
     }
     Ok(())
 }
@@ -1804,7 +3186,11 @@ struct ProviderRuntime {
     config: symbiotic_memory::MemoryConfig,
     queue_registry: symbiotic_memory::QueueRegistry,
     queue_store: Arc<dyn symbiotic_memory::QueueEventStore>,
+    queue_trace_writer: Arc<symbiotic_memory::AsyncJsonlQueueEventStore>,
+    provider_queue_dir: PathBuf,
+    queue_trace_path: PathBuf,
     response_cache_root: PathBuf,
+    request_debug: bool,
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
@@ -1818,18 +3204,209 @@ impl ProviderRuntime {
             .clone()
             .unwrap_or_else(|| run.run_root.join("provider-queue"));
         std::fs::create_dir_all(&provider_queue_dir)?;
-        let queue_store: Arc<dyn symbiotic_memory::QueueEventStore> =
-            Arc::new(symbiotic_memory::JsonlQueueEventStore::open(
-                provider_queue_dir.join("model-queue-traces.jsonl"),
-            )?);
+        let queue_trace_path = provider_queue_dir.join("model-queue-traces.jsonl");
+        let queue_trace_writer = Arc::new(symbiotic_memory::AsyncJsonlQueueEventStore::open(
+            &queue_trace_path,
+        )?);
+        let queue_store: Arc<dyn symbiotic_memory::QueueEventStore> = queue_trace_writer.clone();
         Ok(Self {
             config: config.clone(),
             queue_registry: symbiotic_memory::QueueRegistry::new(),
             queue_store,
+            queue_trace_writer,
+            provider_queue_dir: provider_queue_dir.clone(),
+            queue_trace_path,
             response_cache_root: run_env_value(run, "SYMEM_RESPONSE_CACHE_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| provider_queue_dir.join("responses")),
+            request_debug: run_env_bool(run, "SYMEM_PROVIDER_QUEUE_DEBUG_REQUESTS", false),
         })
+    }
+
+    fn flush_trace_writers(&self, timeout: Duration) {
+        if !self.queue_trace_writer.flush_blocking(timeout) {
+            eprintln!("[longmemeval] timed out waiting for provider queue trace writer to drain");
+        }
+        let dropped = self.queue_trace_writer.dropped();
+        if dropped > 0 {
+            eprintln!("[longmemeval] dropped {dropped} provider queue trace events");
+        }
+    }
+
+    fn debug_metadata(
+        &self,
+        run: &SymbioticMemoryCliRun,
+    ) -> symbiotic_mem_bench::symbiotic_memory_adapter::BenchDebugMetadata {
+        use symbiotic_mem_bench::symbiotic_memory_adapter::{
+            BenchDebugMetadata, BenchObservedCapabilities, BenchSupportedCapabilities,
+            BenchTraceCapabilities,
+        };
+
+        let mut trace_artifacts = BTreeMap::new();
+        trace_artifacts.insert(
+            "model_traces_jsonl".to_string(),
+            portable_path(&run.run_root.join("raw").join("model-traces.jsonl")),
+        );
+        trace_artifacts.insert(
+            "model_queue_traces_jsonl".to_string(),
+            portable_path(&self.queue_trace_path),
+        );
+        trace_artifacts.insert(
+            "provider_queue_dir".to_string(),
+            portable_path(&self.provider_queue_dir),
+        );
+        trace_artifacts.insert(
+            "response_cache_dir".to_string(),
+            portable_path(&self.response_cache_root),
+        );
+
+        BenchDebugMetadata {
+            capabilities: BenchTraceCapabilities {
+                supported: BenchSupportedCapabilities {
+                    reset: true,
+                    durable_state: true,
+                    ingest: true,
+                    flush: true,
+                    retrieve: true,
+                    answer: true,
+                    provider_injection: true,
+                    embedding_injection: true,
+                    raw_context: true,
+                    score_explain: true,
+                    retry_trace: true,
+                    token_usage: true,
+                    cache_usage: true,
+                    cost_usage: true,
+                    queue_events: true,
+                    state_export: true,
+                    native_stage_trace: true,
+                    wrapped_api_trace: false,
+                    provider_trace: true,
+                },
+                observed: BenchObservedCapabilities {
+                    ingest_input: true,
+                    ingest_output: true,
+                    model_calls: true,
+                    embedding_calls: true,
+                    retrieval_queries: true,
+                    retrieval_candidates: true,
+                    retrieval_scores: true,
+                    raw_context: true,
+                    answer_prompt: true,
+                    answer_output: true,
+                    errors: true,
+                    retries: true,
+                    token_usage: true,
+                    cache_usage: true,
+                    timing: true,
+                    cost: true,
+                    scoring_verdict: run.score,
+                    native_stage_trace: true,
+                    wrapped_api_trace: false,
+                    provider_trace: true,
+                    memory_stage_events: true,
+                },
+            },
+            models: self.model_debug_rows(run),
+            trace_artifacts,
+            pricing_table_version: Some("memory-config-queue-pricing".to_string()),
+        }
+    }
+
+    fn model_debug_rows(
+        &self,
+        run: &SymbioticMemoryCliRun,
+    ) -> Vec<symbiotic_mem_bench::symbiotic_memory_adapter::BenchModelDebug> {
+        ["DISTILL", "QUERY_PLANNER", "ANSWER", "EMBED", "JUDGE"]
+            .into_iter()
+            .filter_map(|role| self.model_debug_row(run, role))
+            .collect()
+    }
+
+    fn model_debug_row(
+        &self,
+        run: &SymbioticMemoryCliRun,
+        role: &str,
+    ) -> Option<symbiotic_mem_bench::symbiotic_memory_adapter::BenchModelDebug> {
+        use symbiotic_mem_bench::symbiotic_memory_adapter::BenchModelDebug;
+        let base = match role {
+            "DISTILL" => &self.config.providers.distill,
+            "QUERY_PLANNER" => &self.config.providers.query_planner,
+            "ANSWER" => &self.config.providers.answer,
+            "EMBED" => &self.config.providers.embedding,
+            "JUDGE" => return Some(self.judge_model_debug_row(run)),
+            _ => return None,
+        };
+        let adapter = if role == "EMBED" {
+            effective_embedding_adapter(run, base)
+        } else {
+            self.role_adapter(run, role, base)
+        };
+        let resolved = self.config.queue.resolve_provider_queue(&adapter);
+        let thinking = thinking_mode(run, role).or_else(|| default_thinking_mode(role));
+        let reasoning_effort = role_reasoning_effort(run, role);
+        let max_tokens = run_env_value(run, &format!("SYMEM_{role}_MAX_TOKENS"))
+            .and_then(|value| value.parse::<u32>().ok())
+            .or_else(|| default_role_max_tokens(role));
+        Some(BenchModelDebug {
+            label: role.to_ascii_lowercase(),
+            operation: adapter.operation,
+            operator: adapter.operator,
+            model: adapter.model,
+            queue_id: resolved.queue_id,
+            role_binding: format!(
+                "{}.{}",
+                if role == "JUDGE" { "bench" } else { "memory" },
+                role.to_ascii_lowercase()
+            ),
+            max_in_flight: resolved.max_in_flight,
+            lease_seconds: resolved.timeout_seconds,
+            retry_attempts: resolved.retry_attempts as u32,
+            logical_retry_attempts: resolved.logical_retry_attempts as u32,
+            retry_jitter_seconds: 0,
+            timeout_seconds: Some(resolved.timeout_seconds),
+            requests_per_minute: resolved.requests_per_minute,
+            input_units_per_minute: resolved.input_units_per_minute,
+            response_cache_enabled: true,
+            thinking: thinking_mode_label(thinking),
+            reasoning_effort,
+            max_tokens,
+        })
+    }
+
+    fn judge_model_debug_row(
+        &self,
+        run: &SymbioticMemoryCliRun,
+    ) -> symbiotic_mem_bench::symbiotic_memory_adapter::BenchModelDebug {
+        use symbiotic_mem_bench::symbiotic_memory_adapter::BenchModelDebug;
+        let judge = resolved_judge_params(run);
+        let adapter =
+            symbiotic_memory::ProviderAdapterConfig::new("chat", judge.operator, judge.model);
+        let resolved = self.config.queue.resolve_provider_queue(&adapter);
+        BenchModelDebug {
+            label: "judge".to_string(),
+            operation: adapter.operation,
+            operator: adapter.operator,
+            model: adapter.model,
+            queue_id: resolved.queue_id,
+            role_binding: "bench.judge".to_string(),
+            max_in_flight: resolved.max_in_flight,
+            lease_seconds: resolved.timeout_seconds,
+            retry_attempts: resolved.retry_attempts as u32,
+            logical_retry_attempts: resolved.logical_retry_attempts as u32,
+            retry_jitter_seconds: 0,
+            timeout_seconds: Some(resolved.timeout_seconds),
+            requests_per_minute: resolved.requests_per_minute,
+            input_units_per_minute: resolved.input_units_per_minute,
+            response_cache_enabled: true,
+            thinking: thinking_mode_label(
+                thinking_mode(run, "JUDGE").or_else(|| default_thinking_mode("JUDGE")),
+            ),
+            reasoning_effort: role_reasoning_effort(run, "JUDGE"),
+            max_tokens: run_env_value(run, "SYMEM_JUDGE_MAX_TOKENS")
+                .and_then(|value| value.parse::<u32>().ok())
+                .or_else(|| default_role_max_tokens("JUDGE")),
+        }
     }
 
     fn embedding_factory(
@@ -1838,12 +3415,14 @@ impl ProviderRuntime {
     ) -> anyhow::Result<Arc<dyn Fn() -> Arc<dyn symbiotic_memory::EmbeddingProvider> + Send + Sync>>
     {
         match run.embedder.as_str() {
-            "hash" => Ok(Arc::new(|| {
-                Arc::new(symbiotic_memory::CachedEmbeddingProvider::new(
-                    symbiotic_memory::HashEmbeddingProvider::default(),
-                    "hash-membench",
-                )) as Arc<dyn symbiotic_memory::EmbeddingProvider>
-            })),
+            "hash" => {
+                let shared: Arc<dyn symbiotic_memory::EmbeddingProvider> =
+                    Arc::new(symbiotic_memory::CachedEmbeddingProvider::new(
+                        symbiotic_memory::HashEmbeddingProvider::default(),
+                        "hash-membench",
+                    ));
+                Ok(Arc::new(move || shared.clone()))
+            }
             "gemini" => {
                 let adapter = self.role_adapter(run, "EMBED", &self.config.providers.embedding);
                 let queue = self.provider_queue(&adapter)?;
@@ -1852,30 +3431,105 @@ impl ProviderRuntime {
                 let dims = run_env_value(run, "SYMEM_EMBED_DIMS")
                     .and_then(|value| value.parse::<usize>().ok())
                     .unwrap_or(3072);
-                let max_chars = run_env_value(run, "SYMEM_EMBED_BATCH_MAX_CHARS")
-                    .or_else(|| run_env_value(run, "SYMEM_EMBED_MAX_CHARS"))
+                let max_chars = run_env_value(run, "SYMEM_EMBED_MAX_CHARS")
                     .and_then(|value| value.parse::<usize>().ok())
-                    .unwrap_or(12_000);
+                    .unwrap_or(32_000);
                 let transport = gemini_transport_mode(run);
-                Ok(Arc::new(move || {
-                    let provider = symbiotic_memory::providers::GeminiEmbeddingProvider::new(
-                        api_key.clone(),
-                        model.clone(),
-                        dims,
-                        symbiotic_memory::providers::GeminiEmbeddingTaskMode::Document,
-                    )
-                    .with_transport_mode(transport.clone())
-                    .with_max_chars(max_chars);
+                let timeout = self
+                    .config
+                    .queue
+                    .resolve_provider_queue(&adapter)
+                    .timeout_seconds;
+                let provider = symbiotic_memory::providers::GeminiEmbeddingProvider::new(
+                    api_key,
+                    model.clone(),
+                    dims,
+                    symbiotic_memory::providers::GeminiEmbeddingTaskMode::Document,
+                )
+                .with_transport_mode(transport)
+                .with_timeout_secs(timeout)
+                .with_max_chars(max_chars);
+                let shared: Arc<dyn symbiotic_memory::EmbeddingProvider> =
                     Arc::new(symbiotic_memory::CachedEmbeddingProvider::new(
-                        symbiotic_memory::providers::QueuedEmbeddingProvider::new(
-                            provider,
-                            queue.clone(),
-                        ),
+                        symbiotic_memory::providers::QueuedEmbeddingProvider::new(provider, queue),
                         format!("gemini:{model}:{dims}:document"),
-                    )) as Arc<dyn symbiotic_memory::EmbeddingProvider>
-                }))
+                    ));
+                Ok(Arc::new(move || shared.clone()))
             }
-            other => anyhow::bail!("unknown --embedder value: {other}; expected hash or gemini"),
+            "ollama" => {
+                let adapter = effective_embedding_adapter(run, &self.config.providers.embedding);
+                let model = adapter.model.clone();
+                let queue = self.provider_queue(&adapter)?;
+                let base_url = run_env_value(run, "SYMEM_EMBED_BASE_URL")
+                    .or_else(|| run_env_value(run, "SYMEM_OLLAMA_BASE_URL"))
+                    .unwrap_or_else(|| "http://127.0.0.1:11434".to_string());
+                let dims = run_env_value(run, "SYMEM_EMBED_DIMS")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(768);
+                let max_chars = run_env_value(run, "SYMEM_EMBED_MAX_CHARS")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(32_000);
+                let timeout = self
+                    .config
+                    .queue
+                    .resolve_provider_queue(&adapter)
+                    .timeout_seconds;
+                let provider = symbiotic_memory::providers::OllamaCompatibleEmbeddingProvider::new(
+                    base_url,
+                    model.clone(),
+                    dims,
+                )
+                .with_timeout_secs(timeout)
+                .with_max_chars(max_chars);
+                let shared: Arc<dyn symbiotic_memory::EmbeddingProvider> =
+                    Arc::new(symbiotic_memory::CachedEmbeddingProvider::new(
+                        symbiotic_memory::providers::QueuedEmbeddingProvider::new(provider, queue),
+                        format!("ollama:{model}:{dims}:document"),
+                    ));
+                Ok(Arc::new(move || shared.clone()))
+            }
+            "openrouter" => {
+                let adapter = effective_embedding_adapter(run, &self.config.providers.embedding);
+                let model = adapter.model.clone();
+                let queue = self.provider_queue(&adapter)?;
+                let api_key = required_env(run, "OPENROUTER_API_KEY")?;
+                let base_url = run_env_value(run, "SYMEM_EMBED_BASE_URL")
+                    .or_else(|| run_env_value(run, "SYMEM_OPENROUTER_BASE_URL"))
+                    .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
+                let dims = run_env_value(run, "SYMEM_EMBED_DIMS")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(0);
+                let requested_dims = run_env_value(run, "SYMEM_EMBED_REQUEST_DIMS")
+                    .and_then(|value| value.parse::<usize>().ok());
+                let max_chars = run_env_value(run, "SYMEM_EMBED_MAX_CHARS")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(32_000);
+                let timeout = self
+                    .config
+                    .queue
+                    .resolve_provider_queue(&adapter)
+                    .timeout_seconds;
+                let provider = symbiotic_memory::providers::OpenRouterEmbeddingProvider::new(
+                    base_url,
+                    api_key,
+                    model.clone(),
+                    dims,
+                )
+                .with_timeout_secs(timeout)
+                .with_requested_dims(requested_dims)
+                .with_max_chars(max_chars);
+                let shared: Arc<dyn symbiotic_memory::EmbeddingProvider> =
+                    Arc::new(symbiotic_memory::CachedEmbeddingProvider::new(
+                        symbiotic_memory::providers::QueuedEmbeddingProvider::new(provider, queue),
+                        format!("openrouter:{model}:{dims}:document"),
+                    ));
+                Ok(Arc::new(move || shared.clone()))
+            }
+            other => {
+                anyhow::bail!(
+                    "unknown --embedder value: {other}; expected hash, gemini, ollama, or openrouter"
+                )
+            }
         }
     }
 
@@ -1920,6 +3574,22 @@ impl ProviderRuntime {
         self.chat_factory(run, "ANSWER", &self.config.providers.answer)
     }
 
+    fn answer_retry_factory(
+        &self,
+        run: &SymbioticMemoryCliRun,
+    ) -> anyhow::Result<
+        Option<Arc<dyn Fn() -> Arc<dyn symbiotic_memory::ChatProvider> + Send + Sync>>,
+    > {
+        if !run.answerer || !role_has_override(run, "ANSWER_RETRY") {
+            return Ok(None);
+        }
+        Ok(Some(self.chat_factory(
+            run,
+            "ANSWER_RETRY",
+            &self.config.providers.answer,
+        )?))
+    }
+
     fn query_planner_factory(
         &self,
         run: &SymbioticMemoryCliRun,
@@ -1929,7 +3599,7 @@ impl ProviderRuntime {
         if run.query_planner.as_deref() != Some("flash") {
             return Ok(None);
         }
-        let adapter = self.role_adapter(run, "QUERY_PLANNER", &self.config.providers.distill);
+        let adapter = self.role_adapter(run, "QUERY_PLANNER", &self.config.providers.query_planner);
         let chat_factory = self.chat_factory(run, "QUERY_PLANNER", &adapter)?;
         Ok(Some(Arc::new(move || {
             Arc::new(symbiotic_memory::recall::ChatQueryPlanner::new(
@@ -1964,6 +3634,7 @@ impl ProviderRuntime {
             .or_else(|| run_env_value(run, "SYMEM_CHAT_BASE_URL"))
             .unwrap_or_else(|| match operator.as_str() {
                 "deepseek" => "https://api.deepseek.com".to_string(),
+                "openrouter" => "https://openrouter.ai/api/v1".to_string(),
                 _ => "https://api.openai.com/v1".to_string(),
             });
         let api_key = required_operator_api_key(run, &operator)?;
@@ -2033,18 +3704,23 @@ impl ProviderRuntime {
                 .with_request_timeout(Some(Duration::from_secs(resolved.timeout_seconds)))
                 .with_retry_attempts(resolved.retry_attempts)
                 .with_requests_per_minute(resolved.requests_per_minute)
+                .with_input_units_per_minute(resolved.input_units_per_minute)
                 .with_pricing(symbiotic_memory::providers::ProviderPricing {
                     input_token_micro_usd: resolved.pricing.input_token_micro_usd,
                     cached_input_token_micro_usd: resolved.pricing.cached_input_token_micro_usd,
                     output_token_micro_usd: resolved.pricing.output_token_micro_usd,
                 });
-        Ok(
+        let provider_queue =
             symbiotic_memory::providers::ProviderQueue::from_queue(provider_config, queue)
                 .with_response_cache(
                     self.response_cache_root
                         .join(sanitize_path_component(&resolved.queue_id)),
-                ),
-        )
+                );
+        if self.request_debug {
+            Ok(provider_queue.with_request_debug_root(self.provider_queue_dir.join("requests")))
+        } else {
+            Ok(provider_queue)
+        }
     }
 }
 
@@ -2085,6 +3761,7 @@ fn required_operator_api_key(
         "deepseek" => "DEEPSEEK_API_KEY",
         "openai" => "OPENAI_API_KEY",
         "gemini" => "GEMINI_API_KEY",
+        "openrouter" => "OPENROUTER_API_KEY",
         other => anyhow::bail!("unsupported chat operator `{other}`"),
     };
     required_env(run, key)
@@ -2129,6 +3806,9 @@ fn thinking_mode(
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn default_thinking_mode(role: &str) -> Option<symbiotic_memory::providers::ThinkingMode> {
     match role {
+        // The default LongMemEval answer pass favors short grounded answers.
+        // Keep DeepSeek thinking disabled unless an experiment explicitly opts in.
+        "ANSWER" | "QUERY_PLANNER" => Some(symbiotic_memory::providers::ThinkingMode::Disabled),
         // Judging is a strict YES/NO classification task. Keeping thinking off
         // avoids long hidden generations and makes cache/cost behavior stable.
         "JUDGE" => Some(symbiotic_memory::providers::ThinkingMode::Disabled),
@@ -2137,9 +3817,33 @@ fn default_thinking_mode(role: &str) -> Option<symbiotic_memory::providers::Thin
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
+fn role_has_override(run: &SymbioticMemoryCliRun, role: &str) -> bool {
+    [
+        "OPERATOR",
+        "MODEL",
+        "BASE_URL",
+        "THINKING",
+        "REASONING",
+        "REASONING_EFFORT",
+        "MAX_TOKENS",
+    ]
+    .iter()
+    .any(|suffix| run_env_value(run, &format!("SYMEM_{role}_{suffix}")).is_some())
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn thinking_mode_label(mode: Option<symbiotic_memory::providers::ThinkingMode>) -> Option<String> {
+    mode.map(|mode| match mode {
+        symbiotic_memory::providers::ThinkingMode::Enabled => "enabled".to_string(),
+        symbiotic_memory::providers::ThinkingMode::Disabled => "disabled".to_string(),
+    })
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
 fn default_role_max_tokens(role: &str) -> Option<u32> {
     match role {
         "JUDGE" => Some(64),
+        "QUERY_PLANNER" => Some(512),
         _ => None,
     }
 }
@@ -2722,11 +4426,93 @@ fn artifact_manifest<'a>(
     })
 }
 
+const DEFAULT_WORKFLOW_MAX_IN_FLIGHT: usize = 50;
+const ANSWER_ONLY_WORKFLOW_MAX_IN_FLIGHT: usize = 500;
+
+#[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
+#[cfg(test)]
+fn effective_workflow_max_in_flight(answer_only: bool, configured: Option<usize>) -> usize {
+    if answer_only {
+        ANSWER_ONLY_WORKFLOW_MAX_IN_FLIGHT
+    } else {
+        configured.unwrap_or(DEFAULT_WORKFLOW_MAX_IN_FLIGHT).max(1)
+    }
+}
+
+#[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
+fn workflow_max_in_flight_env_override(run: &SymbioticMemoryCliRun) -> Option<usize> {
+    run_env_value(run, "SYMEM_WORKFLOW_MAX_IN_FLIGHT").and_then(|value| value.parse().ok())
+}
+
+#[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
+fn effective_workflow_max_in_flight_for_run(
+    run: &SymbioticMemoryCliRun,
+    configured: Option<usize>,
+) -> usize {
+    if run.answer_only {
+        ANSWER_ONLY_WORKFLOW_MAX_IN_FLIGHT
+    } else {
+        workflow_max_in_flight_env_override(run)
+            .or(configured)
+            .unwrap_or(DEFAULT_WORKFLOW_MAX_IN_FLIGHT)
+            .max(1)
+    }
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn configured_workflow_max_in_flight(run: &SymbioticMemoryCliRun) -> Option<usize> {
+    let path = run.memory_config.as_ref()?;
+    symbiotic_memory::MemoryConfig::load_yaml(path)
+        .ok()
+        .map(|config| config.queue.workflow_max_in_flight)
+}
+
+#[cfg(not(feature = "symbiotic-memory-adapter"))]
+fn configured_workflow_max_in_flight(_run: &SymbioticMemoryCliRun) -> Option<usize> {
+    None
+}
+
 #[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
 fn symbiotic_memory_run_params(run: &SymbioticMemoryCliRun) -> serde_json::Value {
     let judge = resolved_judge_params(run);
     let configured_models = configured_provider_models(run);
     let runtime_models = runtime_provider_bindings(run, &judge);
+    let role_settings = resolved_role_settings(run, &judge);
+    let configured_workflow_max_in_flight = configured_workflow_max_in_flight(run);
+    let workflow_max_in_flight =
+        effective_workflow_max_in_flight_for_run(run, configured_workflow_max_in_flight);
+    let workflow_max_in_flight_env_override = workflow_max_in_flight_env_override(run);
+    let openrouter_http1_only = run_env_bool(
+        run,
+        "SYMEM_OPENROUTER_HTTP_HTTP1_ONLY",
+        run.embedder == "openrouter",
+    );
+    let openrouter_http_client_pool_size =
+        run_env_value(run, "SYMEM_OPENROUTER_HTTP_CLIENT_POOL_SIZE");
+    let openrouter_http_pool_max_idle_per_host =
+        run_env_value(run, "SYMEM_OPENROUTER_HTTP_POOL_MAX_IDLE_PER_HOST");
+    let openrouter_http_connect_timeout_secs =
+        run_env_value(run, "SYMEM_OPENROUTER_HTTP_CONNECT_TIMEOUT_SECS");
+    let openrouter_http_tcp_keepalive_secs =
+        run_env_value(run, "SYMEM_OPENROUTER_HTTP_TCP_KEEPALIVE_SECS");
+    let chat_http1_only = run_env_bool(run, "SYMEM_CHAT_HTTP_HTTP1_ONLY", false);
+    let chat_http_client_pool_size = run_env_value(run, "SYMEM_CHAT_HTTP_CLIENT_POOL_SIZE");
+    let chat_http_pool_max_idle_per_host =
+        run_env_value(run, "SYMEM_CHAT_HTTP_POOL_MAX_IDLE_PER_HOST");
+    let chat_http_connect_timeout_secs = run_env_value(run, "SYMEM_CHAT_HTTP_CONNECT_TIMEOUT_SECS");
+    let chat_http_tcp_keepalive_secs = run_env_value(run, "SYMEM_CHAT_HTTP_TCP_KEEPALIVE_SECS");
+    let chat_http_timeout_secs = run_env_value(run, "SYMEM_CHAT_HTTP_TIMEOUT_SECS");
+    let openrouter_embed_input_type = run_env_value(run, "SYMEM_OPENROUTER_EMBED_INPUT_TYPE")
+        .or_else(|| run_env_value(run, "SYMEM_EMBED_INPUT_TYPE"));
+    let openrouter_embed_send_default_input_type =
+        run_env_bool(run, "SYMEM_OPENROUTER_EMBED_SEND_DEFAULT_INPUT_TYPE", false);
+    let embed_batch_size = run_env_value(run, "SYMEM_EMBED_BATCH_SIZE");
+    let embed_batch_max_chars = run_env_value(run, "SYMEM_EMBED_BATCH_MAX_CHARS");
+    let embed_max_chars = run_env_value(run, "SYMEM_EMBED_MAX_CHARS");
+    let distill_thinking = role_thinking_label(run, "DISTILL");
+    let query_planner_thinking = role_thinking_label(run, "QUERY_PLANNER");
+    let answer_thinking = role_thinking_label(run, "ANSWER");
+    let judge_thinking = role_thinking_label(run, "JUDGE");
     let mut params = json!({
         "schema": "membench.run_params.v1",
         "system": "symbiotic-memory",
@@ -2751,9 +4537,15 @@ fn symbiotic_memory_run_params(run: &SymbioticMemoryCliRun) -> serde_json::Value
         "routed": run.routed,
         "answer_only": run.answer_only,
         "consolidate_briefs": run.consolidate_briefs,
+        "stop_after_raw_embed": effective_stop_after_raw_embed(run),
+        "ingest_diagnostic": effective_ingest_diagnostic(run),
         "resume": run.resume,
         "fresh": run.fresh,
         "query_planner": run.query_planner,
+        "evidence_ledger": run.evidence_ledger,
+        "answer_verifier": run.answer_verifier,
+        "answer_gap_retry": run.answer_gap_retry,
+        "answer_unavailable_retry": run.answer_unavailable_retry,
         "score_output": run.score,
         "score": run.score,
         "oracle": run.oracle.as_deref().map(portable_path),
@@ -2766,12 +4558,68 @@ fn symbiotic_memory_run_params(run: &SymbioticMemoryCliRun) -> serde_json::Value
         "env_file": run.env_file.as_deref().map(portable_path),
         "provider_queue_dir": run.provider_queue_dir.as_deref().map(portable_path),
         "source_vault_root": run.source_vault_root.as_deref().map(portable_path),
+        "workflow_max_in_flight": workflow_max_in_flight,
+        "configured_workflow_max_in_flight": configured_workflow_max_in_flight,
+        "workflow_max_in_flight_env_override": workflow_max_in_flight_env_override,
+        "workflow": {
+            "max_in_flight": workflow_max_in_flight,
+            "configured_max_in_flight": configured_workflow_max_in_flight,
+            "env_override": workflow_max_in_flight_env_override,
+        },
+        "ingest_stop_after_raw_embed": effective_stop_after_raw_embed(run),
+        "ingest_diagnostic_mode": effective_ingest_diagnostic(run),
+        "provider_queue_debug_requests": run_env_bool(run, "SYMEM_PROVIDER_QUEUE_DEBUG_REQUESTS", false),
+        "openrouter_http1_only": openrouter_http1_only,
+        "openrouter_http_client_pool_size": openrouter_http_client_pool_size,
+        "openrouter_http_pool_max_idle_per_host": openrouter_http_pool_max_idle_per_host,
+        "openrouter_http_connect_timeout_secs": openrouter_http_connect_timeout_secs,
+        "openrouter_http_tcp_keepalive_secs": openrouter_http_tcp_keepalive_secs,
+        "chat_http1_only": chat_http1_only,
+        "chat_http_client_pool_size": chat_http_client_pool_size,
+        "chat_http_pool_max_idle_per_host": chat_http_pool_max_idle_per_host,
+        "chat_http_connect_timeout_secs": chat_http_connect_timeout_secs,
+        "chat_http_tcp_keepalive_secs": chat_http_tcp_keepalive_secs,
+        "chat_http_timeout_secs": chat_http_timeout_secs,
+        "openrouter_embed_input_type": openrouter_embed_input_type,
+        "openrouter_embed_send_default_input_type": openrouter_embed_send_default_input_type,
+        "embed_batch_size": embed_batch_size,
+        "embed_batch_max_chars": embed_batch_max_chars,
+        "embed_max_chars": embed_max_chars,
+        "transport": {
+            "embed": {
+                "provider": "openrouter",
+                "http1_only": openrouter_http1_only,
+                "client_pool_size": openrouter_http_client_pool_size,
+                "pool_max_idle_per_host": openrouter_http_pool_max_idle_per_host,
+                "connect_timeout_secs": openrouter_http_connect_timeout_secs,
+                "tcp_keepalive_secs": openrouter_http_tcp_keepalive_secs,
+                "label": transport_label(openrouter_http1_only, openrouter_http_client_pool_size.as_deref(), openrouter_http_pool_max_idle_per_host.as_deref()),
+            },
+            "chat": {
+                "provider": "deepseek",
+                "http1_only": chat_http1_only,
+                "client_pool_size": chat_http_client_pool_size,
+                "pool_max_idle_per_host": chat_http_pool_max_idle_per_host,
+                "connect_timeout_secs": chat_http_connect_timeout_secs,
+                "tcp_keepalive_secs": chat_http_tcp_keepalive_secs,
+                "timeout_secs": chat_http_timeout_secs,
+                "label": transport_label(chat_http1_only, chat_http_client_pool_size.as_deref(), chat_http_pool_max_idle_per_host.as_deref()),
+            }
+        },
+        "thinking": {
+            "distill": distill_thinking,
+            "query_planner": query_planner_thinking,
+            "answer": answer_thinking,
+            "judge": judge_thinking,
+            "summary": thinking_summary_label(run),
+        },
     });
     let object = params
         .as_object_mut()
         .expect("run params JSON must be an object");
     object.insert("configured_models".to_string(), configured_models);
     object.insert("runtime_models".to_string(), runtime_models);
+    object.insert("role_settings".to_string(), role_settings);
     object.insert(
         "runtime_provider_note".to_string(),
         json!(
@@ -2791,6 +4639,53 @@ fn symbiotic_memory_run_params(run: &SymbioticMemoryCliRun) -> serde_json::Value
 }
 
 #[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
+fn role_thinking_label(run: &SymbioticMemoryCliRun, role: &str) -> Option<String> {
+    fallback_thinking_mode_label(run, role).or_else(|| {
+        #[cfg(feature = "symbiotic-memory-adapter")]
+        {
+            thinking_mode_label(default_thinking_mode(role))
+        }
+        #[cfg(not(feature = "symbiotic-memory-adapter"))]
+        {
+            let _ = role;
+            None
+        }
+    })
+}
+
+#[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
+fn thinking_summary_label(run: &SymbioticMemoryCliRun) -> String {
+    let roles = ["DISTILL", "QUERY_PLANNER", "ANSWER", "JUDGE"];
+    if roles
+        .iter()
+        .all(|role| role_thinking_label(run, role).as_deref() == Some("disabled"))
+    {
+        "nonthinking".to_string()
+    } else {
+        roles
+            .iter()
+            .filter_map(|role| {
+                role_thinking_label(run, role).map(|value| {
+                    format!("{}:{}", role.to_ascii_lowercase().replace('_', "-"), value)
+                })
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
+#[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
+fn transport_label(http1_only: bool, pool: Option<&str>, idle: Option<&str>) -> String {
+    let protocol = if http1_only { "h1" } else { "h2" };
+    match (pool, idle) {
+        (Some(pool), Some(idle)) => format!("{protocol} {pool}x{idle}"),
+        (Some(pool), None) => format!("{protocol} {pool}x?"),
+        (None, Some(idle)) => format!("{protocol} ?x{idle}"),
+        (None, None) => protocol.to_string(),
+    }
+}
+
+#[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
 fn configured_provider_models(run: &SymbioticMemoryCliRun) -> serde_json::Value {
     #[cfg(feature = "symbiotic-memory-adapter")]
     {
@@ -2798,9 +4693,10 @@ fn configured_provider_models(run: &SymbioticMemoryCliRun) -> serde_json::Value 
             && let Ok(config) = symbiotic_memory::MemoryConfig::load_yaml(path)
         {
             return json!({
-                "distill": provider_binding(&config.providers.distill),
-                "answer": provider_binding(&config.providers.answer),
-                "embed": provider_binding(&config.providers.embedding),
+                "distill": provider_binding_for_role(run, "DISTILL", &config.providers.distill),
+                "query_planner": provider_binding_for_role(run, "QUERY_PLANNER", &config.providers.query_planner),
+                "answer": provider_binding_for_role(run, "ANSWER", &config.providers.answer),
+                "embed": provider_binding_for_role(run, "EMBED", &effective_embedding_adapter(run, &config.providers.embedding)),
                 "chat_provider": config.providers.chat_provider,
                 "chat_model": config.providers.chat_model,
                 "embedding_provider": config.providers.embedding_provider,
@@ -2809,10 +4705,46 @@ fn configured_provider_models(run: &SymbioticMemoryCliRun) -> serde_json::Value 
             });
         }
     }
+    let answer = if run.answerer {
+        "configured-by-adapter"
+    } else {
+        "disabled"
+    };
     json!({
-        "distill": run.distiller,
-        "answer": if run.answerer { "configured-by-adapter" } else { "disabled" },
-        "embed": run.embedder,
+        "distill": fallback_provider_binding_for_role(run, "DISTILL", "chat", "deepseek", "deepseek-v4-flash"),
+        "query_planner": fallback_provider_binding_for_role(run, "QUERY_PLANNER", "chat", "deepseek", "deepseek-v4-flash"),
+        "answer": if run.answerer {
+            fallback_provider_binding_for_role(run, "ANSWER", "chat", "deepseek", answer)
+        } else {
+            json!(answer)
+        },
+        "embed": if run.embedder == "ollama" {
+            fallback_provider_binding_for_role(run, "EMBED", "embedding", "ollama", "nomic-embed-text")
+        } else {
+            fallback_provider_binding_for_role(run, "EMBED", "embedding", "gemini", "gemini-embedding-2")
+        },
+    })
+}
+
+#[cfg_attr(feature = "symbiotic-memory-adapter", allow(dead_code))]
+fn fallback_provider_binding_for_role(
+    run: &SymbioticMemoryCliRun,
+    role: &str,
+    operation: &str,
+    default_operator: &str,
+    default_model: &str,
+) -> serde_json::Value {
+    let operator = run_env_value(run, &format!("SYMEM_{role}_OPERATOR"))
+        .unwrap_or_else(|| default_operator.to_string());
+    let model = run_env_value(run, &format!("SYMEM_{role}_MODEL"))
+        .unwrap_or_else(|| default_model.to_string());
+    let queue_id = run_env_value(run, &format!("SYMEM_{role}_QUEUE_ID"))
+        .unwrap_or_else(|| format!("{operation}:{operator}:{model}"));
+    json!({
+        "operation": operation,
+        "operator": operator,
+        "model": model,
+        "queue_id": queue_id,
     })
 }
 
@@ -2830,6 +4762,70 @@ fn provider_binding(adapter: &symbiotic_memory::ProviderAdapterConfig) -> serde_
     })
 }
 
+fn queued_embedder(run: &SymbioticMemoryCliRun) -> bool {
+    matches!(run.embedder.as_str(), "gemini" | "ollama" | "openrouter")
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn effective_embedding_adapter(
+    run: &SymbioticMemoryCliRun,
+    base: &symbiotic_memory::ProviderAdapterConfig,
+) -> symbiotic_memory::ProviderAdapterConfig {
+    if matches!(run.embedder.as_str(), "ollama" | "openrouter") {
+        let default_operator = if run.embedder == "openrouter" {
+            "openrouter"
+        } else {
+            "ollama"
+        };
+        let operator = run_env_value(run, "SYMEM_EMBED_OPERATOR")
+            .unwrap_or_else(|| default_operator.to_string());
+        let model = run_env_value(run, "SYMEM_EMBED_MODEL")
+            .or_else(|| run_env_value(run, "SYMEM_OLLAMA_EMBED_MODEL"))
+            .unwrap_or_else(|| {
+                if run.embedder == "openrouter" {
+                    "openai/text-embedding-3-small".to_string()
+                } else {
+                    "nomic-embed-text".to_string()
+                }
+            });
+        let mut adapter =
+            symbiotic_memory::ProviderAdapterConfig::new("embedding", operator, model);
+        if let Some(queue_id) = run_env_value(run, "SYMEM_EMBED_QUEUE_ID") {
+            adapter.queue_id = Some(queue_id);
+        }
+        return adapter;
+    }
+    provider_adapter_for_role(run, "EMBED", base)
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn provider_binding_for_role(
+    run: &SymbioticMemoryCliRun,
+    role: &str,
+    base: &symbiotic_memory::ProviderAdapterConfig,
+) -> serde_json::Value {
+    provider_binding(&provider_adapter_for_role(run, role, base))
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn provider_adapter_for_role(
+    run: &SymbioticMemoryCliRun,
+    role: &str,
+    base: &symbiotic_memory::ProviderAdapterConfig,
+) -> symbiotic_memory::ProviderAdapterConfig {
+    let mut adapter = base.clone();
+    if let Some(operator) = run_env_value(run, &format!("SYMEM_{role}_OPERATOR")) {
+        adapter.operator = operator;
+    }
+    if let Some(model) = run_env_value(run, &format!("SYMEM_{role}_MODEL")) {
+        adapter.model = model;
+    }
+    if let Some(queue_id) = run_env_value(run, &format!("SYMEM_{role}_QUEUE_ID")) {
+        adapter.queue_id = Some(queue_id);
+    }
+    adapter
+}
+
 #[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
 fn runtime_provider_bindings(
     run: &SymbioticMemoryCliRun,
@@ -2839,30 +4835,34 @@ fn runtime_provider_bindings(
     if let Some(path) = &run.memory_config
         && let Ok(config) = symbiotic_memory::MemoryConfig::load_yaml(path)
     {
+        let distill = provider_adapter_for_role(run, "DISTILL", &config.providers.distill);
+        let embed = effective_embedding_adapter(run, &config.providers.embedding);
+        let answer = provider_adapter_for_role(run, "ANSWER", &config.providers.answer);
+        let query_planner =
+            provider_adapter_for_role(run, "QUERY_PLANNER", &config.providers.query_planner);
         return json!({
             "distill": if run.distiller == "llm" {
-                format!(
-                    "queued:{}:{}",
-                    config.providers.distill.operator, config.providers.distill.model
-                )
+                format!("queued:{}:{}", distill.operator, distill.model)
             } else {
                 "local:heuristic-v1".to_string()
             },
-            "embed": if run.embedder == "gemini" {
-                format!(
-                    "queued:{}:{}",
-                    config.providers.embedding.operator, config.providers.embedding.model
-                )
+            "embed": if queued_embedder(run) {
+                format!("queued:{}:{}", embed.operator, embed.model)
             } else {
                 "local:hash-embedding-v1".to_string()
             },
             "answer": if run.answerer {
-                format!(
-                    "queued:{}:{}",
-                    config.providers.answer.operator, config.providers.answer.model
-                )
+                format!("queued:{}:{}", answer.operator, answer.model)
             } else {
                 "local:extractive-answer".to_string()
+            },
+            "query_planner": if run.query_planner.as_deref() == Some("flash") {
+                format!("queued:{}:{}", query_planner.operator, query_planner.model)
+            } else {
+                format!(
+                    "local:{}",
+                    run.query_planner.as_deref().unwrap_or("config-default")
+                )
             },
             "judge": if run.score {
                 format!("queued:{}:{}", judge.operator, judge.model)
@@ -2871,13 +4871,29 @@ fn runtime_provider_bindings(
             },
         });
     }
+    let distill_binding =
+        runtime_env_binding(run, "DISTILL").unwrap_or_else(|| "configured-chat".to_string());
+    let embed_binding =
+        runtime_env_binding(run, "EMBED").unwrap_or_else(|| "configured-embedding".to_string());
+    let answer_binding =
+        runtime_env_binding(run, "ANSWER").unwrap_or_else(|| "configured-chat".to_string());
+    let query_binding =
+        runtime_env_binding(run, "QUERY_PLANNER").unwrap_or_else(|| "configured-chat".to_string());
     json!({
-        "distill": if run.distiller == "llm" { "queued:configured-chat" } else { "local:heuristic-v1" },
-        "embed": if run.embedder == "gemini" { "queued:configured-embedding" } else { "local:hash-embedding-v1" },
+        "distill": if run.distiller == "llm" { format!("queued:{distill_binding}") } else { "local:heuristic-v1".to_string() },
+        "embed": if queued_embedder(run) { format!("queued:{embed_binding}") } else { "local:hash-embedding-v1".to_string() },
         "answer": if run.answerer {
-            "queued:configured-chat"
+            format!("queued:{answer_binding}")
         } else {
-            "local:extractive-answer"
+            "local:extractive-answer".to_string()
+        },
+        "query_planner": if run.query_planner.as_deref() == Some("flash") {
+            format!("queued:{query_binding}")
+        } else {
+            format!(
+                "local:{}",
+                run.query_planner.as_deref().unwrap_or("config-default")
+            )
         },
         "judge": if run.score {
             format!("queued:{}:{}", judge.operator, judge.model)
@@ -2885,6 +4901,117 @@ fn runtime_provider_bindings(
             "not-run".to_string()
         },
     })
+}
+
+#[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
+fn resolved_role_settings(
+    run: &SymbioticMemoryCliRun,
+    judge: &ResolvedJudgeParams,
+) -> serde_json::Value {
+    #[cfg(not(feature = "symbiotic-memory-adapter"))]
+    let _ = judge;
+
+    #[cfg(feature = "symbiotic-memory-adapter")]
+    if let Some(path) = &run.memory_config
+        && let Ok(config) = symbiotic_memory::MemoryConfig::load_yaml(path)
+    {
+        let distill = provider_adapter_for_role(run, "DISTILL", &config.providers.distill);
+        let embed = effective_embedding_adapter(run, &config.providers.embedding);
+        let answer = provider_adapter_for_role(run, "ANSWER", &config.providers.answer);
+        let query_planner =
+            provider_adapter_for_role(run, "QUERY_PLANNER", &config.providers.query_planner);
+        let judge_adapter = symbiotic_memory::ProviderAdapterConfig::new(
+            "chat",
+            judge.operator.clone(),
+            judge.model.clone(),
+        );
+        return json!({
+            "distill": role_setting_for_adapter(run, "DISTILL", &config, &distill, run.distiller == "llm"),
+            "embed": role_setting_for_adapter(run, "EMBED", &config, &embed, queued_embedder(run)),
+            "answer": role_setting_for_adapter(run, "ANSWER", &config, &answer, run.answerer),
+            "query_planner": role_setting_for_adapter(run, "QUERY_PLANNER", &config, &query_planner, run.query_planner.as_deref() == Some("flash")),
+            "judge": role_setting_for_adapter(run, "JUDGE", &config, &judge_adapter, run.score),
+        });
+    }
+    json!({
+        "distill": fallback_role_setting(run, "DISTILL", run.distiller == "llm"),
+        "embed": fallback_role_setting(run, "EMBED", queued_embedder(run)),
+        "answer": fallback_role_setting(run, "ANSWER", run.answerer),
+        "query_planner": fallback_role_setting(run, "QUERY_PLANNER", run.query_planner.as_deref() == Some("flash")),
+        "judge": fallback_role_setting(run, "JUDGE", run.score),
+    })
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn role_setting_for_adapter(
+    run: &SymbioticMemoryCliRun,
+    role: &str,
+    config: &symbiotic_memory::MemoryConfig,
+    adapter: &symbiotic_memory::ProviderAdapterConfig,
+    active: bool,
+) -> serde_json::Value {
+    let resolved = config.queue.resolve_provider_queue(adapter);
+    json!({
+        "active": active,
+        "operation": adapter.operation,
+        "operator": adapter.operator,
+        "model": adapter.model,
+        "queue_id": resolved.queue_id,
+        "max_in_flight": resolved.max_in_flight,
+        "requests_per_minute": resolved.requests_per_minute,
+        "input_units_per_minute": resolved.input_units_per_minute,
+        "timeout_seconds": resolved.timeout_seconds,
+        "retry_attempts": resolved.retry_attempts,
+        "logical_retry_attempts": resolved.logical_retry_attempts,
+        "thinking": thinking_mode_label(thinking_mode(run, role).or_else(|| default_thinking_mode(role))),
+        "reasoning_effort": role_reasoning_effort(run, role),
+        "max_tokens": run_env_value(run, &format!("SYMEM_{role}_MAX_TOKENS"))
+            .and_then(|value| value.parse::<u32>().ok())
+            .or_else(|| default_role_max_tokens(role)),
+    })
+}
+
+fn fallback_role_setting(
+    run: &SymbioticMemoryCliRun,
+    role: &str,
+    active: bool,
+) -> serde_json::Value {
+    json!({
+        "active": active,
+        "thinking": fallback_thinking_mode_label(run, role),
+        "reasoning_effort": fallback_role_reasoning_effort(run, role),
+        "max_tokens": run_env_value(run, &format!("SYMEM_{role}_MAX_TOKENS"))
+            .and_then(|value| value.parse::<u32>().ok()),
+    })
+}
+
+fn fallback_thinking_mode_label(run: &SymbioticMemoryCliRun, role: &str) -> Option<String> {
+    let value = run_env_value(run, &format!("SYMEM_{role}_THINKING"))
+        .or_else(|| run_env_value(run, &format!("SYMEM_{role}_REASONING")))?;
+    Some(match value.to_ascii_lowercase().as_str() {
+        "off" | "disabled" | "disable" | "false" | "0" => "disabled".to_string(),
+        "on" | "enabled" | "enable" | "true" | "1" | "high" | "max" => "enabled".to_string(),
+        _ => value,
+    })
+}
+
+fn fallback_role_reasoning_effort(run: &SymbioticMemoryCliRun, role: &str) -> Option<String> {
+    run_env_value(run, &format!("SYMEM_{role}_REASONING_EFFORT")).or_else(|| {
+        let value = run_env_value(run, &format!("SYMEM_{role}_THINKING"))?.to_ascii_lowercase();
+        matches!(value.as_str(), "high" | "max").then_some(value)
+    })
+}
+
+#[cfg_attr(feature = "symbiotic-memory-adapter", allow(dead_code))]
+fn runtime_env_binding(run: &SymbioticMemoryCliRun, role: &str) -> Option<String> {
+    let operator = run_env_value(run, &format!("SYMEM_{role}_OPERATOR"));
+    let model = run_env_value(run, &format!("SYMEM_{role}_MODEL"));
+    match (operator, model) {
+        (Some(operator), Some(model)) => Some(format!("{operator}:{model}")),
+        (Some(operator), None) => Some(format!("{operator}:configured-model")),
+        (None, Some(model)) => Some(format!("configured-operator:{model}")),
+        (None, None) => None,
+    }
 }
 
 #[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
@@ -2918,6 +5045,52 @@ fn run_env_value(run: &SymbioticMemoryCliRun, key: &str) -> Option<String> {
         .ok()?
         .into_iter()
         .find_map(|(env_key, value)| (env_key == key && !value.is_empty()).then_some(value))
+}
+
+#[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
+fn run_env_bool(run: &SymbioticMemoryCliRun, key: &str, default: bool) -> bool {
+    run_env_value(run, key)
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(default)
+}
+
+fn effective_stop_after_raw_embed(run: &SymbioticMemoryCliRun) -> bool {
+    run.stop_after_raw_embed || run_env_bool(run, "SYMEM_INGEST_STOP_AFTER_RAW_EMBED", false)
+}
+
+fn effective_ingest_diagnostic(run: &SymbioticMemoryCliRun) -> Option<String> {
+    if effective_stop_after_raw_embed(run) {
+        return Some("raw-embed".to_string());
+    }
+    run.ingest_diagnostic
+        .clone()
+        .or_else(|| run_env_value(run, "SYMEM_INGEST_DIAGNOSTIC_MODE"))
+        .and_then(normalize_ingest_diagnostic)
+}
+
+fn normalize_ingest_diagnostic(value: String) -> Option<String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "none" | "off" | "false" | "0" => None,
+        "raw" | "raw-embed" | "raw_embed" | "raw-only" | "raw_only" => {
+            Some("raw-embed".to_string())
+        }
+        "distill" | "distill-only" | "distill_only" => Some("distill".to_string()),
+        "raw-embed-distill" | "raw_embed_distill" | "raw+distill" | "raw_distill"
+        | "embed-distill" | "embed_distill" => Some("raw-embed-distill".to_string()),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn adapter_ingest_diagnostic_mode(
+    run: &SymbioticMemoryCliRun,
+) -> symbiotic_memory::IngestDiagnosticMode {
+    match effective_ingest_diagnostic(run).as_deref() {
+        Some("raw-embed") => symbiotic_memory::IngestDiagnosticMode::RawEmbedOnly,
+        Some("distill") => symbiotic_memory::IngestDiagnosticMode::DistillOnly,
+        Some("raw-embed-distill") => symbiotic_memory::IngestDiagnosticMode::RawEmbedAndDistill,
+        _ => symbiotic_memory::IngestDiagnosticMode::None,
+    }
 }
 
 fn default_native_run_name() -> String {
@@ -3063,6 +5236,7 @@ fn to_symem_plan(run: &SymbioticMemoryCliRun) -> runner::SymemRunPlan {
         answer_only: run.answer_only,
         source_vault_root: run.source_vault_root.clone(),
         consolidate_briefs: run.consolidate_briefs,
+        ingest_diagnostic: effective_ingest_diagnostic(run),
         resume: run.resume,
         fresh: run.fresh,
         query_planner: run.query_planner.clone(),
@@ -3148,16 +5322,22 @@ mod tests {
             symem_bin,
             distiller: "llm".to_string(),
             embedder: "gemini".to_string(),
-            store: "sqlite".to_string(),
+            store: "zvec-hybrid".to_string(),
             prompt_dir: None,
             distill_prompt: "distill".to_string(),
             answerer: true,
             routed: false,
             answer_only: true,
             consolidate_briefs: false,
+            stop_after_raw_embed: false,
+            ingest_diagnostic: None,
             resume: true,
             fresh: false,
             query_planner: Some("off".to_string()),
+            evidence_ledger: false,
+            answer_verifier: false,
+            answer_gap_retry: false,
+            answer_unavailable_retry: false,
             score: true,
             oracle: None,
             judge_workers: 400,
@@ -3178,6 +5358,74 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn answer_only_uses_wide_workflow_window_by_default() {
+        assert_eq!(effective_workflow_max_in_flight(true, Some(25)), 500);
+        assert_eq!(effective_workflow_max_in_flight(false, Some(25)), 25);
+        assert_eq!(effective_workflow_max_in_flight(false, None), 50);
+    }
+
+    #[cfg(feature = "symbiotic-memory-adapter")]
+    #[test]
+    fn paid_provider_runs_require_single_process_lock() {
+        let mut run = sample_run(None);
+        run.ephemeral_smoke_run = false;
+        run.distiller = "llm".to_string();
+        run.embedder = "gemini".to_string();
+        run.score = true;
+        assert!(requires_paid_provider_lock(&run));
+
+        run.ephemeral_smoke_run = true;
+        assert!(!requires_paid_provider_lock(&run));
+
+        run.ephemeral_smoke_run = false;
+        run.distiller = "heuristic".to_string();
+        run.embedder = "hash".to_string();
+        run.score = false;
+        run.scorer = "none".to_string();
+        assert!(!requires_paid_provider_lock(&run));
+    }
+
+    #[cfg(feature = "symbiotic-memory-adapter")]
+    #[test]
+    fn paid_provider_lock_refuses_second_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = sample_run(None);
+        let first = PaidProviderRunLock::acquire_in(dir.path().join(".locks"), &run).unwrap();
+        let err = PaidProviderRunLock::acquire_in(dir.path().join(".locks"), &run).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("another paid provider-backed membench run appears to be active")
+        );
+        drop(first);
+        PaidProviderRunLock::acquire_in(dir.path().join(".locks"), &run).unwrap();
+    }
+
+    #[cfg(feature = "symbiotic-memory-adapter")]
+    #[test]
+    fn paid_provider_lock_reclaims_dead_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = sample_run(None);
+        let lock_root = dir.path().join(".locks");
+        let lock_path = lock_root.join("paid-provider-run.lock");
+        std::fs::create_dir_all(&lock_path).unwrap();
+        std::fs::write(
+            lock_path.join("owner.json"),
+            serde_json::to_vec_pretty(&json!({
+                "schema": "membench.paid_provider_run_lock.v1",
+                "pid": u32::MAX,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let lock = PaidProviderRunLock::acquire_in(lock_root, &run).unwrap();
+        let owner: Value =
+            serde_json::from_slice(&std::fs::read(lock.path.join("owner.json")).unwrap()).unwrap();
+
+        assert_eq!(owner["pid"].as_u64(), Some(std::process::id() as u64));
+    }
+
     #[cfg(all(feature = "symbiotic-memory-adapter", unix))]
     #[test]
     fn prepares_answer_only_linked_vaults_without_copying_heavy_state() {
@@ -3190,9 +5438,15 @@ mod tests {
         let run_root = dir.path().join("run");
         let source_vault = source_root.join("q1");
         std::fs::create_dir_all(source_vault.join("archive/memories")).unwrap();
+        std::fs::create_dir_all(source_vault.join("zvec-hybrid")).unwrap();
         std::fs::write(source_vault.join("manifest.json"), r#"{"source":"stable"}"#).unwrap();
         std::fs::write(source_vault.join("memory.sqlite"), b"sqlite").unwrap();
         std::fs::write(source_vault.join("archive/memories/fact.md"), "fact").unwrap();
+        std::fs::write(
+            source_vault.join("zvec-hybrid/index-manifest.json"),
+            r#"{"source":"zvec"}"#,
+        )
+        .unwrap();
         let rows = vec![LongMemEvalRecord {
             question_id: "q1".to_string(),
             question_type: Some("direct".to_string()),
@@ -3227,6 +5481,30 @@ mod tests {
                 .unwrap()
                 .file_type()
                 .is_symlink()
+        );
+        assert!(
+            std::fs::symlink_metadata(target_vault.join("zvec-hybrid"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        remove_path_if_exists(&target_vault.join("zvec-hybrid")).unwrap();
+        std::fs::create_dir_all(target_vault.join("zvec-hybrid")).unwrap();
+        std::fs::write(
+            target_vault.join("zvec-hybrid/index-manifest.json"),
+            r#"{"source":"stale-target"}"#,
+        )
+        .unwrap();
+        prepare_answer_only_linked_vaults(&run_root, &source_root, &rows).unwrap();
+        assert!(
+            std::fs::symlink_metadata(target_vault.join("zvec-hybrid"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read_to_string(target_vault.join("zvec-hybrid/index-manifest.json")).unwrap(),
+            r#"{"source":"zvec"}"#
         );
 
         std::fs::write(target_vault.join("manifest.json"), r#"{"source":"target"}"#).unwrap();
@@ -3522,6 +5800,38 @@ mod tests {
     }
 
     #[test]
+    fn gemini_embedder_rejects_openrouter_embedding_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_file = dir.path().join(".env.test.local");
+        std::fs::write(
+            &env_file,
+            "SYMEM_EMBED_OPERATOR=openrouter\nSYMEM_EMBED_MODEL=qwen/qwen3-embedding-8b\n",
+        )
+        .unwrap();
+        let mut run = sample_run(None);
+        run.env_file = Some(env_file);
+
+        let err = validate_provider_role_selection(&run).unwrap_err();
+        assert!(err.to_string().contains("--embedder openrouter"));
+    }
+
+    #[test]
+    fn openrouter_embedder_accepts_qwen_embedding_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_file = dir.path().join(".env.test.local");
+        std::fs::write(
+            &env_file,
+            "SYMEM_EMBED_OPERATOR=openrouter\nSYMEM_EMBED_MODEL=qwen/qwen3-embedding-8b\n",
+        )
+        .unwrap();
+        let mut run = sample_run(None);
+        run.embedder = "openrouter".to_string();
+        run.env_file = Some(env_file);
+
+        validate_provider_role_selection(&run).unwrap();
+    }
+
+    #[test]
     fn smoke_run_root_stays_outside_dashboard_registry() {
         let runs = repo_root().join("runs");
         let root = default_smoke_run_root(&runs, "symbiotic-memory", "long-mem-eval", 10, "smoke");
@@ -3667,7 +5977,7 @@ mod tests {
         let memory_traces = run_root.join("memory-traces.jsonl");
         std::fs::write(
             &hypotheses,
-            r#"{"question_id":"q1","router_initial":"raw-with-facts","router_final":"direct-raw","router_reason":"fallback after low fact support","debug_artifact":"vaults/q1/debug/hypotheses/hyp/question-debug.json"}"#,
+            r#"{"question_id":"q1","router_initial":"configured-policy","router_final":"configured-policy","router_reason":"single configured recall policy","debug_artifact":"vaults/q1/debug/hypotheses/hyp/question-debug.json"}"#,
         )
         .unwrap();
         std::fs::write(
@@ -3686,7 +5996,7 @@ mod tests {
         run.run_root = run_root.clone();
         run.run_name = "native-provenance".to_string();
         run.routed = true;
-        run.query_planner = Some("scripted".to_string());
+        run.query_planner = Some("flash".to_string());
 
         let provenance_path =
             write_native_provenance(&run, &hypotheses, Some(&memory_traces)).unwrap();
@@ -3696,10 +6006,10 @@ mod tests {
 
         assert_eq!(record["schema"], "membench.provenance.v1");
         assert_eq!(record["question_id"], "q1");
-        assert_eq!(record["initial_pick"], "raw-with-facts");
-        assert_eq!(record["final_pick"], "direct-raw");
-        assert_eq!(record["router_reason"], "fallback after low fact support");
-        assert_eq!(record["query_planner"], "scripted");
+        assert_eq!(record["initial_pick"], "configured-policy");
+        assert_eq!(record["final_pick"], "configured-policy");
+        assert_eq!(record["router_reason"], "single configured recall policy");
+        assert_eq!(record["query_planner"], "flash");
         assert_eq!(record["memory_trace_ids"], json!(["m1", "m2"]));
     }
 
@@ -3746,7 +6056,7 @@ mod tests {
 
         let mut run = sample_run(None);
         run.run_root = run_root.clone();
-        run.run_name = "native-direct-raw".to_string();
+        run.run_name = "native-configured-policy".to_string();
 
         write_native_benchmark_report(&run).unwrap();
 
@@ -3971,6 +6281,7 @@ mod tests {
             params["runtime_models"]["answer"],
             serde_json::json!("queued:configured-chat")
         );
+        assert_eq!(params["workflow_max_in_flight"], serde_json::json!(500));
         assert_eq!(params["provider_queue_available"], serde_json::json!(true));
         assert_eq!(params["workflow_queue_available"], serde_json::json!(true));
     }
@@ -3991,6 +6302,33 @@ mod tests {
         let params = symbiotic_memory_run_params(&run);
         assert_eq!(params["judge_operator"], serde_json::json!("deepseek"));
         assert_eq!(params["judge_model"], serde_json::json!("deepseek-v4-pro"));
+    }
+
+    #[test]
+    fn native_run_params_record_answer_model_env_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_file = dir.path().join(".env.test.local");
+        std::fs::write(
+            &env_file,
+            "SYMEM_ANSWER_OPERATOR=deepseek\nSYMEM_ANSWER_MODEL=deepseek-v4-pro\n",
+        )
+        .unwrap();
+        let mut run = sample_run(None);
+        run.env_file = Some(env_file);
+        run.memory_config = Some(PathBuf::from(
+            "config/symbiotic-memory/longmemeval-raw-light.yaml",
+        ));
+
+        let params = symbiotic_memory_run_params(&run);
+
+        assert_eq!(
+            params["configured_models"]["answer"]["model"],
+            serde_json::json!("deepseek-v4-pro")
+        );
+        assert_eq!(
+            params["runtime_models"]["answer"],
+            serde_json::json!("queued:deepseek:deepseek-v4-pro")
+        );
     }
 
     #[test]

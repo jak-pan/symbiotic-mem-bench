@@ -13,6 +13,7 @@ use crate::jsonutil::{nested_bool, nested_f64, nested_str, nested_string, nested
 use crate::{artifacts, stable_hash};
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// A run discovered on disk: its report, params, and location.
@@ -38,8 +39,14 @@ pub struct RunSummary {
     pub benchmark: String,
     pub limit: Option<u64>,
     pub run_name: String,
+    pub display_name: String,
     pub run_kind: String,
+    pub registry_section: String,
+    pub is_meta_record: bool,
+    pub tuning_cohort: Option<String>,
+    pub tuning_shape: Option<String>,
     pub config_label: String,
+    pub settings_label: String,
     pub accuracy: Option<f64>,
     pub accuracy_correct: Option<u64>,
     pub accuracy_total: Option<u64>,
@@ -59,6 +66,31 @@ pub struct RunSummary {
     pub artifacts_available: Vec<String>,
     pub artifacts_missing: Vec<String>,
     pub native_state_available: Option<bool>,
+    pub is_trial_run: bool,
+    pub trial_markers: Vec<TrialMarker>,
+}
+
+/// Compact marker attached to benchmark runs that are referenced by a typed
+/// Trial ledger under `runs/analysis/**/trials.jsonl`.
+#[derive(Clone, Debug, Serialize)]
+pub struct TrialMarker {
+    pub stack_id: String,
+    pub change_id: String,
+    pub change_title: String,
+    pub decision: String,
+    pub analysis_path: String,
+    pub compared_to_run_id: Option<String>,
+    pub original_baseline_run_id: Option<String>,
+    pub improvements: u64,
+    pub regressions: u64,
+    pub unchanged_wrong: u64,
+    pub unchanged_correct: u64,
+    pub question_count: u64,
+    pub sample_classification: String,
+    pub focused: bool,
+    pub aggregate_accuracy: Option<f64>,
+    pub aggregate_correct: Option<u64>,
+    pub aggregate_total: Option<u64>,
 }
 
 /// Cohort/cost fields derived from a run's artifacts. Shared by the report
@@ -176,10 +208,144 @@ pub fn scan_registry(roots: &[PathBuf], repo_root: &Path) -> Vec<RunRecord> {
     records
 }
 
+/// Scan typed trial ledgers and return markers keyed by repo-relative run id.
+pub fn scan_trial_markers(repo_root: &Path) -> BTreeMap<String, Vec<TrialMarker>> {
+    let mut paths = Vec::new();
+    collect_trial_paths(&repo_root.join("runs").join("analysis"), &mut paths);
+    paths.sort();
+
+    let mut markers: BTreeMap<String, Vec<TrialMarker>> = BTreeMap::new();
+    for path in paths {
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let analysis_path = path
+            .parent()
+            .unwrap_or(&path)
+            .strip_prefix(repo_root)
+            .unwrap_or_else(|_| path.parent().unwrap_or(&path))
+            .to_string_lossy()
+            .replace('\\', "/");
+        for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+            let Ok(value) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            let run_path =
+                nested_string(&value, &["run_path"]).or_else(|| nested_string(&value, &["run_id"]));
+            let Some(run_path) = run_path else {
+                continue;
+            };
+            let run_id = normalize_run_path(&run_path, repo_root);
+            let question_count = nested_u64(&value, &["sample_policy", "question_count"])
+                .or_else(|| nested_u64(&value, &["aggregate", "accuracy", "total"]))
+                .unwrap_or_else(|| count_trial_outcomes(&value));
+            let sample_classification = nested_string(&value, &["sample_policy", "classification"])
+                .map(|value| normalize_trial_sample_class(&value).to_string())
+                .unwrap_or_else(|| classify_trial_sample(question_count).to_string());
+            let focused = nested_bool(&value, &["sample_policy", "focused"])
+                .or_else(|| nested_bool(&value, &["sample_policy", "underpowered"]))
+                .unwrap_or(question_count < 25);
+
+            let marker = TrialMarker {
+                stack_id: nested_string(&value, &["stack_id"]).unwrap_or_default(),
+                change_id: nested_string(&value, &["change_id"]).unwrap_or_default(),
+                change_title: nested_string(&value, &["change_title"]).unwrap_or_default(),
+                decision: nested_string(&value, &["decision"]).unwrap_or_default(),
+                analysis_path: analysis_path.clone(),
+                compared_to_run_id: nested_string(&value, &["compared_to_run_id"]),
+                original_baseline_run_id: nested_string(&value, &["original_baseline_run_id"]),
+                improvements: count_array(&value, &["outcomes", "improvements"]),
+                regressions: count_array(&value, &["outcomes", "regressions"]),
+                unchanged_wrong: count_array(&value, &["outcomes", "unchanged_wrong"]),
+                unchanged_correct: count_array(&value, &["outcomes", "unchanged_correct"]),
+                question_count,
+                sample_classification,
+                focused,
+                aggregate_accuracy: nested_f64(&value, &["aggregate", "accuracy", "value"]),
+                aggregate_correct: nested_u64(&value, &["aggregate", "accuracy", "correct"]),
+                aggregate_total: nested_u64(&value, &["aggregate", "accuracy", "total"]),
+            };
+            markers.entry(run_id).or_default().push(marker);
+        }
+    }
+    markers
+}
+
+fn collect_trial_paths(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            collect_trial_paths(&entry.path(), out);
+        } else if entry.file_name() == "trials.jsonl" {
+            out.push(entry.path());
+        }
+    }
+}
+
+fn normalize_run_path(raw: &str, repo_root: &Path) -> String {
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        path.strip_prefix(repo_root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/")
+    } else {
+        raw.trim_start_matches("./").replace('\\', "/")
+    }
+}
+
+fn count_array(value: &Value, path: &[&str]) -> u64 {
+    path.iter()
+        .try_fold(value, |value, key| value.get(*key))
+        .and_then(Value::as_array)
+        .map(|items| items.len() as u64)
+        .unwrap_or(0)
+}
+
+fn count_trial_outcomes(value: &Value) -> u64 {
+    count_array(value, &["outcomes", "improvements"])
+        + count_array(value, &["outcomes", "regressions"])
+        + count_array(value, &["outcomes", "unchanged_wrong"])
+        + count_array(value, &["outcomes", "unchanged_correct"])
+}
+
+fn classify_trial_sample(question_count: u64) -> &'static str {
+    match question_count {
+        0..=24 => "focused_trial",
+        25..=50 => "diagnostic_trial",
+        51..=499 => "broad_diagnostic",
+        _ => "benchmark_scale",
+    }
+}
+
+fn normalize_trial_sample_class(raw: &str) -> &str {
+    match raw {
+        "smoke" => "focused_trial",
+        other => other,
+    }
+}
+
 /// Reduce a record to its index row. This is the cheap path: it reads `scored`
 /// and `verdicts` (≈ `limit` lines) for cohort identity but never the large
 /// trace files — cost/latency come from the report when persisted.
 pub fn summarize(record: &RunRecord) -> RunSummary {
+    summarize_with_trials(record, &BTreeMap::new())
+}
+
+/// Reduce a record to its index row and attach trial metadata discovered from
+/// `runs/analysis/**/trials.jsonl`.
+pub fn summarize_with_trials(
+    record: &RunRecord,
+    trial_index: &BTreeMap<String, Vec<TrialMarker>>,
+) -> RunSummary {
     let report = &record.report;
     let params = &record.params;
     let field = |key: &str| nested_string(report, &[key]).or_else(|| nested_string(params, &[key]));
@@ -203,6 +369,7 @@ pub fn summarize(record: &RunRecord) -> RunSummary {
         .get("models")
         .and_then(|value| serde_json::from_value::<Models>(value.clone()).ok())
         .unwrap_or_default();
+    let models = models_with_param_fallback(models, params, judge_model.as_deref());
     let config_signature = nested_string(report, &["config_signature"])
         .or_else(|| Some(cohort::config_signature(params, &models)));
 
@@ -231,15 +398,39 @@ pub fn summarize(record: &RunRecord) -> RunSummary {
     let per_question_type = artifacts::read_scored(&record.run_root)
         .and_then(|scored| scored.get("per_question_type").cloned());
 
+    let trial_markers = trial_index.get(&record.run_id).cloned().unwrap_or_default();
+    let is_trial_run = !trial_markers.is_empty();
+    let is_meta_record = report
+        .get("meta_record")
+        .or_else(|| params.get("meta_record"))
+        .is_some();
+    let tuning_cohort = tuning_cohort(report, params, &run_name);
+    let tuning_shape = tuning_shape(report, params, &run_name);
+    let registry_section = if tuning_cohort.is_some() {
+        "tuning"
+    } else if is_trial_run {
+        "trials"
+    } else {
+        "benchmarks"
+    }
+    .to_string();
+    let display_name = display_name(&run_name, params, tuning_shape.as_deref());
+
     RunSummary {
         run_id: record.run_id.clone(),
         origin: record.origin.clone(),
         config_label: config_label(&run_name, params, &models),
+        settings_label: settings_label(params),
         system,
         benchmark,
         limit,
         run_name,
+        display_name,
         run_kind,
+        registry_section,
+        is_meta_record,
+        tuning_cohort,
+        tuning_shape,
         accuracy: nested_f64(report, &["metrics", "accuracy", "value"]),
         accuracy_correct: nested_u64(report, &["metrics", "accuracy", "correct"]),
         accuracy_total: nested_u64(report, &["metrics", "accuracy", "total"]),
@@ -262,6 +453,8 @@ pub fn summarize(record: &RunRecord) -> RunSummary {
             report,
             &["artifact_manifest", "native_state_available"],
         ),
+        is_trial_run,
+        trial_markers,
     }
 }
 
@@ -289,6 +482,155 @@ fn config_label(run_name: &str, params: &Value, models: &Models) -> String {
     }
 }
 
+fn tuning_cohort(report: &Value, params: &Value, run_name: &str) -> Option<String> {
+    nested_string(report, &["tuning", "cohort"])
+        .or_else(|| nested_string(params, &["tuning", "cohort"]))
+        .or_else(|| {
+            if is_openrouter_qwen_raw_embed(params, run_name) {
+                Some("embed-transport/openrouter-qwen3-8b-1024-32k".to_string())
+            } else if is_deepseek_chat_distill_transport(params, run_name) {
+                Some("chat-transport/deepseek-v4-flash-distill".to_string())
+            } else {
+                None
+            }
+        })
+}
+
+fn tuning_shape(report: &Value, params: &Value, run_name: &str) -> Option<String> {
+    nested_string(report, &["tuning", "shape"])
+        .or_else(|| nested_string(params, &["tuning", "shape"]))
+        .or_else(|| tuning_shape_from_params(params))
+        .or_else(|| chat_tuning_shape_from_params(params))
+        .or_else(|| tuning_shape_from_name(run_name))
+}
+
+fn display_name(run_name: &str, params: &Value, tuning_shape: Option<&str>) -> String {
+    let Some(shape) = tuning_shape else {
+        return run_name.to_string();
+    };
+    let is_chat_tuning = is_deepseek_chat_distill_transport(params, run_name);
+    let model_role = if is_chat_tuning { "distill" } else { "embed" };
+    let model = configured_model(params, model_role)
+        .or_else(|| runtime_model(params, model_role))
+        .map(|model| short_model_name(&model))
+        .unwrap_or_else(|| {
+            if is_chat_tuning {
+                "deepseek-chat".to_string()
+            } else {
+                "embedding".to_string()
+            }
+        });
+    if is_chat_tuning {
+        return format!("{shape} · {model}");
+    }
+    let dims = nested_string(params, &["embed_request_dims"])
+        .or_else(|| nested_string(params, &["embed_dims"]))
+        .or_else(|| {
+            if run_name.contains("qwen1024") {
+                Some("1024".to_string())
+            } else {
+                None
+            }
+        })
+        .map(|dims| format!(" {dims}d"))
+        .unwrap_or_default();
+    format!("{shape} · {model}{dims}")
+}
+
+fn short_model_name(model: &str) -> String {
+    match model {
+        value if value.contains("qwen3-embedding-8b") => "qwen3-emb-8b".to_string(),
+        value if value.contains("deepseek-v4-flash") => "deepseek-v4-flash".to_string(),
+        value => value
+            .rsplit('/')
+            .next()
+            .filter(|part| !part.is_empty())
+            .unwrap_or(value)
+            .to_string(),
+    }
+}
+
+fn is_openrouter_qwen_raw_embed(params: &Value, run_name: &str) -> bool {
+    let raw_embed = nested_bool(params, &["stop_after_raw_embed"])
+        .or_else(|| nested_bool(params, &["ingest_stop_after_raw_embed"]))
+        .unwrap_or(false)
+        || run_name.contains("rawembed");
+    let model = configured_model(params, "embed")
+        .or_else(|| runtime_model(params, "embed"))
+        .unwrap_or_default();
+    let openrouter = nested_string(params, &["embedder"]).as_deref() == Some("openrouter")
+        || nested_string(params, &["role_settings", "embed", "operator"]).as_deref()
+            == Some("openrouter")
+        || model.contains("openrouter");
+    raw_embed
+        && openrouter
+        && (model.contains("qwen3-embedding-8b") || run_name.contains("qwen1024"))
+}
+
+fn is_deepseek_chat_distill_transport(params: &Value, run_name: &str) -> bool {
+    let lower = run_name.to_ascii_lowercase();
+    let distill_only = nested_string(params, &["ingest_diagnostic"])
+        .or_else(|| nested_string(params, &["ingest_diagnostic_mode"]))
+        .as_deref()
+        == Some("distill")
+        || lower.contains("tune-chat")
+        || lower.contains("ds-chat");
+    let model = configured_model(params, "distill")
+        .or_else(|| runtime_model(params, "distill"))
+        .unwrap_or_default();
+    let operator = nested_string(params, &["role_settings", "distill", "operator"])
+        .or_else(|| nested_string(params, &["configured_models", "distill", "operator"]))
+        .unwrap_or_default();
+    distill_only
+        && (operator == "deepseek" || model.contains("deepseek") || lower.contains("deepseek"))
+        && (model.contains("deepseek-v4-flash") || lower.contains("deepseek-v4-flash"))
+}
+
+fn tuning_shape_from_params(params: &Value) -> Option<String> {
+    let pool = nested_string(params, &["openrouter_http_client_pool_size"])?;
+    let idle = nested_string(params, &["openrouter_http_pool_max_idle_per_host"])?;
+    let protocol = match nested_bool(params, &["openrouter_http1_only"]) {
+        Some(true) => "h1",
+        Some(false) => "h2",
+        None => "h?",
+    };
+    Some(format!("{protocol} {pool}x{idle}"))
+}
+
+fn chat_tuning_shape_from_params(params: &Value) -> Option<String> {
+    let pool = nested_string(params, &["chat_http_client_pool_size"])?;
+    let idle = nested_string(params, &["chat_http_pool_max_idle_per_host"])?;
+    let protocol = match nested_bool(params, &["chat_http1_only"]) {
+        Some(true) => "h1",
+        Some(false) => "h2",
+        None => "h?",
+    };
+    Some(format!("{protocol} {pool}x{idle}"))
+}
+
+fn tuning_shape_from_name(run_name: &str) -> Option<String> {
+    let lower = run_name.to_ascii_lowercase();
+    for prefix in ["http1-pool", "h2pool"] {
+        let Some(start) = lower.find(prefix) else {
+            continue;
+        };
+        let rest = &lower[start + prefix.len()..];
+        let shape: String = rest
+            .chars()
+            .take_while(|ch| ch.is_ascii_digit() || *ch == 'x')
+            .collect();
+        if shape.contains('x') {
+            let protocol = if prefix.starts_with("http1") {
+                "h1"
+            } else {
+                "h2"
+            };
+            return Some(format!("{protocol} {shape}"));
+        }
+    }
+    None
+}
+
 /// Derive cohort + cost fields for a run, reading trace files. Used at report
 /// finalize (persisted) and by the server's run-detail endpoint.
 pub fn compute_cohort_fields(run_root: &Path, params: &Value) -> CohortFields {
@@ -300,9 +642,7 @@ pub fn compute_cohort_fields(run_root: &Path, params: &Value) -> CohortFields {
         .as_ref()
         .map(|rollup| Models::from_roles(&rollup.roles))
         .unwrap_or_default();
-    if models.judge.is_none() {
-        models.judge = judge_model.clone();
-    }
+    models = models_with_param_fallback(models, params, judge_model.as_deref());
     let config_signature = cohort::config_signature(params, &models);
     CohortFields {
         dataset_fingerprint,
@@ -328,6 +668,46 @@ pub fn compute_cohort_fields(run_root: &Path, params: &Value) -> CohortFields {
     }
 }
 
+fn models_with_param_fallback(
+    mut models: Models,
+    params: &Value,
+    judge_model: Option<&str>,
+) -> Models {
+    if models.answer.is_none() {
+        models.answer =
+            configured_model(params, "answer").or_else(|| runtime_model(params, "answer"));
+    }
+    if models.distill.is_none() {
+        models.distill =
+            configured_model(params, "distill").or_else(|| runtime_model(params, "distill"));
+    }
+    if models.embed.is_none() {
+        models.embed = configured_model(params, "embed").or_else(|| runtime_model(params, "embed"));
+    }
+    if models.judge.is_none() {
+        models.judge = configured_model(params, "judge")
+            .or_else(|| runtime_model(params, "judge"))
+            .or_else(|| judge_model.map(ToOwned::to_owned));
+    }
+    models
+}
+
+fn configured_model(params: &Value, role: &str) -> Option<String> {
+    nested_string(params, &["configured_models", role, "model"])
+        .or_else(|| nested_string(params, &[&format!("{role}_model")]))
+}
+
+fn runtime_model(params: &Value, role: &str) -> Option<String> {
+    let raw = nested_string(params, &["runtime_models", role])?;
+    Some(
+        raw.rsplit(':')
+            .next()
+            .filter(|part| !part.is_empty())
+            .unwrap_or(&raw)
+            .to_string(),
+    )
+}
+
 /// Stable hash of a run id, handy for cache keys.
 pub fn run_id_hash(run_id: &str) -> String {
     stable_hash(run_id.as_bytes())
@@ -344,6 +724,7 @@ pub struct PendingRun {
     pub limit: Option<u64>,
     pub run_name: String,
     pub config_label: String,
+    pub settings_label: String,
     /// `running` (recent file activity) or `stalled`.
     pub status: String,
     pub started_ms: Option<i64>,
@@ -511,6 +892,7 @@ pub fn scan_pending(roots: &[PathBuf], repo_root: &Path) -> Vec<PendingRun> {
                     .or_else(|| seg(4))
                     .unwrap_or_default(),
                 config_label: config_label(&seg(4).unwrap_or_default(), &params, &models),
+                settings_label: settings_label(&params),
                 status: status.to_string(),
                 started_ms: file_mtime_ms(&dir.join("run-params.json"))
                     .or_else(|| file_mtime_ms(&dir)),
@@ -536,6 +918,65 @@ pub fn scan_pending(roots: &[PathBuf], repo_root: &Path) -> Vec<PendingRun> {
             .then(b.updated_ms.cmp(&a.updated_ms))
     });
     pending
+}
+
+fn settings_label(params: &Value) -> String {
+    let mut parts = Vec::new();
+    if let Some(workflow) = nested_u64(params, &["workflow", "max_in_flight"])
+        .or_else(|| nested_u64(params, &["workflow_max_in_flight"]))
+    {
+        parts.push(format!("wf{workflow}"));
+    }
+    if let Some(label) = nested_string(params, &["transport", "embed", "label"])
+        .or_else(|| tuning_shape_from_params(params).map(|shape| format!("embed {shape}")))
+    {
+        let label = label
+            .strip_prefix("embed ")
+            .map(|shape| format!("embed {shape}"))
+            .unwrap_or_else(|| format!("embed {label}"));
+        parts.push(label);
+    }
+    if let Some(label) = nested_string(params, &["transport", "chat", "label"])
+        .or_else(|| chat_tuning_shape_from_params(params).map(|shape| format!("chat {shape}")))
+    {
+        let label = label
+            .strip_prefix("chat ")
+            .map(|shape| format!("chat {shape}"))
+            .unwrap_or_else(|| format!("chat {label}"));
+        parts.push(label);
+    }
+    if let Some(thinking) = nested_string(params, &["thinking", "summary"])
+        .or_else(|| thinking_summary_from_roles(params))
+    {
+        if !thinking.is_empty() {
+            parts.push(thinking);
+        }
+    }
+    parts.join(" · ")
+}
+
+fn thinking_summary_from_roles(params: &Value) -> Option<String> {
+    let roles = ["distill", "query_planner", "answer", "judge"];
+    let values: Vec<String> = roles
+        .iter()
+        .filter_map(|role| nested_string(params, &["role_settings", role, "thinking"]))
+        .collect();
+    if values.is_empty() {
+        None
+    } else if values.len() == roles.len() && values.iter().all(|value| value == "disabled") {
+        Some("nonthinking".to_string())
+    } else {
+        Some(
+            roles
+                .iter()
+                .filter_map(|role| {
+                    nested_string(params, &["role_settings", role, "thinking"])
+                        .map(|value| format!("{}:{value}", role.replace('_', "-")))
+                })
+                .collect::<Vec<_>>()
+                .join(","),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -588,6 +1029,92 @@ mod tests {
                 .artifacts_missing
                 .contains(&"model_traces".to_string())
         );
+        assert_eq!(summary.display_name, "baseline");
+        assert_eq!(summary.registry_section, "benchmarks");
+    }
+
+    #[test]
+    fn openrouter_qwen_raw_embed_runs_are_named_as_tuning_arms() {
+        let repo = tempfile::tempdir().unwrap();
+        let run_name = "target-10q-qwen1024-http1-pool32x32-rawembed-20260623-102020";
+        let run_root = repo
+            .path()
+            .join(format!("runs/symbiotic-memory/long-mem-eval/10/{run_name}"));
+        let report = json!({
+            "system": "symbiotic-memory",
+            "benchmark": "long-mem-eval",
+            "run_kind": "native",
+            "run_name": run_name,
+            "metrics": {"accuracy": {"correct": 0, "total": 10, "value": 0.0}},
+            "artifact_manifest": {"available": ["model_traces"], "missing": ["scored"], "native_state_available": true},
+            "meta_record": {"schema": "membench.meta_record.v1"}
+        });
+        let params = json!({
+            "limit": 10,
+            "stop_after_raw_embed": true,
+            "embedder": "openrouter",
+            "configured_models": {
+                "embed": {"model": "qwen/qwen3-embedding-8b"}
+            },
+            "openrouter_http1_only": true,
+            "openrouter_http_client_pool_size": "32",
+            "openrouter_http_pool_max_idle_per_host": "32"
+        });
+        write_run(&run_root, &report, &params);
+
+        let records = scan_registry(&[repo.path().join("runs")], repo.path());
+        let summary = summarize(&records[0]);
+        assert_eq!(summary.registry_section, "tuning");
+        assert!(summary.is_meta_record);
+        assert_eq!(
+            summary.tuning_cohort.as_deref(),
+            Some("embed-transport/openrouter-qwen3-8b-1024-32k")
+        );
+        assert_eq!(summary.tuning_shape.as_deref(), Some("h1 32x32"));
+        assert_eq!(summary.display_name, "h1 32x32 · qwen3-emb-8b 1024d");
+    }
+
+    #[test]
+    fn deepseek_chat_distill_runs_are_named_as_tuning_arms() {
+        let repo = tempfile::tempdir().unwrap();
+        let run_name = "ds-chat-h2-32x32-10q-20260623-133649";
+        let run_root = repo
+            .path()
+            .join(format!("runs/symbiotic-memory/long-mem-eval/10/{run_name}"));
+        let report = json!({
+            "system": "symbiotic-memory",
+            "benchmark": "long-mem-eval",
+            "run_kind": "native",
+            "run_name": run_name,
+            "metrics": {"accuracy": {"correct": 0, "total": 10, "value": 0.0}},
+            "artifact_manifest": {"available": ["model_traces"], "missing": ["scored"], "native_state_available": true},
+            "meta_record": {"schema": "membench.meta_record.v1"}
+        });
+        let params = json!({
+            "limit": 10,
+            "ingest_diagnostic": "distill",
+            "configured_models": {
+                "distill": {
+                    "model": "deepseek-v4-flash",
+                    "operator": "deepseek"
+                }
+            },
+            "chat_http1_only": false,
+            "chat_http_client_pool_size": "32",
+            "chat_http_pool_max_idle_per_host": "32"
+        });
+        write_run(&run_root, &report, &params);
+
+        let records = scan_registry(&[repo.path().join("runs")], repo.path());
+        let summary = summarize(&records[0]);
+        assert_eq!(summary.registry_section, "tuning");
+        assert!(summary.is_meta_record);
+        assert_eq!(
+            summary.tuning_cohort.as_deref(),
+            Some("chat-transport/deepseek-v4-flash-distill")
+        );
+        assert_eq!(summary.tuning_shape.as_deref(), Some("h2 32x32"));
+        assert_eq!(summary.display_name, "h2 32x32 · deepseek-v4-flash");
     }
 
     #[test]
@@ -610,7 +1137,7 @@ mod tests {
                 "distiller": "heuristic",
                 "embedder": "hash",
                 "store": "sqlite",
-                "query_planner": "scripted",
+                "query_planner": "flash",
                 "routed": true
             }))
             .unwrap(),
@@ -635,6 +1162,93 @@ mod tests {
         assert_eq!(run.ingested, 2);
         assert_eq!(run.status, "running");
         assert!(run.config_label.contains("heuristic"));
-        assert!(run.config_label.contains("plan:scripted"));
+        assert!(run.config_label.contains("plan:flash"));
+    }
+
+    #[test]
+    fn trial_ledgers_mark_referenced_runs() {
+        let repo = tempfile::tempdir().unwrap();
+        let run_root = repo
+            .path()
+            .join("runs/symbiotic-memory/long-mem-eval/10/candidate");
+        let report = json!({
+            "system": "symbiotic-memory",
+            "benchmark": "long-mem-eval",
+            "run_kind": "native",
+            "run_name": "candidate",
+            "metrics": {"accuracy": {"correct": 8, "total": 10, "value": 0.8}},
+            "artifact_manifest": {"available": ["scored"], "missing": [], "native_state_available": true}
+        });
+        write_run(&run_root, &report, &json!({"limit": 10}));
+
+        let analysis = repo.path().join("runs/analysis/prompt-trials");
+        std::fs::create_dir_all(&analysis).unwrap();
+        std::fs::write(
+            analysis.join("trials.jsonl"),
+            serde_json::to_string(&json!({
+                "schema": "membench.trial.v1",
+                "stack_id": "prompt-trials",
+                "run_id": "candidate",
+                "run_path": "runs/symbiotic-memory/long-mem-eval/10/candidate",
+                "change_id": "answer-prompt-v1",
+                "change_title": "Answer prompt evidence discipline",
+                "compared_to_run_id": "baseline",
+                "original_baseline_run_id": "baseline",
+                "decision": "diagnostic_only",
+                "aggregate": {"accuracy": {"correct": 8, "total": 10, "value": 0.8}},
+                "outcomes": {
+                    "improvements": [{"question_id": "q1"}],
+                    "regressions": [{"question_id": "q2"}],
+                    "unchanged_wrong": ["q3"],
+                    "unchanged_correct": ["q4", "q5"]
+                }
+            }))
+            .unwrap()
+                + "\n",
+        )
+        .unwrap();
+
+        let records = scan_registry(&[repo.path().join("runs")], repo.path());
+        let trial_index = scan_trial_markers(repo.path());
+        let summary = summarize_with_trials(&records[0], &trial_index);
+        assert!(summary.is_trial_run);
+        assert_eq!(summary.trial_markers.len(), 1);
+        let marker = &summary.trial_markers[0];
+        assert_eq!(marker.stack_id, "prompt-trials");
+        assert_eq!(marker.improvements, 1);
+        assert_eq!(marker.regressions, 1);
+        assert_eq!(marker.question_count, 10);
+        assert_eq!(marker.sample_classification, "focused_trial");
+        assert!(marker.focused);
+        assert_eq!(marker.aggregate_accuracy, Some(0.8));
+        assert_eq!(marker.analysis_path, "runs/analysis/prompt-trials");
+    }
+
+    #[test]
+    fn cohort_models_fall_back_to_run_params_when_traces_have_no_roles() {
+        let repo = tempfile::tempdir().unwrap();
+        let run_root = repo.path().join("run");
+        std::fs::create_dir_all(run_root.join("artifacts")).unwrap();
+        std::fs::write(
+            run_root.join("artifacts/model-traces.jsonl"),
+            "{\"queue_id\":\"chat:deepseek:deepseek-v4-flash\",\"operation\":\"chat\",\"status\":\"succeeded\"}\n",
+        )
+        .unwrap();
+        let params = json!({
+            "configured_models": {
+                "answer": {"model": "deepseek-v4-flash"},
+                "distill": {"model": "deepseek-v4-flash"},
+                "embed": {"model": "gemini-embedding-2"}
+            },
+            "runtime_models": {
+                "judge": "queued:deepseek:deepseek-v4-flash"
+            }
+        });
+
+        let fields = compute_cohort_fields(&run_root, &params);
+        assert_eq!(fields.models.answer.as_deref(), Some("deepseek-v4-flash"));
+        assert_eq!(fields.models.distill.as_deref(), Some("deepseek-v4-flash"));
+        assert_eq!(fields.models.embed.as_deref(), Some("gemini-embedding-2"));
+        assert_eq!(fields.models.judge.as_deref(), Some("deepseek-v4-flash"));
     }
 }

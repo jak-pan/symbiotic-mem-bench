@@ -1,4 +1,4 @@
 interface:
   display_name: "Membench"
-  short_description: "Run and inspect memory-system benchmarks."
-  default_prompt: "Use the membench skill to run, inspect, import, or validate memory-system benchmark runs."
+  short_description: "Run, inspect, compare, and derive Trials for memory-system benchmarks."
+  default_prompt: "Use the membench skill to run, inspect, import, compare, validate, or derive Trials for memory-system benchmark runs."

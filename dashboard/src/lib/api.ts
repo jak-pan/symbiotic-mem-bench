@@ -3,6 +3,7 @@ import type {
   CompareResponse,
   LiveResponse,
   PendingRun,
+  QuestionDebug,
   QuestionRow,
   RunDetail,
   RunSummary,
@@ -51,6 +52,10 @@ export const api = {
     get<{ total: number; questions: QuestionRow[] }>(
       `/run/questions?id=${enc(id)}`,
     ).then((r) => r.questions),
+  questionDebug: (id: string, path: string) =>
+    get<{ path: string; json: QuestionDebug }>(
+      `/run/question-debug?id=${enc(id)}&path=${enc(path)}`,
+    ).then((r) => r.json),
   artifact: (id: string, kind: string, offset = 0, limit = 200) =>
     get<any>(`/run/artifact?id=${enc(id)}&kind=${kind}&offset=${offset}&limit=${limit}`),
   traces: (id: string) => get<TracesResponse>(`/run/traces?id=${enc(id)}`),

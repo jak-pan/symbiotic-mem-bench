@@ -54,7 +54,7 @@ These are the minimum pieces needed before another paid full-quality run.
 | Rerank stage | Rerank a broad candidate pool with a cross-encoder, late-interaction model, or model-backed relevance scorer. | Not implemented in this crate. |
 | Derived memory pass | Generate generic tags, aliases, current-state slot notes, count/item summaries, and graph links from source-backed memory. | Not implemented in this crate. |
 | Context budgeter | Prefer compact, high-support evidence over raw 80-turn context when possible. | Current raw contexts can exceed 28k input tokens. |
-| Backend shadowing | Compare SQLite debug recall with the candidate production backend on fixed fixtures. | zvec feature currently fails to build locally. |
+| Backend shadowing | Compare SQLite debug recall with the candidate production backend on fixed fixtures. | zvec 0.4.1 hybrid now builds locally with the patched `zvec-sys` path. |
 
 ## Backend Decision
 
@@ -64,7 +64,7 @@ memory behavior.
 | backend | decision |
 | --- | --- |
 | SQLite | Keep as ledger and debug/parity backend. Add FTS/BM25 or a sidecar sparse index here first because it is inspectable. |
-| zvec | First local production candidate only after the build path works and the backend uses hybrid FTS/vector/scalar filtering, not dense search alone. |
+| zvec | First local production candidate using hybrid FTS/vector/scalar filtering, not dense search alone. |
 | TurboVec | Experimental compressed vector adapter for scale. It does not replace sparse retrieval, tags, aliases, graph/entity signals, or reranking. |
 | Qdrant/Pinecone | Later server/managed adapters behind the same `RecallIndexBackend` contract. |
 

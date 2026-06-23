@@ -43,8 +43,8 @@ Small LongMemEval runs use `--sample stratified` by default so quick runs cover 
 types. Use `--sample first` only when reproducing the dataset's original row order.
 
 Default launches are paid, provider-backed, scored, and must run in Cargo release mode. They use
-`llm` distill, `gemini` embeddings, routed answering, source-backed brief generation, scripted query
-planning, and judge scoring. The native adapter owns the run state, provider queues, response caches,
+`llm` distill, `gemini` embeddings, unified answering, source-backed brief generation, DeepSeek Flash
+query planning, and judge scoring. The native adapter owns the run state, provider queues, response caches,
 hypotheses, verdicts, score summaries, and normalized run report.
 
 Run a no-network smoke test explicitly:
@@ -218,6 +218,32 @@ cargo run --bin membench -- summarize-queue-events \
   --jsonl runs/symbiotic-memory/long-mem-eval/500/baseline-clean/provider-queue/model-queue-traces.jsonl
 ```
 
+Run and report the first-class OpenRouter Qwen raw-embedding transport tuner:
+
+```bash
+scripts/run-embedding-transport-tuning.sh openrouter-qwen3-8b-1024 h1-32x32
+scripts/report-embedding-transport-tuning.sh --profile openrouter-qwen3-8b-1024 --markdown
+```
+
+Run and report the equivalent DeepSeek chat transport tuner for distill-only runs:
+
+```bash
+scripts/run-chat-transport-tuning.sh deepseek-v4-flash-distill h2-64x32
+scripts/report-chat-transport-tuning.sh --profile deepseek-v4-flash-distill --markdown
+```
+
+The current evidence-backed candidate for OpenRouter `qwen/qwen3-embedding-8b` raw embeddings is
+documented in `docs/symbiotic-memory/openrouter-qwen-embedding-tuning.md`. The current DeepSeek
+chat transport evidence is documented in
+`docs/symbiotic-memory/deepseek-chat-transport-tuning.md`.
+
+Dashboard-safe tuning records can be promoted without copying vaults, raw provider payloads, or
+question-level artifacts:
+
+```bash
+scripts/save-run-meta-record.sh runs/symbiotic-memory/long-mem-eval/10/<run-name>
+```
+
 ## Symbiotic Memory Runner
 
 `membench` currently includes a first adapter for Symbiotic Memory's LongMemEval flow.
@@ -242,6 +268,11 @@ effective concurrency is capped by the shared model queue id, such as
 Memory answer/distill/embed model defaults are owned by `../symbiotic-memory`. Benchmark profiles
 should not repeat those bindings. Use env/model overrides only for explicit model-comparison or
 tuning runs; the scorer/judge model remains benchmark-owned.
+
+The reference clock passed to Symbiotic Memory recall defaults to the current RFC3339 datetime with
+timezone for normal memory use. LongMemEval maps each row's `question_date` into an RFC3339
+reference timestamp so temporal questions replay against the benchmark's pinned clock. Use
+`MEMBENCH_REFERENCE_DATETIME` only when intentionally overriding that clock for a named experiment.
 
 The default LongMemEval judge prompt mode is `semantic-shared-compact`: a stable shared prefix that
 keeps the LongMemEval yes/no rubric while accepting equivalent or inferable answers that the original
@@ -297,8 +328,20 @@ Both templates are safe to commit and contain placeholders only. Real `.env`, `.
 `.env.test.local` files are ignored.
 
 Use `--memory-config config/symbiotic-memory/longmemeval-raw-light.yaml` for the current
-raw-light LongMemEval profile: fact top-k 20, raw primary top-k 10, raw fallback top-k 10, scripted
-query planner, and memory-owned provider/model defaults.
+raw-light LongMemEval profile: fact top-k 20 and raw top-k 10,
+DeepSeek Flash query planner, and foundation-owned provider/model queue defaults.
+
+Embedding request sizing has two separate axes:
+
+- `SYMEM_EMBED_BATCH_SIZE` and `SYMEM_EMBED_BATCH_MAX_CHARS` control request packing only. Defaults
+  are code-owned in `symbiotic-memory`. They are request-level throughput knobs: larger request char
+  budgets reduce HTTP fanout, but each request can take longer and retries more work when it fails.
+- `SYMEM_EMBED_MAX_CHARS` controls the local per-input text cap passed to the embedding provider. It
+  is also code-owned and separate from request packing.
+
+Do not use `SYMEM_EMBED_BATCH_MAX_CHARS` as an individual-input truncation cap, and do not use these
+batch settings as substitute provider concurrency limits. Provider concurrency belongs to the model
+queue id; workflow concurrency belongs to source-row fan-out.
 
 Dashboard live monitor semantics:
 
@@ -320,6 +363,14 @@ Dashboard live monitor semantics:
   be inspected after the run leaves the in-flight list.
 - The Memory Pipeline label `briefs` corresponds to the memory operation named `consolidate` in
   traces. It is the source-backed extractive brief pass, not a benchmark-only step.
+- The Memory Pipeline label `prompt plan` corresponds to `query_plan`. It is the optional
+  query-planner output from the memory engine, not a duplicate paid planner call from the benchmark.
+  Trace metrics keep prompt/response hashes and the question-debug path; the raw planner
+  system prompt, user prompt, response text, retrieval queries, and scored search responses live in
+  that question-debug bundle. In the dashboard, open `QUESTIONS` and select a row to inspect those
+  details without running another model call.
+- Recall-native stages now include `answer embed`, `fact search`, `raw search`, `support`, and
+  `answer ctx`. Those events are emitted by `RecallEngine`, not synthesized by the benchmark.
 
 Default freshness rule:
 
@@ -330,6 +381,10 @@ normal native run  -> fresh re-ingest
 --source-vault-root runs/inputs/vault-roots/.../vaults
                    -> link immutable vault state for cheap isolated answer-only reruns
 ```
+
+Answer-only native runs default to a `workflow_max_in_flight` of 500 so recall/answer comparisons
+can fan out broadly. Full ingest/backfill runs use the configured memory workflow window, currently
+50 in the raw-light profile, while provider queues still enforce the real model caps.
 
 ## Contract
 
@@ -397,6 +452,10 @@ queue id and item id.
 
 - `AGENTS.md`: exact operating rules for coding agents.
 - `docs/run-registry.md`: run layout and lifecycle reference.
+- `docs/symbiotic-memory/openrouter-qwen-embedding-tuning.md`: OpenRouter Qwen raw-embedding
+  transport tuning evidence and reproduction scripts.
+- `docs/symbiotic-memory/deepseek-chat-transport-tuning.md`: DeepSeek Flash distill chat transport
+  tuning evidence and reproduction scripts.
 - `docs/schemas.md`: JSON field reference for run params, reports, artifacts, and traces.
 - `docs/bench-explorer-design.md`: explorer, comparison, and viewer design (incl. the web dashboard).
 - `dashboard/README.md`: dashboard develop/build/run instructions.

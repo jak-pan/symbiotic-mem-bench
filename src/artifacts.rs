@@ -56,6 +56,8 @@ pub struct Hypothesis {
     pub hypothesis: Option<String>,
     #[serde(default)]
     pub router_pick: Option<String>,
+    #[serde(default)]
+    pub debug_artifact: Option<String>,
 }
 
 /// One routing provenance record (`provenance.jsonl`).
@@ -66,6 +68,8 @@ pub struct Provenance {
     pub initial_pick: Option<String>,
     #[serde(default)]
     pub final_pick: Option<String>,
+    #[serde(default)]
+    pub debug_artifact: Option<String>,
 }
 
 /// A flattened per-question row joining verdicts, hypotheses, and provenance.
@@ -84,6 +88,7 @@ pub struct QuestionRow {
     pub router_pick: Option<String>,
     pub initial_pick: Option<String>,
     pub final_pick: Option<String>,
+    pub debug_artifact: Option<String>,
     pub error: Option<String>,
 }
 
@@ -199,6 +204,9 @@ pub fn question_rows(run_root: &Path) -> Vec<QuestionRow> {
             row.question = hypothesis.question;
         }
         row.router_pick = hypothesis.router_pick;
+        if row.debug_artifact.is_none() {
+            row.debug_artifact = hypothesis.debug_artifact;
+        }
     }
 
     for provenance in read_provenance(run_root) {
@@ -210,6 +218,9 @@ pub fn question_rows(run_root: &Path) -> Vec<QuestionRow> {
             });
         row.initial_pick = provenance.initial_pick;
         row.final_pick = provenance.final_pick;
+        if row.debug_artifact.is_none() {
+            row.debug_artifact = provenance.debug_artifact;
+        }
     }
 
     rows.into_values().collect()
@@ -234,7 +245,7 @@ mod tests {
         );
         write(
             &artifact_path(root, "hypotheses.jsonl"),
-            "{\"hypothesis\":\"BA\",\"question_id\":\"q1\",\"question_type\":\"single-session-user\",\"question\":\"degree?\",\"router_pick\":\"x-tgg\"}\n",
+            "{\"hypothesis\":\"BA\",\"question_id\":\"q1\",\"question_type\":\"single-session-user\",\"question\":\"degree?\",\"router_pick\":\"x-tgg\",\"debug_artifact\":\"vaults/q1/debug/hypotheses/q1/question-debug.json\"}\n",
         );
         write(
             &artifact_path(root, "provenance.jsonl"),
@@ -251,6 +262,10 @@ mod tests {
         assert_eq!(row.router_pick.as_deref(), Some("x-tgg"));
         assert_eq!(row.final_pick.as_deref(), Some("x-tgg"));
         assert_eq!(row.judge_model.as_deref(), Some("deepseek-v4-flash"));
+        assert_eq!(
+            row.debug_artifact.as_deref(),
+            Some("vaults/q1/debug/hypotheses/q1/question-debug.json")
+        );
     }
 
     #[test]

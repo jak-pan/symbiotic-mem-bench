@@ -13,8 +13,10 @@ pub mod leaderboard;
 pub mod live;
 pub mod registry;
 pub mod runner;
+pub mod step_analytics;
 #[cfg(feature = "symbiotic-memory-adapter")]
 pub mod symbiotic_memory_adapter;
+pub mod trials;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct BenchRunMetadata {

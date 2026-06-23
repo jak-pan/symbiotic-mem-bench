@@ -145,8 +145,14 @@ mod tests {
             benchmark: "long-mem-eval".to_string(),
             limit: Some(limit),
             run_name: run_name.to_string(),
+            display_name: run_name.to_string(),
             run_kind: "imported-artifact".to_string(),
+            registry_section: "benchmarks".to_string(),
+            is_meta_record: false,
+            tuning_cohort: None,
+            tuning_shape: None,
             config_label: run_name.to_string(),
+            settings_label: String::new(),
             accuracy: Some(accuracy),
             accuracy_correct: None,
             accuracy_total: None,
@@ -166,6 +172,8 @@ mod tests {
             artifacts_available: vec![],
             artifacts_missing: vec![],
             native_state_available: Some(false),
+            is_trial_run: false,
+            trial_markers: vec![],
         }
     }
 

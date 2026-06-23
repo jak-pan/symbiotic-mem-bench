@@ -61,49 +61,99 @@
       </Panel>
     </div>
 
-    <div class="ov-grid">
-      <Panel title="Run Parameters" tag="{paramEntries.length} fields" scroll>
-        <dl class="kv params">
-          {#each paramEntries as [k, v] (k)}
-            <dt>{k}</dt><dd class="mono-num">{typeof v === "object" ? JSON.stringify(v) : String(v)}</dd>
-          {/each}
-        </dl>
-      </Panel>
-
-      <Panel title="Artifacts">
-        <div class="art">
-          {#each ALL_KINDS as kind (kind)}
-            {@const has = s.artifacts_available.includes(kind)}
-            <div class="artrow" class:miss={!has}>
-              <span class="aci">{has ? "●" : "○"}</span>
-              <span class="acn">{kind}</span>
-              <span class="acs">{has ? "present" : "missing"}</span>
+    <div class="ov-grid" class:trial-layout={s.is_trial_run && s.trial_markers.length}>
+      {#if s.is_trial_run && s.trial_markers.length}
+        <div class="cell trial-cell">
+          <Panel title="Trial Context" tag="diagnostic">
+            <div class="trial">
+              {#each s.trial_markers as marker (`${marker.stack_id}:${marker.change_id}`)}
+                <div class="trial-card">
+                  <div class="trial-head">
+                    <span class="chip amber">{marker.focused ? "FOCUSED" : "TRIAL"}</span>
+                    <b>{marker.change_title || marker.change_id}</b>
+                  </div>
+                  <dl class="kv trial-kv">
+                    <dt>STACK</dt><dd class="mono-num">{marker.stack_id}</dd>
+                    <dt>CHANGE</dt><dd class="mono-num">{marker.change_id}</dd>
+                    <dt>SAMPLE</dt>
+                    <dd class="mono-num">
+                      {marker.question_count}Q
+                      <span class={marker.focused ? "amber" : "up"}>{marker.sample_classification}</span>
+                    </dd>
+                    <dt>DECISION</dt><dd>{marker.decision || "—"}</dd>
+                    <dt>ANALYSIS</dt><dd class="mono-num">{marker.analysis_path}</dd>
+                    <dt>DELTA</dt>
+                    <dd>
+                      <span class="up">{marker.improvements} fixed</span>
+                      <span class="sep">/</span>
+                      <span class={marker.regressions ? "down" : "dim"}>{marker.regressions} regressed</span>
+                    </dd>
+                    <dt>SCORE</dt>
+                    <dd class="mono-num">
+                      {pct(marker.aggregate_accuracy)}%
+                      {#if marker.aggregate_correct != null && marker.aggregate_total != null}
+                        <span class="dim">({marker.aggregate_correct}/{marker.aggregate_total})</span>
+                      {/if}
+                    </dd>
+                  </dl>
+                  {#if marker.focused}
+                    <div class="trial-note">Focused stack for one failure class. Use a stratified 25-50Q trial before broad conclusions.</div>
+                  {/if}
+                </div>
+              {/each}
             </div>
-          {/each}
-          <div class="art-state">
-            NATIVE STATE: {#if s.native_state_available}<span class="up">available</span>{:else}<span class="down">artifact-only</span>{/if}
-          </div>
+          </Panel>
         </div>
-      </Panel>
+      {/if}
+
+      <div class="cell params-cell">
+        <Panel title="Run Parameters" tag="{paramEntries.length} fields" scroll>
+          <dl class="kv params">
+            {#each paramEntries as [k, v] (k)}
+              <dt>{k}</dt><dd class="mono-num">{typeof v === "object" ? JSON.stringify(v) : String(v)}</dd>
+            {/each}
+          </dl>
+        </Panel>
+      </div>
+
+      <div class="cell artifacts-cell">
+        <Panel title="Artifacts">
+          <div class="art">
+            {#each ALL_KINDS as kind (kind)}
+              {@const has = s.artifacts_available.includes(kind)}
+              <div class="artrow" class:miss={!has}>
+                <span class="aci">{has ? "●" : "○"}</span>
+                <span class="acn">{kind}</span>
+                <span class="acs">{has ? "present" : "missing"}</span>
+              </div>
+            {/each}
+            <div class="art-state">
+              NATIVE STATE: {#if s.native_state_available}<span class="up">available</span>{:else}<span class="down">artifact-only</span>{/if}
+            </div>
+          </div>
+        </Panel>
+      </div>
 
       {#if detail.cost && detail.cost.models.length}
-        <Panel title="Model Calls" tag="{detail.cost.calls} calls" scroll>
-          <table class="grid">
-            <thead><tr><th>Model</th><th class="num">Calls</th><th class="num">In</th><th class="num">Out</th><th class="num">Cost</th><th class="num">p50</th></tr></thead>
-            <tbody>
-              {#each detail.cost.models as m (m.model)}
-                <tr>
-                  <td>{m.model}<span class="op">{m.operator}·{m.operation}</span></td>
-                  <td class="num mono-num">{m.calls}</td>
-                  <td class="num mono-num dim">{tokens(m.input_tokens)}</td>
-                  <td class="num mono-num dim">{tokens(m.output_tokens)}</td>
-                  <td class="num mono-num dim">{money(m.cost_micro_usd)}{m.cost_estimated ? " est" : ""}</td>
-                  <td class="num mono-num dim">{ms(m.latency_ms_p50)}</td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        </Panel>
+        <div class="cell models-cell">
+          <Panel title="Model Calls" tag="{detail.cost.calls} calls" scroll>
+            <table class="grid compact-models">
+              <thead><tr><th>Model</th><th class="num">Calls</th><th class="num">In</th><th class="num">Out</th><th class="num">Cost</th><th class="num">p50</th></tr></thead>
+              <tbody>
+                {#each detail.cost.models as m (m.model)}
+                  <tr>
+                    <td>{m.model}<span class="op">{m.operator}·{m.operation}</span></td>
+                    <td class="num mono-num">{m.calls}</td>
+                    <td class="num mono-num dim">{tokens(m.input_tokens)}</td>
+                    <td class="num mono-num dim">{tokens(m.output_tokens)}</td>
+                    <td class="num mono-num dim">{money(m.cost_micro_usd)}{m.cost_estimated ? " est" : ""}</td>
+                    <td class="num mono-num dim">{ms(m.latency_ms_p50)}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </Panel>
+        </div>
       {/if}
     </div>
   </div>
@@ -194,12 +244,78 @@
 
   .ov-grid {
     display: grid;
-    grid-template-columns: 1.2fr 0.8fr 1.4fr;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
     gap: 10px;
     align-items: start;
   }
-  .ov-grid :global(.panel) {
-    max-height: 320px;
+  .cell {
+    min-width: 0;
+  }
+  .cell :global(.panel) {
+    height: 100%;
+    max-height: 360px;
+  }
+  .trial-cell {
+    grid-column: span 6;
+  }
+  .params-cell {
+    grid-column: span 4;
+  }
+  .artifacts-cell {
+    grid-column: span 4;
+  }
+  .models-cell {
+    grid-column: span 4;
+  }
+  .trial-layout .params-cell,
+  .trial-layout .artifacts-cell,
+  .trial-layout .models-cell {
+    grid-column: span 6;
+  }
+  .models-cell :global(.panel) {
+    max-height: 250px;
+  }
+  .trial {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .trial-card {
+    border-left: 2px solid var(--amber-dim);
+    padding: 4px 4px 2px 10px;
+  }
+  .trial-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .trial-head b {
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.2;
+  }
+  .trial-kv {
+    grid-template-columns: 72px minmax(0, 1fr);
+    gap: 5px 14px;
+  }
+  .trial-kv dd {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    font-size: 11.5px;
+    line-height: 1.35;
+  }
+  .sep {
+    color: var(--text-faint);
+    margin: 0 4px;
+  }
+  .trial-note {
+    margin-top: 8px;
+    padding-top: 7px;
+    border-top: 1px solid var(--border);
+    color: var(--amber);
+    font-size: 10px;
+    line-height: 1.4;
   }
 
   .art {
@@ -239,6 +355,9 @@
     font-size: 9.5px;
     letter-spacing: 0.06em;
     color: var(--text-faint);
+  }
+  .compact-models td:first-child {
+    white-space: normal;
   }
 
   .op {

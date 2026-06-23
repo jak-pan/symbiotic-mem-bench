@@ -2,20 +2,9 @@ recall:
   version: memory-recall-v3-raw-tiny
   fact_top_k: 20
   raw_turn_top_k: 5
-  raw_fallback_top_k: 5
-  query_planner: scripted
+  query_planner: flash
   always_include_raw_turns: true
   raw_recall_primary: true
-  raw_recall_include_facts: false
-  temporal_grounding: Gated
-  count_hint: true
+  raw_recall_include_facts: true
   preference_grounding: true
-  detail_gap_escalation: true
-  enable_temporal_policy: true
-  enable_preference_policy: true
-  enable_count_policy: true
-  enable_current_state_policy: true
-  enable_unavailable_policy: true
-  enable_artifact_policy: true
   answerer_enabled: true
-  support_retry_limit: 1

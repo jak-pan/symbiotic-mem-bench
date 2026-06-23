@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-pub const PRICING_TABLE_VERSION: &str = "official-pricing-2026-06-19";
+pub const PRICING_TABLE_VERSION: &str = "official-pricing-2026-06-23";
 
 #[derive(Clone, Debug, Deserialize)]
 struct RawModelTrace {
@@ -39,6 +39,8 @@ struct RawModelTrace {
     outcome: Option<String>,
     #[serde(default)]
     cost_micro_usd: Option<u64>,
+    #[serde(default)]
+    input_units: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -243,6 +245,18 @@ fn pricing_for(operator: &str, operation: &str, model: &str) -> Option<Pricing> 
             output_per_million_usd: None,
             source: "Gemini API pricing batch: https://ai.google.dev/gemini-api/docs/pricing",
         }),
+        ("openrouter", "embedding", "qwen/qwen3-embedding-8b") => Some(Pricing {
+            input_per_million_usd: Some(0.01),
+            cached_input_per_million_usd: None,
+            output_per_million_usd: None,
+            source: "OpenRouter model pricing: https://openrouter.ai/qwen/qwen3-embedding-8b",
+        }),
+        ("openrouter", "embedding", "qwen/qwen3-embedding-4b") => Some(Pricing {
+            input_per_million_usd: Some(0.01),
+            cached_input_per_million_usd: None,
+            output_per_million_usd: None,
+            source: "OpenRouter model pricing: https://openrouter.ai/qwen/qwen3-embedding-4b",
+        }),
         _ => None,
     }
 }
@@ -326,10 +340,21 @@ pub fn rollup_model_trace_file(path: &Path) -> Option<ModelTraceRollup> {
         }
 
         let (operation, operator, model) = model_identity(&trace);
-        let has_usage = trace.usage.is_some();
+        let usage_input_fallback = (operation == "embedding")
+            .then(|| {
+                trace
+                    .usage
+                    .as_ref()
+                    .and_then(|usage| usage.input_tokens)
+                    .is_none()
+                    .then_some(trace.input_units)
+                    .flatten()
+            })
+            .flatten();
+        let has_usage = trace.usage.is_some() || usage_input_fallback.is_some();
         let usage = trace.usage.unwrap_or_default();
         let cache = trace.cache.unwrap_or_default();
-        let input = usage.input_tokens.unwrap_or(0);
+        let input = usage.input_tokens.or(usage_input_fallback).unwrap_or(0);
         let cached = cache
             .cached_input_tokens
             .or(usage.cache_hit_tokens)
@@ -622,21 +647,22 @@ mod tests {
             "{\"queue_id\":\"chat:deepseek:deepseek-v4-flash\",\"item_id\":\"a\",\"operation\":\"chat\",\"status\":\"queued\",\"attempt\":0,\"timestamp\":\"2026-01-01T00:00:00Z\"}\n\
              {\"queue_id\":\"chat:deepseek:deepseek-v4-flash\",\"item_id\":\"a\",\"operation\":\"chat\",\"status\":\"running\",\"attempt\":1,\"timestamp\":\"2026-01-01T00:00:01Z\"}\n\
              {\"queue_id\":\"chat:deepseek:deepseek-v4-flash\",\"item_id\":\"a\",\"operation\":\"chat\",\"status\":\"succeeded\",\"attempt\":1,\"timestamp\":\"2026-01-01T00:00:02Z\",\"usage\":{\"prompt_tokens\":100,\"cache_hit_tokens\":90,\"cache_miss_tokens\":10,\"completion_tokens\":4}}\n\
-             {\"queue_id\":\"embedding:gemini:gemini-embedding-2\",\"item_id\":\"b\",\"operation\":\"embedding\",\"status\":\"succeeded\",\"attempt\":1,\"timestamp\":\"2026-01-01T00:00:03Z\",\"usage\":{\"prompt_tokens\":1000,\"cache_miss_tokens\":1000,\"completion_tokens\":0}}\n",
+             {\"queue_id\":\"embedding:gemini:gemini-embedding-2\",\"item_id\":\"b\",\"operation\":\"embedding\",\"status\":\"succeeded\",\"attempt\":1,\"timestamp\":\"2026-01-01T00:00:03Z\",\"usage\":{\"prompt_tokens\":1000,\"cache_miss_tokens\":1000,\"completion_tokens\":0}}\n\
+             {\"queue_id\":\"embedding:openrouter:qwen/qwen3-embedding-8b\",\"item_id\":\"c\",\"operation\":\"embedding\",\"status\":\"succeeded\",\"attempt\":1,\"timestamp\":\"2026-01-01T00:00:04Z\",\"input_units\":100000,\"request_units\":8}\n",
         )
         .unwrap();
 
         let rollup = rollup_model_traces(dir.path()).unwrap();
-        assert_eq!(rollup.calls, 2);
-        assert_eq!(rollup.input_tokens, 1100);
+        assert_eq!(rollup.calls, 3);
+        assert_eq!(rollup.input_tokens, 101100);
         assert_eq!(rollup.cached_input_tokens, 90);
-        assert_eq!(rollup.uncached_input_tokens, 1010);
+        assert_eq!(rollup.uncached_input_tokens, 101010);
         assert_eq!(rollup.output_tokens, 4);
-        assert_eq!(rollup.cost_micro_usd, Some(203));
+        assert_eq!(rollup.cost_micro_usd, Some(1203));
         assert!(rollup.cost_estimated);
         assert_eq!(rollup.prompt_cache_partial_hits, 1);
-        assert_eq!(rollup.prompt_cache_misses, 1);
-        assert_eq!(rollup.models.len(), 2);
+        assert_eq!(rollup.prompt_cache_misses, 2);
+        assert_eq!(rollup.models.len(), 3);
         assert!(rollup.models.iter().any(|stat| {
             stat.model == "deepseek-v4-flash"
                 && stat.operator == "deepseek"
@@ -648,6 +674,13 @@ mod tests {
                 && stat.operation == "embedding"
                 && stat.input_tokens == 1000
                 && stat.cost_micro_usd == Some(200)
+        }));
+        assert!(rollup.models.iter().any(|stat| {
+            stat.model == "qwen/qwen3-embedding-8b"
+                && stat.operator == "openrouter"
+                && stat.operation == "embedding"
+                && stat.input_tokens == 100000
+                && stat.cost_micro_usd == Some(1000)
         }));
     }
 }

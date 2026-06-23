@@ -162,7 +162,7 @@ mod tests {
     fn config_signature_changes_with_planner() {
         let models = Models::default();
         let base = json!({"distiller": "heuristic", "query_planner": "off"});
-        let changed = json!({"distiller": "heuristic", "query_planner": "scripted"});
+        let changed = json!({"distiller": "heuristic", "query_planner": "flash"});
         assert_ne!(
             config_signature(&base, &models),
             config_signature(&changed, &models)

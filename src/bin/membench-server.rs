@@ -16,12 +16,13 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
+use chrono::{DateTime, Utc};
 use clap::Parser;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use symbiotic_mem_bench::{
     BenchQueueEvent, artifacts, compare, cost, leaderboard, live, registry, runner,
@@ -95,6 +96,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/run", get(run_detail))
         .route("/run/live", get(run_live))
         .route("/run/questions", get(run_questions))
+        .route("/run/question-debug", get(run_question_debug))
         .route("/run/artifact", get(run_artifact))
         .route("/run/traces", get(run_traces))
         .route("/compare", get(compare_handler))
@@ -145,10 +147,11 @@ async fn list_runs(
     State(state): State<Shared>,
     Query(query): Query<RunsQuery>,
 ) -> impl IntoResponse {
+    let trial_index = registry::scan_trial_markers(&state.repo_root);
     let summaries: Vec<registry::RunSummary> = state
         .scan()
         .iter()
-        .map(registry::summarize)
+        .map(|record| registry::summarize_with_trials(record, &trial_index))
         .filter(|summary| {
             query
                 .system
@@ -185,7 +188,8 @@ async fn run_live(
         let record = state
             .find(&query.id)
             .ok_or_else(|| err(StatusCode::NOT_FOUND, "run not found"))?;
-        let summary = registry::summarize(&record);
+        let trial_index = registry::scan_trial_markers(&state.repo_root);
+        let summary = registry::summarize_with_trials(&record, &trial_index);
         registry::PendingRun {
             run_id: summary.run_id.clone(),
             origin: summary.origin,
@@ -194,6 +198,7 @@ async fn run_live(
             limit: summary.limit,
             run_name: summary.run_name,
             config_label: summary.config_label,
+            settings_label: summary.settings_label,
             status: "complete".to_string(),
             started_ms: None,
             updated_ms: record.modified_ms,
@@ -228,8 +233,12 @@ async fn leaderboard_handler(
     State(state): State<Shared>,
     Query(query): Query<LeaderboardQuery>,
 ) -> impl IntoResponse {
-    let summaries: Vec<registry::RunSummary> =
-        state.scan().iter().map(registry::summarize).collect();
+    let trial_index = registry::scan_trial_markers(&state.repo_root);
+    let summaries: Vec<registry::RunSummary> = state
+        .scan()
+        .iter()
+        .map(|record| registry::summarize_with_trials(record, &trial_index))
+        .collect();
     let mut cohorts = leaderboard::build_cohorts(summaries);
     if let Some(benchmark) = &query.benchmark {
         cohorts.retain(|cohort| &cohort.benchmark == benchmark);
@@ -252,7 +261,8 @@ async fn run_detail(
     let record = state
         .find(&query.id)
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "run not found"))?;
-    let summary = registry::summarize(&record);
+    let trial_index = registry::scan_trial_markers(&state.repo_root);
+    let summary = registry::summarize_with_trials(&record, &trial_index);
     let cohort_fields = registry::compute_cohort_fields(&record.run_root, &record.params);
     let cost_rollup = cost::rollup_model_traces(&record.run_root);
     Ok(Json(json!({
@@ -276,6 +286,65 @@ async fn run_questions(
 }
 
 #[derive(Deserialize)]
+struct QuestionDebugQuery {
+    id: String,
+    path: String,
+}
+
+async fn run_question_debug(
+    State(state): State<Shared>,
+    Query(query): Query<QuestionDebugQuery>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let record = state
+        .find(&query.id)
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "run not found"))?;
+    let path = question_debug_path(&record.run_root, &query.path)?;
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|_| err(StatusCode::NOT_FOUND, "question debug not present"))?;
+    let value: Value = serde_json::from_str(&raw)
+        .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok(Json(json!({ "path": query.path, "json": value })))
+}
+
+fn question_debug_path(
+    run_root: &Path,
+    artifact: &str,
+) -> Result<PathBuf, (StatusCode, Json<Value>)> {
+    let relative = Path::new(artifact);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "question debug path must be run-relative",
+        ));
+    }
+    if !relative.ends_with("question-debug.json") {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "question debug path must point to question-debug.json",
+        ));
+    }
+
+    let candidate = run_root.join(relative);
+    let root = run_root
+        .canonicalize()
+        .map_err(|_| err(StatusCode::NOT_FOUND, "run root not found"))?;
+    let candidate = candidate
+        .canonicalize()
+        .map_err(|_| err(StatusCode::NOT_FOUND, "question debug not present"))?;
+    if !candidate.starts_with(root) {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "question debug path escaped run root",
+        ));
+    }
+    Ok(candidate)
+}
+
+#[derive(Deserialize)]
 struct ArtifactQuery {
     id: String,
     kind: String,
@@ -292,6 +361,7 @@ fn artifact_file(kind: &str) -> Option<(&'static str, bool)> {
         "provenance" => ("provenance.jsonl", true),
         "memory_traces" => ("memory-traces.jsonl", true),
         "model_traces" => ("model-traces.jsonl", true),
+        "step_analytics" => ("step-analytics.json", false),
         "scored" => ("scored.json", false),
         "score_summary" => ("score-summary.json", false),
         _ => return None,
@@ -346,6 +416,7 @@ fn read_jsonl_values(path: &Path, offset: usize, limit: usize) -> (usize, Vec<Va
 
 /// Cap on memory-trace rows returned at once.
 const TRACE_ROW_CAP: usize = 4000;
+const TRACE_EVENT_CAP: usize = 12000;
 
 async fn run_traces(
     State(state): State<Shared>,
@@ -361,10 +432,19 @@ async fn run_traces(
         0,
         TRACE_ROW_CAP,
     );
+    let memory_stage_timing = summarize_memory_stage_timing(&memory_rows);
     let model_rollup = cost::rollup_model_traces(root);
 
     // Provider/model queue timing, when provider-backed runs emit queue JSONL.
-    let queue_timing = read_queue_timing(root);
+    let queue_events = read_queue_events(root).unwrap_or_default();
+    let queue_timing = if queue_events.is_empty() {
+        None
+    } else {
+        serde_json::to_value(summarize_queue_timing(&queue_events)).ok()
+    };
+    let trace_waterfall = summarize_trace_waterfall(&memory_rows, &queue_events);
+    let dependency_waterfall = summarize_dependency_waterfall(&memory_rows);
+    let trace_events = summarize_trace_events(&memory_rows, &queue_events);
     let workflow_queue = read_workflow_queue(root);
 
     Ok(Json(json!({
@@ -373,13 +453,17 @@ async fn run_traces(
             "truncated": memory_total > memory_rows.len(),
             "rows": memory_rows,
         },
+        "memory_stage_timing": memory_stage_timing,
         "model_rollup": model_rollup,
         "queue_timing": queue_timing,
+        "trace_waterfall": trace_waterfall,
+        "dependency_waterfall": dependency_waterfall,
+        "trace_events": trace_events,
         "workflow_queue": workflow_queue,
     })))
 }
 
-fn read_queue_timing(run_root: &Path) -> Option<Value> {
+fn read_queue_events(run_root: &Path) -> Option<Vec<BenchQueueEvent>> {
     let path = run_root
         .join("provider-queue")
         .join("model-queue-traces.jsonl");
@@ -396,7 +480,1005 @@ fn read_queue_timing(run_root: &Path) -> Option<Value> {
     if events.is_empty() {
         return None;
     }
-    serde_json::to_value(summarize_queue_timing(&events)).ok()
+    Some(events)
+}
+
+fn summarize_trace_events(memory_rows: &[Value], queue_events: &[BenchQueueEvent]) -> Value {
+    let queue_timing: HashMap<(String, String), symbiotic_mem_bench::BenchTimingSummary> =
+        summarize_queue_timing(queue_events)
+            .into_iter()
+            .map(|row| ((row.queue_id.clone(), row.item_id.clone()), row))
+            .collect();
+
+    let mut rows = Vec::new();
+    for trace in memory_rows {
+        let Some(timestamp) = trace.get("timestamp").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(operation) = memory_operation_for_trace(trace) else {
+            continue;
+        };
+        let event = trace
+            .get("event")
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+            .to_string();
+        let (item_count, item_unit) = memory_item_count_for_trace(trace).unwrap_or((0, "items"));
+        rows.push(json!({
+            "timestamp": timestamp,
+            "kind": "memory",
+            "operation": operation,
+            "lane": trace.get("stage").and_then(Value::as_str).unwrap_or("memory"),
+            "event": event,
+            "status": trace_status(&event),
+            "attempt": trace.get("attempt").and_then(Value::as_u64).unwrap_or(0),
+            "duration_ms": trace.get("duration_ms").and_then(Value::as_i64),
+            "wait_ms": Value::Null,
+            "run_ms": Value::Null,
+            "total_ms": Value::Null,
+            "item_count": item_count,
+            "item_unit": item_unit,
+            "source": trace_source(trace),
+            "error": trace.get("error").and_then(Value::as_str),
+        }));
+    }
+
+    for event in queue_events {
+        let timing = queue_timing.get(&(event.queue_id.clone(), event.item_id.clone()));
+        rows.push(json!({
+            "timestamp": event.timestamp.to_rfc3339(),
+            "kind": "provider",
+            "operation": event.operation,
+            "lane": event.queue_id,
+            "event": queue_status_name(event.status),
+            "status": queue_status_name(event.status),
+            "attempt": event.attempt,
+            "duration_ms": Value::Null,
+            "wait_ms": timing.and_then(|row| row.wait_ms),
+            "run_ms": timing.and_then(|row| row.run_ms),
+            "total_ms": timing.and_then(|row| row.total_ms),
+            "item_count": 0,
+            "item_unit": "items",
+            "source": event.item_id,
+            "error": event.error,
+        }));
+    }
+
+    rows.sort_by(|a, b| {
+        let a_ts = a.get("timestamp").and_then(Value::as_str).unwrap_or("");
+        let b_ts = b.get("timestamp").and_then(Value::as_str).unwrap_or("");
+        a_ts.cmp(b_ts)
+    });
+    let total = rows.len();
+    let truncated = total > TRACE_EVENT_CAP;
+    if truncated {
+        rows.truncate(TRACE_EVENT_CAP);
+    }
+    json!({
+        "total": total,
+        "truncated": truncated,
+        "rows": rows,
+    })
+}
+
+fn trace_status(event: &str) -> &'static str {
+    if event.ends_with("failed") {
+        "failed"
+    } else if event.ends_with("succeeded") || event == "branch_joined" {
+        "succeeded"
+    } else {
+        "running"
+    }
+}
+
+#[derive(Clone)]
+struct WaterfallBlock {
+    lane: String,
+    lane_kind: &'static str,
+    lane_order: usize,
+    kind: &'static str,
+    start_at: DateTime<Utc>,
+    end_at: DateTime<Utc>,
+    label: String,
+    status: String,
+    source: String,
+    item_count: u64,
+    item_unit: String,
+}
+
+fn summarize_trace_waterfall(memory_rows: &[Value], queue_events: &[BenchQueueEvent]) -> Value {
+    const WATERFALL_BLOCK_CAP: usize = 8000;
+
+    let mut blocks = Vec::new();
+    blocks.extend(memory_waterfall_blocks(memory_rows));
+    blocks.extend(provider_waterfall_blocks(queue_events));
+    blocks.retain(|block| block.end_at >= block.start_at);
+    blocks.sort_by_key(|block| (block.lane_order, block.start_at, block.end_at));
+
+    let Some(timeline_start) = blocks.iter().map(|block| block.start_at).min() else {
+        return json!({
+            "timeline_start": null,
+            "timeline_end": null,
+            "duration_ms": 0,
+            "block_count": 0,
+            "truncated": false,
+            "lanes": [],
+        });
+    };
+    let timeline_end = blocks
+        .iter()
+        .map(|block| block.end_at)
+        .max()
+        .unwrap_or(timeline_start);
+    let duration_ms = (timeline_end - timeline_start).num_milliseconds().max(1);
+    let truncated = blocks.len() > WATERFALL_BLOCK_CAP;
+    if truncated {
+        blocks.truncate(WATERFALL_BLOCK_CAP);
+    }
+
+    let mut lanes: BTreeMap<(usize, String, &'static str), Vec<Value>> = BTreeMap::new();
+    for block in blocks {
+        let start_ms = (block.start_at - timeline_start).num_milliseconds().max(0);
+        let end_ms = (block.end_at - timeline_start)
+            .num_milliseconds()
+            .max(start_ms);
+        lanes
+            .entry((block.lane_order, block.lane.clone(), block.lane_kind))
+            .or_default()
+            .push(json!({
+                "kind": block.kind,
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "duration_ms": end_ms - start_ms,
+                "label": block.label,
+                "status": block.status,
+                "source": block.source,
+                "item_count": block.item_count,
+                "item_unit": block.item_unit,
+            }));
+    }
+
+    let lanes: Vec<Value> = lanes
+        .into_iter()
+        .map(|((_order, name, kind), blocks)| {
+            json!({
+                "name": name,
+                "kind": kind,
+                "blocks": blocks,
+            })
+        })
+        .collect();
+
+    json!({
+        "timeline_start": timeline_start.to_rfc3339(),
+        "timeline_end": timeline_end.to_rfc3339(),
+        "duration_ms": duration_ms,
+        "block_count": lanes
+            .iter()
+            .map(|lane| lane.get("blocks").and_then(Value::as_array).map(Vec::len).unwrap_or(0))
+            .sum::<usize>(),
+        "truncated": truncated,
+        "lanes": lanes,
+    })
+}
+
+#[derive(Default)]
+struct SourcePhaseTimes {
+    first_at: Option<DateTime<Utc>>,
+    last_at: Option<DateTime<Utc>>,
+    pre_capture_start: Option<DateTime<Utc>>,
+    pre_capture_end: Option<DateTime<Utc>>,
+    capture_start: Option<DateTime<Utc>>,
+    capture_end: Option<DateTime<Utc>>,
+    raw_start: Option<DateTime<Utc>>,
+    raw_last_batch: Option<DateTime<Utc>>,
+    raw_items: u64,
+    distill_start: Option<DateTime<Utc>>,
+    distill_join: Option<DateTime<Utc>>,
+    distill_items: u64,
+    write_start: Option<DateTime<Utc>>,
+    write_end: Option<DateTime<Utc>>,
+    index_start: Option<DateTime<Utc>>,
+    index_end: Option<DateTime<Utc>>,
+    consolidate_start: Option<DateTime<Utc>>,
+    consolidate_end: Option<DateTime<Utc>>,
+    answer_start: Option<DateTime<Utc>>,
+    answer_end: Option<DateTime<Utc>>,
+}
+
+fn summarize_dependency_waterfall(memory_rows: &[Value]) -> Value {
+    let mut sources: BTreeMap<String, SourcePhaseTimes> = BTreeMap::new();
+
+    for trace in memory_rows {
+        let Some(timestamp) = timestamp_for_trace(trace) else {
+            continue;
+        };
+        let Some(operation) = memory_operation_for_trace(trace) else {
+            continue;
+        };
+        let event = trace.get("event").and_then(Value::as_str).unwrap_or("");
+        let source = trace_source(trace);
+        if source == "run" {
+            continue;
+        }
+        let entry = sources.entry(source).or_default();
+        let trace_start = datetime_field(trace, "started_at").unwrap_or(timestamp);
+        let trace_end = datetime_field(trace, "finished_at").unwrap_or(timestamp);
+        entry.first_at = Some(
+            entry
+                .first_at
+                .map_or(trace_start, |prev| prev.min(trace_start)),
+        );
+        entry.last_at = Some(entry.last_at.map_or(trace_end, |prev| prev.max(trace_end)));
+
+        match (operation.as_str(), event) {
+            ("pre_capture_setup", "operation_succeeded" | "operation_failed") => {
+                entry.pre_capture_start =
+                    Some(datetime_field(trace, "started_at").unwrap_or(timestamp));
+                entry.pre_capture_end =
+                    Some(datetime_field(trace, "finished_at").unwrap_or(timestamp));
+            }
+            ("capture", "operation_started") => {
+                entry.capture_start = Some(datetime_field(trace, "started_at").unwrap_or(timestamp))
+            }
+            ("capture", "operation_succeeded" | "operation_failed") => {
+                entry.capture_end = Some(datetime_field(trace, "finished_at").unwrap_or(timestamp))
+            }
+            ("embed_raw", "branch_started") => {
+                entry.raw_start = Some(datetime_field(trace, "started_at").unwrap_or(timestamp))
+            }
+            ("embed_raw", "batch_succeeded" | "batch_failed") => {
+                entry.raw_last_batch = Some(
+                    entry
+                        .raw_last_batch
+                        .map_or(timestamp, |prev| prev.max(timestamp)),
+                );
+                if let Some((count, _unit)) = memory_item_count_for_trace(trace) {
+                    entry.raw_items = entry.raw_items.saturating_add(count);
+                }
+            }
+            ("distill", "branch_started") => {
+                entry.distill_start = Some(datetime_field(trace, "started_at").unwrap_or(timestamp))
+            }
+            ("distill", "batch_succeeded" | "batch_failed") => {
+                if let Some((count, _unit)) = memory_item_count_for_trace(trace) {
+                    entry.distill_items = entry.distill_items.saturating_add(count);
+                }
+            }
+            ("distill", "branch_joined") => {
+                entry.distill_join = Some(datetime_field(trace, "finished_at").unwrap_or(timestamp))
+            }
+            ("write_archive", "operation_started") => {
+                entry.write_start = Some(datetime_field(trace, "started_at").unwrap_or(timestamp))
+            }
+            ("write_archive", "operation_succeeded" | "operation_failed") => {
+                entry.write_end = Some(datetime_field(trace, "finished_at").unwrap_or(timestamp))
+            }
+            ("index", "operation_started") => {
+                entry.index_start = Some(datetime_field(trace, "started_at").unwrap_or(timestamp))
+            }
+            ("index", "operation_succeeded" | "operation_failed") => {
+                entry.index_end = Some(datetime_field(trace, "finished_at").unwrap_or(timestamp))
+            }
+            ("consolidate", "operation_started") => {
+                entry.consolidate_start =
+                    Some(datetime_field(trace, "started_at").unwrap_or(timestamp))
+            }
+            ("consolidate", "operation_succeeded" | "operation_failed") => {
+                entry.consolidate_end =
+                    Some(datetime_field(trace, "finished_at").unwrap_or(timestamp))
+            }
+            (
+                "query_plan" | "embed_query" | "fact_search" | "raw_search" | "support_check"
+                | "answer_context" | "answer",
+                "operation_started",
+            ) => {
+                entry.answer_start = Some(
+                    entry
+                        .answer_start
+                        .map_or(timestamp, |prev| prev.min(timestamp)),
+                );
+            }
+            (
+                "query_plan" | "embed_query" | "fact_search" | "raw_search" | "support_check"
+                | "answer_context" | "answer",
+                "operation_succeeded" | "operation_failed",
+            ) => {
+                entry.answer_end = Some(
+                    entry
+                        .answer_end
+                        .map_or(timestamp, |prev| prev.max(timestamp)),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    let Some(timeline_start) = sources.values().filter_map(|source| source.first_at).min() else {
+        return json!({
+            "timeline_start": null,
+            "timeline_end": null,
+            "duration_ms": 0,
+            "lanes": [],
+        });
+    };
+    let timeline_end = sources
+        .values()
+        .filter_map(|source| source.last_at)
+        .max()
+        .unwrap_or(timeline_start);
+    let duration_ms = (timeline_end - timeline_start).num_milliseconds().max(1);
+
+    let mut lanes = Vec::new();
+    for (source, phase) in sources {
+        let mut blocks = Vec::new();
+        push_dependency_block(
+            &mut blocks,
+            timeline_start,
+            "setup",
+            "vault setup",
+            phase.pre_capture_start,
+            phase.pre_capture_end,
+            0,
+            "items",
+        );
+        push_dependency_block(
+            &mut blocks,
+            timeline_start,
+            "capture",
+            "capture",
+            phase.capture_start,
+            phase.capture_end,
+            0,
+            "items",
+        );
+
+        let raw_done = phase.raw_last_batch;
+        let distill_done = phase.distill_join;
+        let parallel_start = [phase.raw_start, phase.distill_start]
+            .into_iter()
+            .flatten()
+            .min();
+        let first_done = [raw_done, distill_done].into_iter().flatten().min();
+        if let (Some(start), Some(end)) = (parallel_start, first_done) {
+            push_dependency_block_abs(
+                &mut blocks,
+                timeline_start,
+                "parallel",
+                "raw + distill",
+                start,
+                end,
+                phase.raw_items.saturating_add(phase.distill_items),
+                "items",
+            );
+        }
+        if let (Some(raw_done), Some(distill_done)) = (raw_done, distill_done) {
+            if raw_done < distill_done {
+                push_dependency_block_abs(
+                    &mut blocks,
+                    timeline_start,
+                    "blocked_distill",
+                    "archive/index waiting on distill",
+                    raw_done,
+                    distill_done,
+                    phase.distill_items,
+                    "facts",
+                );
+            } else if distill_done < raw_done {
+                push_dependency_block_abs(
+                    &mut blocks,
+                    timeline_start,
+                    "blocked_raw",
+                    "archive/index waiting on raw embeds",
+                    distill_done,
+                    raw_done,
+                    phase.raw_items,
+                    "turns",
+                );
+            }
+        }
+
+        push_dependency_block(
+            &mut blocks,
+            timeline_start,
+            "archive",
+            "write archive",
+            phase.write_start,
+            phase.write_end,
+            phase.distill_items,
+            "facts",
+        );
+        push_dependency_block(
+            &mut blocks,
+            timeline_start,
+            "index",
+            "index",
+            phase.index_start,
+            phase.index_end,
+            phase.distill_items,
+            "records",
+        );
+        push_dependency_block(
+            &mut blocks,
+            timeline_start,
+            "consolidate",
+            "briefs",
+            phase.consolidate_start,
+            phase.consolidate_end,
+            0,
+            "briefs",
+        );
+        push_dependency_block(
+            &mut blocks,
+            timeline_start,
+            "answer",
+            "answer path",
+            phase.answer_start,
+            phase.answer_end,
+            0,
+            "items",
+        );
+
+        blocks.sort_by_key(|block| block.get("start_ms").and_then(Value::as_i64).unwrap_or(0));
+        let total_wait_ms: i64 = blocks
+            .iter()
+            .filter(|block| {
+                block
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .starts_with("blocked_")
+            })
+            .filter_map(|block| block.get("duration_ms").and_then(Value::as_i64))
+            .sum();
+        let setup_ms: i64 = blocks
+            .iter()
+            .filter(|block| block.get("kind").and_then(Value::as_str) == Some("setup"))
+            .filter_map(|block| block.get("duration_ms").and_then(Value::as_i64))
+            .sum();
+        lanes.push(json!({
+            "source": source,
+            "wait_ms": total_wait_ms,
+            "setup_ms": setup_ms,
+            "blocks": blocks,
+        }));
+    }
+    lanes.sort_by(|a, b| {
+        b.get("wait_ms")
+            .and_then(Value::as_i64)
+            .cmp(&a.get("wait_ms").and_then(Value::as_i64))
+            .then_with(|| {
+                b.get("setup_ms")
+                    .and_then(Value::as_i64)
+                    .cmp(&a.get("setup_ms").and_then(Value::as_i64))
+            })
+    });
+
+    json!({
+        "timeline_start": timeline_start.to_rfc3339(),
+        "timeline_end": timeline_end.to_rfc3339(),
+        "duration_ms": duration_ms,
+        "lanes": lanes,
+    })
+}
+
+fn push_dependency_block(
+    blocks: &mut Vec<Value>,
+    timeline_start: DateTime<Utc>,
+    kind: &'static str,
+    label: &'static str,
+    start: Option<DateTime<Utc>>,
+    end: Option<DateTime<Utc>>,
+    item_count: u64,
+    item_unit: &'static str,
+) {
+    if let (Some(start), Some(end)) = (start, end) {
+        push_dependency_block_abs(
+            blocks,
+            timeline_start,
+            kind,
+            label,
+            start,
+            end,
+            item_count,
+            item_unit,
+        );
+    }
+}
+
+fn push_dependency_block_abs(
+    blocks: &mut Vec<Value>,
+    timeline_start: DateTime<Utc>,
+    kind: &'static str,
+    label: &'static str,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    item_count: u64,
+    item_unit: &'static str,
+) {
+    let start_ms = (start - timeline_start).num_milliseconds().max(0);
+    let end_ms = (end - timeline_start).num_milliseconds().max(start_ms);
+    blocks.push(json!({
+        "kind": kind,
+        "label": label,
+        "start_ms": start_ms,
+        "end_ms": end_ms,
+        "duration_ms": end_ms - start_ms,
+        "item_count": item_count,
+        "item_unit": item_unit,
+    }));
+}
+
+fn memory_waterfall_blocks(rows: &[Value]) -> Vec<WaterfallBlock> {
+    let mut has_batches = HashMap::<String, bool>::new();
+    for trace in rows {
+        let Some(operation) = memory_operation_for_trace(trace) else {
+            continue;
+        };
+        let event = trace.get("event").and_then(Value::as_str).unwrap_or("");
+        if matches!(event, "batch_succeeded" | "batch_failed") {
+            has_batches.insert(operation, true);
+        }
+    }
+
+    let mut traces: Vec<&Value> = rows.iter().collect();
+    traces.sort_by_key(|trace| timestamp_for_trace(trace));
+    let mut anchors: HashMap<(String, String), DateTime<Utc>> = HashMap::new();
+    let mut blocks = Vec::new();
+
+    for trace in traces {
+        let Some(operation) = memory_operation_for_trace(trace) else {
+            continue;
+        };
+        let event = trace.get("event").and_then(Value::as_str).unwrap_or("");
+        let source = trace_source(trace);
+        let anchor_key = (operation.clone(), source.clone());
+        let timestamp = timestamp_for_trace(trace);
+        if matches!(
+            event,
+            "operation_started" | "branch_started" | "batch_started"
+        ) {
+            if let Some(start) = datetime_field(trace, "started_at").or(timestamp) {
+                anchors.insert(anchor_key, start);
+            }
+            continue;
+        }
+
+        let operation_has_batches = has_batches.get(&operation).copied().unwrap_or(false);
+        if operation_has_batches
+            && matches!(
+                event,
+                "operation_succeeded" | "operation_failed" | "branch_joined"
+            )
+        {
+            continue;
+        }
+        if !matches!(
+            event,
+            "operation_succeeded" | "operation_failed" | "batch_succeeded" | "batch_failed"
+        ) {
+            continue;
+        }
+
+        let Some(end) = datetime_field(trace, "finished_at").or(timestamp) else {
+            continue;
+        };
+        let start = datetime_field(trace, "started_at")
+            .or_else(|| {
+                trace
+                    .get("duration_ms")
+                    .and_then(Value::as_i64)
+                    .map(|duration| end - chrono::Duration::milliseconds(duration.max(0)))
+            })
+            .or_else(|| anchors.get(&anchor_key).copied())
+            .unwrap_or(end);
+        if matches!(event, "batch_succeeded" | "batch_failed") {
+            anchors.insert(anchor_key, end);
+        }
+        let (item_count, item_unit) = memory_item_count_for_trace(trace).unwrap_or((0, "items"));
+        blocks.push(WaterfallBlock {
+            lane: operation.clone(),
+            lane_kind: "memory",
+            lane_order: stage_order(&operation),
+            kind: if event.ends_with("failed") {
+                "memory_failed"
+            } else {
+                "memory_work"
+            },
+            start_at: start,
+            end_at: end,
+            label: event.replace("operation_", "").replace("batch_", ""),
+            status: if event.ends_with("failed") {
+                "failed"
+            } else {
+                "succeeded"
+            }
+            .to_string(),
+            source,
+            item_count,
+            item_unit: item_unit.to_string(),
+        });
+    }
+
+    blocks
+}
+
+fn provider_waterfall_blocks(events: &[BenchQueueEvent]) -> Vec<WaterfallBlock> {
+    let mut grouped: BTreeMap<(&str, &str), Vec<&BenchQueueEvent>> = BTreeMap::new();
+    for event in events {
+        grouped
+            .entry((&event.queue_id, &event.item_id))
+            .or_default()
+            .push(event);
+    }
+
+    let mut blocks = Vec::new();
+    for mut group in grouped.into_values() {
+        group.sort_by_key(|event| event.timestamp);
+        let Some(first) = group.first() else {
+            continue;
+        };
+        let queued_at = group
+            .iter()
+            .find(|event| event.status == symbiotic_mem_bench::BenchEventStatus::Queued)
+            .map(|event| event.timestamp);
+        let running_at = group
+            .iter()
+            .find(|event| event.status == symbiotic_mem_bench::BenchEventStatus::Running)
+            .map(|event| event.timestamp);
+        let terminal = group.iter().rev().find(|event| {
+            matches!(
+                event.status,
+                symbiotic_mem_bench::BenchEventStatus::Succeeded
+                    | symbiotic_mem_bench::BenchEventStatus::Failed
+                    | symbiotic_mem_bench::BenchEventStatus::Dead
+            )
+        });
+        let terminal_at = terminal.map(|event| event.timestamp);
+        let status = terminal
+            .map(|event| queue_status_name(event.status).to_string())
+            .unwrap_or_else(|| "running".to_string());
+        let attempts = group
+            .iter()
+            .map(|event| event.attempt)
+            .max()
+            .unwrap_or_default();
+        let lane = format!("{}:{}", first.operation, short_queue_id(&first.queue_id));
+        let lane_order = 1000 + if first.operation == "embedding" { 1 } else { 0 };
+
+        if let (Some(start), Some(end)) = (queued_at, running_at) {
+            blocks.push(WaterfallBlock {
+                lane: lane.clone(),
+                lane_kind: "provider",
+                lane_order,
+                kind: "provider_wait",
+                start_at: start,
+                end_at: end,
+                label: format!("wait a{attempts}"),
+                status: status.clone(),
+                source: first.item_id.clone(),
+                item_count: 0,
+                item_unit: "items".to_string(),
+            });
+        }
+        if let (Some(start), Some(end)) = (running_at, terminal_at) {
+            blocks.push(WaterfallBlock {
+                lane,
+                lane_kind: "provider",
+                lane_order,
+                kind: if matches!(
+                    terminal.map(|event| event.status),
+                    Some(
+                        symbiotic_mem_bench::BenchEventStatus::Failed
+                            | symbiotic_mem_bench::BenchEventStatus::Dead
+                    )
+                ) {
+                    "provider_failed"
+                } else {
+                    "provider_run"
+                },
+                start_at: start,
+                end_at: end,
+                label: format!("run a{attempts}"),
+                status,
+                source: first.item_id.clone(),
+                item_count: 0,
+                item_unit: "items".to_string(),
+            });
+        }
+    }
+
+    blocks
+}
+
+fn datetime_field(trace: &Value, key: &str) -> Option<DateTime<Utc>> {
+    trace
+        .get(key)
+        .and_then(Value::as_str)
+        .and_then(|raw| DateTime::parse_from_rfc3339(raw).ok())
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+fn trace_source(trace: &Value) -> String {
+    trace
+        .get("source_id")
+        .or_else(|| trace.get("run_id"))
+        .or_else(|| trace.get("question_id"))
+        .and_then(Value::as_str)
+        .unwrap_or("run")
+        .to_string()
+}
+
+fn short_queue_id(id: &str) -> String {
+    id.strip_prefix("chat:")
+        .or_else(|| id.strip_prefix("embedding:"))
+        .unwrap_or(id)
+        .to_string()
+}
+
+fn queue_status_name(status: symbiotic_mem_bench::BenchEventStatus) -> &'static str {
+    match status {
+        symbiotic_mem_bench::BenchEventStatus::Queued => "queued",
+        symbiotic_mem_bench::BenchEventStatus::Running => "running",
+        symbiotic_mem_bench::BenchEventStatus::Succeeded => "succeeded",
+        symbiotic_mem_bench::BenchEventStatus::Failed => "failed",
+        symbiotic_mem_bench::BenchEventStatus::Dead => "dead",
+    }
+}
+
+#[derive(Default)]
+struct MemoryStageTimingAcc {
+    events: u64,
+    batch_events: u64,
+    intermediate_failed: u64,
+    failed: u64,
+    batch_item_count: u64,
+    batch_item_unit: String,
+    terminal_item_count: u64,
+    terminal_item_unit: String,
+    cadence_ms: Vec<u64>,
+    numeric_metrics: BTreeMap<String, Vec<f64>>,
+}
+
+fn summarize_memory_stage_timing(rows: &[Value]) -> Vec<Value> {
+    let mut stages: BTreeMap<String, MemoryStageTimingAcc> = BTreeMap::new();
+    let mut anchors: HashMap<(String, String), DateTime<Utc>> = HashMap::new();
+
+    for trace in rows {
+        let Some(operation) = memory_operation_for_trace(trace) else {
+            continue;
+        };
+        let event = trace.get("event").and_then(Value::as_str).unwrap_or("");
+        let source = trace
+            .get("source_id")
+            .or_else(|| trace.get("run_id"))
+            .or_else(|| trace.get("question_id"))
+            .and_then(Value::as_str)
+            .unwrap_or("run")
+            .to_string();
+        let timestamp = timestamp_for_trace(trace);
+        let entry = stages.entry(operation.clone()).or_default();
+        entry.events += 1;
+
+        if matches!(event, "operation_failed" | "batch_failed") {
+            entry.failed += 1;
+        }
+        if event == "batch_failed" {
+            entry.intermediate_failed += 1;
+        }
+        if let Some((count, unit)) = memory_item_count_for_trace(trace) {
+            if matches!(event, "batch_succeeded" | "batch_failed") {
+                entry.batch_item_count += count;
+                entry.batch_item_unit = unit.to_string();
+            } else {
+                entry.terminal_item_count += count;
+                entry.terminal_item_unit = unit.to_string();
+            }
+        }
+        collect_numeric_metrics(trace, &mut entry.numeric_metrics);
+
+        let anchor_key = (operation.clone(), source);
+        if matches!(
+            event,
+            "operation_started" | "branch_started" | "batch_started"
+        ) {
+            if let Some(timestamp) = timestamp {
+                anchors.insert(anchor_key, timestamp);
+            }
+            continue;
+        }
+
+        if matches!(event, "batch_succeeded" | "batch_failed") {
+            entry.batch_events += 1;
+            if let Some(duration_ms) = trace.get("duration_ms").and_then(Value::as_u64) {
+                entry.cadence_ms.push(duration_ms);
+            } else if let Some(timestamp) = timestamp {
+                if let Some(previous) = anchors.get(&anchor_key) {
+                    entry
+                        .cadence_ms
+                        .push((timestamp - *previous).num_milliseconds().max(0) as u64);
+                }
+                anchors.insert(anchor_key, timestamp);
+            }
+        } else if matches!(operation.as_str(), "pre_capture_setup" | "pre_recall_setup")
+            && matches!(event, "operation_succeeded" | "operation_failed")
+        {
+            if let Some(duration_ms) = trace.get("duration_ms").and_then(Value::as_u64) {
+                entry.cadence_ms.push(duration_ms);
+            } else if let Some(timestamp) = timestamp {
+                if let Some(previous) = anchors.get(&anchor_key) {
+                    entry
+                        .cadence_ms
+                        .push((timestamp - *previous).num_milliseconds().max(0) as u64);
+                }
+            }
+        }
+    }
+
+    let mut rows: Vec<Value> = stages
+        .into_iter()
+        .map(|(operation, acc)| {
+            let (item_count, item_unit) = if acc.batch_item_count > 0 {
+                (acc.batch_item_count, acc.batch_item_unit.as_str())
+            } else {
+                (acc.terminal_item_count, acc.terminal_item_unit.as_str())
+            };
+            json!({
+                "operation": operation,
+                "events": acc.events,
+                "batch_events": acc.batch_events,
+                "intermediate_failed": acc.intermediate_failed,
+                "failed": acc.failed,
+                "item_count": item_count,
+                "item_unit": if item_unit.is_empty() { "items" } else { item_unit },
+                "work_ms_p50": percentile_u64(&acc.cadence_ms, 50.0),
+                "work_ms_p80": percentile_u64(&acc.cadence_ms, 80.0),
+                "work_ms_p95": percentile_u64(&acc.cadence_ms, 95.0),
+                "work_ms_p98": percentile_u64(&acc.cadence_ms, 98.0),
+                "numeric_metrics": summarize_numeric_metrics(acc.numeric_metrics),
+            })
+        })
+        .collect();
+    rows.sort_by_key(|row| {
+        let operation = row.get("operation").and_then(Value::as_str).unwrap_or("");
+        stage_order(operation)
+    });
+    rows
+}
+
+fn collect_numeric_metrics(trace: &Value, out: &mut BTreeMap<String, Vec<f64>>) {
+    let Some(metrics) = trace.get("metrics").and_then(Value::as_object) else {
+        return;
+    };
+    for (key, value) in metrics {
+        if let Some(number) = value.as_f64() {
+            out.entry(key.clone()).or_default().push(number);
+        }
+    }
+}
+
+fn summarize_numeric_metrics(metrics: BTreeMap<String, Vec<f64>>) -> Value {
+    Value::Object(
+        metrics
+            .into_iter()
+            .filter_map(|(key, mut values)| {
+                if values.is_empty() {
+                    return None;
+                }
+                values.sort_by(|a, b| a.total_cmp(b));
+                Some((
+                    key,
+                    json!({
+                        "count": values.len(),
+                        "p50": percentile_sorted_f64(&values, 50.0),
+                        "p80": percentile_sorted_f64(&values, 80.0),
+                        "p95": percentile_sorted_f64(&values, 95.0),
+                        "p98": percentile_sorted_f64(&values, 98.0),
+                        "max": values.last().copied(),
+                    }),
+                ))
+            })
+            .collect(),
+    )
+}
+
+fn memory_operation_for_trace(trace: &Value) -> Option<String> {
+    let op = trace.get("operation").and_then(Value::as_str)?;
+    if op == "adapter_call" {
+        if let Some(stage @ ("pre_capture_setup" | "pre_recall_setup")) =
+            trace.get("stage").and_then(Value::as_str)
+        {
+            return Some(stage.to_string());
+        }
+        return None;
+    }
+    let metrics = trace.get("metrics").unwrap_or(&Value::Null);
+    if op == "embed_facts" && metrics.get("kind").and_then(Value::as_str) == Some("brief") {
+        return Some("consolidate".to_string());
+    }
+    Some(op.to_string())
+}
+
+fn timestamp_for_trace(trace: &Value) -> Option<DateTime<Utc>> {
+    trace
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(|raw| DateTime::parse_from_rfc3339(raw).ok())
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+fn memory_item_count_for_trace(trace: &Value) -> Option<(u64, &'static str)> {
+    let metrics = trace.get("metrics").unwrap_or(&Value::Null);
+    let keys = [
+        ("turn_count", "turns"),
+        ("raw_turn_count", "turns"),
+        ("total_turn_count", "turns"),
+        ("fact_count", "facts"),
+        ("base_fact_count", "facts"),
+        ("total_fact_count", "facts"),
+        ("record_count", "records"),
+        ("brief_count", "briefs"),
+        ("extractive_brief_count", "briefs"),
+        ("context_item_count", "ctx"),
+        ("evidence_id_count", "ctx"),
+    ];
+    for (key, unit) in keys {
+        if let Some(count) = metrics.get(key).and_then(Value::as_u64) {
+            if metrics.get("kind").and_then(Value::as_str) == Some("brief") && key == "fact_count" {
+                return Some((count, "briefs"));
+            }
+            return Some((count, unit));
+        }
+    }
+    trace
+        .get("item_count")
+        .and_then(Value::as_u64)
+        .map(|count| (count, "items"))
+}
+
+fn percentile_u64(values: &[u64], percentile: f64) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    let rank = ((percentile / 100.0) * (sorted.len().saturating_sub(1)) as f64).round() as usize;
+    sorted.get(rank).map(|value| *value as f64)
+}
+
+fn percentile_sorted_f64(values: &[f64], percentile: f64) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let rank = ((percentile / 100.0) * (values.len().saturating_sub(1)) as f64).round() as usize;
+    values.get(rank).copied()
+}
+
+fn stage_order(operation: &str) -> usize {
+    [
+        "pre_capture_setup",
+        "capture",
+        "ingest",
+        "distill",
+        "write_archive",
+        "embed_raw",
+        "embed_facts",
+        "index",
+        "consolidate",
+        "pre_recall_setup",
+        "query_plan",
+        "embed_query",
+        "fact_search",
+        "raw_search",
+        "support_check",
+        "answer_context",
+        "retrieve",
+        "answer",
+        "score",
+    ]
+    .iter()
+    .position(|known| *known == operation)
+    .unwrap_or(usize::MAX)
 }
 
 fn read_workflow_queue(run_root: &Path) -> Option<Value> {
@@ -497,6 +1579,7 @@ fn recent_workflow_errors(conn: &rusqlite::Connection) -> Vec<Value> {
         "select item_id, queue_id, kind, status, attempt, last_error \
          from queue_items \
          where last_error is not null and last_error != '' \
+           and status in ('failed', 'dead') \
          order by updated_at desc \
          limit 20",
     ) else {
@@ -559,9 +1642,10 @@ async fn compare_handler(
         .find(&query.cand)
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "candidate run not found"))?;
     let result = compare::compare_runs(&base.run_root, &cand.run_root);
+    let trial_index = registry::scan_trial_markers(&state.repo_root);
     Ok(Json(json!({
-        "base": registry::summarize(&base),
-        "candidate": registry::summarize(&cand),
+        "base": registry::summarize_with_trials(&base, &trial_index),
+        "candidate": registry::summarize_with_trials(&cand, &trial_index),
         "result": result,
     })))
 }
@@ -628,6 +1712,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn question_debug_path_accepts_run_local_debug_bundle() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp
+            .path()
+            .join("vaults/q1/debug/hypotheses/q1/question-debug.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{}\n").unwrap();
+
+        let resolved = question_debug_path(
+            temp.path(),
+            "vaults/q1/debug/hypotheses/q1/question-debug.json",
+        )
+        .unwrap();
+        assert_eq!(resolved, path.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn question_debug_path_rejects_escape_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(question_debug_path(temp.path(), "../question-debug.json").is_err());
+        assert!(question_debug_path(temp.path(), "/tmp/question-debug.json").is_err());
+        assert!(question_debug_path(temp.path(), "artifacts/scored.json").is_err());
+    }
+
+    #[test]
     fn workflow_queue_summary_reads_sqlite_state() {
         let temp = tempfile::tempdir().unwrap();
         let queue_dir = temp.path().join("workflow").join("longmemeval");
@@ -684,5 +1793,109 @@ mod tests {
         assert_eq!(db["items_by_status"]["succeeded"], json!(1));
         assert_eq!(db["retried_items"], json!(1));
         assert_eq!(db["max_attempt"], json!(2));
+    }
+
+    #[test]
+    fn adapter_setup_stages_are_first_class_trace_operations() {
+        let rows = vec![
+            json!({
+                "timestamp": "2026-01-01T00:00:00.900Z",
+                "operation": "adapter_call",
+                "stage": "pre_capture_setup",
+                "event": "operation_succeeded",
+                "source_id": "q1",
+                "started_at": "2026-01-01T00:00:00.000Z",
+                "finished_at": "2026-01-01T00:00:00.900Z",
+                "duration_ms": 900,
+                "metrics": {
+                    "store_open_ms": 700,
+                    "zvec_cache_ms": 120,
+                    "load_existing_ms": 40
+                }
+            }),
+            json!({
+                "timestamp": "2026-01-01T00:00:01.000Z",
+                "operation": "capture",
+                "event": "operation_started",
+                "source_id": "q1",
+                "started_at": "2026-01-01T00:00:01.000Z"
+            }),
+            json!({
+                "timestamp": "2026-01-01T00:00:01.010Z",
+                "operation": "capture",
+                "event": "operation_succeeded",
+                "source_id": "q1",
+                "finished_at": "2026-01-01T00:00:01.010Z",
+                "duration_ms": 10
+            }),
+            json!({
+                "timestamp": "2026-01-01T00:00:02.050Z",
+                "operation": "adapter_call",
+                "stage": "pre_recall_setup",
+                "event": "operation_succeeded",
+                "source_id": "q1",
+                "started_at": "2026-01-01T00:00:02.000Z",
+                "finished_at": "2026-01-01T00:00:02.050Z",
+                "duration_ms": 50,
+                "metrics": {
+                    "ensure_recall_index_ms": 45,
+                    "fact_count": 7,
+                    "turn_count": 11
+                }
+            }),
+        ];
+
+        assert_eq!(
+            memory_operation_for_trace(&rows[0]).as_deref(),
+            Some("pre_capture_setup")
+        );
+        assert_eq!(
+            memory_operation_for_trace(&rows[3]).as_deref(),
+            Some("pre_recall_setup")
+        );
+
+        let timing = summarize_memory_stage_timing(&rows);
+        assert_eq!(timing[0]["operation"], json!("pre_capture_setup"));
+        assert_eq!(timing[0]["work_ms_p98"], json!(900.0));
+        assert_eq!(
+            timing[0]["numeric_metrics"]["store_open_ms"]["p98"],
+            json!(700.0)
+        );
+
+        let dependency = summarize_dependency_waterfall(&rows);
+        let blocks = dependency["lanes"][0]["blocks"].as_array().unwrap();
+        assert_eq!(blocks[0]["kind"], json!("setup"));
+        assert_eq!(blocks[0]["duration_ms"], json!(900));
+        assert_eq!(blocks[1]["kind"], json!("capture"));
+    }
+
+    #[test]
+    fn legacy_adapter_call_is_hidden_from_dashboard_summaries() {
+        let rows = vec![json!({
+            "timestamp": "2026-01-01T00:00:00.100Z",
+            "operation": "adapter_call",
+            "stage": "legacy_probe",
+            "event": "operation_succeeded",
+            "source_id": "q1",
+            "started_at": "2026-01-01T00:00:00.000Z",
+            "finished_at": "2026-01-01T00:00:00.100Z",
+            "duration_ms": 100,
+            "metrics": {"store_open_ms": 99}
+        })];
+
+        assert_eq!(memory_operation_for_trace(&rows[0]), None);
+        assert!(summarize_memory_stage_timing(&rows).is_empty());
+        assert!(
+            summarize_dependency_waterfall(&rows)["lanes"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            summarize_trace_events(&rows, &[])["rows"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
     }
 }
