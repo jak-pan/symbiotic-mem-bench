@@ -28,7 +28,7 @@ use symbiotic_memory::ingest::{
 use symbiotic_memory::ingest::{Distiller, IngestDiagnosticMode, IngestPipeline};
 #[cfg(feature = "symbiotic-memory-adapter")]
 use symbiotic_memory::manifest::{MemoryRunManifest, MemoryStage, stable_hash_json};
-use symbiotic_memory::providers::{ChatProvider, EmbeddingProvider};
+use symbiotic_memory::providers::{ChatProvider, EmbeddingProvider, Reranker};
 use symbiotic_memory::recall::RecallEngine;
 #[cfg(feature = "symbiotic-memory-adapter")]
 use symbiotic_memory::recall::{QueryPlanner, RecallAnswerDebug, RecallTraceContext};
@@ -351,6 +351,60 @@ where
     Ok(out)
 }
 
+/// Process-global redo stage. Reuse/redo decision tree over a source vault (set once per run):
+///   embed   → re-embed facts+briefs (reuse distill+reweave content); cheapest, no LLM
+///   reweave → re-run consolidation (reuse distill + fact vectors); consolidator LLM only
+///   distill → re-distill onward (reuse captured turns); full $$ except capture
+///   index   → rebuild the recall index only (reuse all embeddings)
+/// embed is handled in-adapter; reweave/distill/index invalidate manifest stages and let the
+/// existing ingest path re-run them, so the real pipeline reuses every valid upstream stage.
+static REDO_STAGE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+pub fn set_redo_stage(stage: Option<String>) {
+    if let Some(stage) = stage {
+        let _ = REDO_STAGE.set(stage);
+    }
+}
+
+fn redo_stage() -> Option<&'static str> {
+    REDO_STAGE.get().map(String::as_str)
+}
+
+fn reembed_mode() -> bool {
+    redo_stage() == Some("embed")
+}
+
+/// Embed texts in bounded batches, firing batches CONCURRENTLY through the provider queue (which is
+/// sized for ~1000 in-flight) rather than awaiting one at a time. `buffered` preserves input order,
+/// so the returned vectors line up with `texts`. Chunk size bounds per-request size (e.g. Gemini
+/// caps embed batches at 100); concurrency bounds in-flight batches per vault.
+async fn embed_texts_in_chunks<E: EmbeddingProvider>(
+    embedder: &E,
+    texts: &[String],
+) -> anyhow::Result<Vec<Vec<f32>>> {
+    let chunk = std::env::var("SYMEM_REEMBED_CHUNK")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|size| *size > 0)
+        .unwrap_or(100);
+    let concurrency = std::env::var("SYMEM_REEMBED_CONCURRENCY")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|size| *size > 0)
+        .unwrap_or(16);
+    let batches: Vec<Vec<String>> = texts.chunks(chunk).map(<[String]>::to_vec).collect();
+    let results: Vec<Result<Vec<Vec<f32>>, _>> = futures::stream::iter(batches)
+        .map(|batch| async move { embedder.embed_many(&batch).await })
+        .buffered(concurrency)
+        .collect()
+        .await;
+    let mut out = Vec::with_capacity(texts.len());
+    for result in results {
+        out.extend(result.map_err(|err| anyhow::anyhow!("re-embed embedding failed: {err}"))?);
+    }
+    Ok(out)
+}
+
 #[cfg(feature = "symbiotic-memory-adapter")]
 pub async fn run_longmemeval_sqlite<E, D, C>(
     rows: &[LongMemEvalRecord],
@@ -383,6 +437,7 @@ where
         None,
         None,
         None,
+        None,
         policy,
         out_path,
         routed,
@@ -406,6 +461,7 @@ pub async fn run_longmemeval_sqlite_with_planner<E, D, C>(
     chat_factory: impl Fn() -> C + Send + Sync + 'static,
     answer_retry_factory: Option<Arc<dyn Fn() -> Arc<dyn ChatProvider> + Send + Sync>>,
     planner_factory: Option<Arc<dyn Fn() -> Arc<dyn QueryPlanner> + Send + Sync>>,
+    reranker: Option<Arc<dyn Reranker>>,
     debug_metadata: Option<BenchDebugMetadata>,
     memory_trace_sink: Option<Arc<dyn MemoryTraceSink>>,
     policy: symbiotic_memory::config::RecallPolicy,
@@ -454,6 +510,7 @@ where
         chat_factory,
         answer_retry_factory,
         planner_factory,
+        reranker,
         debug_metadata,
         memory_trace_sink,
         policy,
@@ -481,6 +538,7 @@ pub async fn run_longmemeval_sqlite_with_workflow_queue<E, D, C>(
     chat_factory: impl Fn() -> C + Send + Sync + 'static,
     answer_retry_factory: Option<Arc<dyn Fn() -> Arc<dyn ChatProvider> + Send + Sync>>,
     planner_factory: Option<Arc<dyn Fn() -> Arc<dyn QueryPlanner> + Send + Sync>>,
+    reranker: Option<Arc<dyn Reranker>>,
     debug_metadata: Option<BenchDebugMetadata>,
     memory_trace_sink: Option<Arc<dyn MemoryTraceSink>>,
     policy: symbiotic_memory::config::RecallPolicy,
@@ -522,6 +580,7 @@ where
     let chat_factory = Arc::new(chat_factory);
     let answer_retry_factory = Arc::new(answer_retry_factory);
     let planner_factory = Arc::new(planner_factory);
+    let reranker = Arc::new(reranker);
     let debug_metadata = Arc::new(debug_metadata);
     let memory_trace_sink = Arc::new(memory_trace_sink);
     let policy = Arc::new(policy);
@@ -566,6 +625,7 @@ where
             let chat_factory = chat_factory.clone();
             let answer_retry_factory = answer_retry_factory.clone();
             let planner_factory = planner_factory.clone();
+            let reranker = reranker.clone();
             let debug_metadata = debug_metadata.clone();
             let memory_trace_sink = memory_trace_sink.clone();
             let policy = policy.clone();
@@ -622,6 +682,7 @@ where
                     &*chat_factory,
                     answer_retry_factory.as_ref().clone(),
                     planner_factory.as_ref().clone(),
+                    reranker.as_ref().clone(),
                     debug_metadata.as_ref().clone(),
                     memory_trace_sink.as_ref().clone(),
                     (*policy).clone(),
@@ -635,6 +696,13 @@ where
                 let hypothesis = match run_workflow_row(row_result, question_timeout).await {
                     Ok(hypothesis) => hypothesis,
                     Err(err) => {
+                        // A single failed question (e.g. a transient empty/timed-out embedding that
+                        // leaves recall with no usable query vector, or any other per-question recall
+                        // error) must cost at most this one question — never abort the whole run. We
+                        // record the queue item as FAILED (so a later pass can retry it), emit an
+                        // "unavailable" hypothesis so scoring sees a row for this question, and return
+                        // Ok so the buffered stream keeps draining the remaining questions. We do NOT
+                        // call `complete` here — the item stays in the failed state recorded below.
                         heartbeat.abort();
                         fail_workflow_item(
                             workflow_queue.as_ref(),
@@ -644,7 +712,28 @@ where
                             queue_item.attempt,
                         )
                         .await?;
-                        return Err(err);
+                        eprintln!(
+                            "[longmemeval] {}/{} {} recall-unavailable: {err}; marking question unavailable and continuing",
+                            idx + 1,
+                            total,
+                            question_id
+                        );
+                        let hypothesis = BenchHypothesis {
+                            question_id: question_id.clone(),
+                            question_type: row.question_type.clone(),
+                            question: row.question.clone(),
+                            hypothesis: "UNAVAILABLE: recall failed for this question".to_string(),
+                            debug_artifact: None,
+                            router_initial: Some("recall-unavailable".to_string()),
+                            router_final: Some("recall-unavailable".to_string()),
+                            router_reason: Some(err.to_string()),
+                        };
+                        {
+                            let mut file = file.lock().expect("hypothesis file lock");
+                            writeln!(file, "{}", serde_json::to_string(&hypothesis)?)?;
+                            file.flush()?;
+                        }
+                        return Ok::<_, anyhow::Error>(hypothesis);
                     }
                 };
                 {
@@ -1202,6 +1291,23 @@ impl MemoryStore for BenchMemoryStore {
         }
     }
 
+    async fn active_base_facts(
+        &self,
+    ) -> Result<Vec<symbiotic_memory::types::MemoryFact>, symbiotic_memory::storage::StoreError>
+    {
+        match self {
+            Self::Sqlite(store) => store.active_base_facts().await,
+            Self::ZvecHybrid(store) => store.active_base_facts().await,
+        }
+    }
+
+    async fn clear_briefs(&self) -> Result<u64, symbiotic_memory::storage::StoreError> {
+        match self {
+            Self::Sqlite(store) => store.clear_briefs().await,
+            Self::ZvecHybrid(store) => store.clear_briefs().await,
+        }
+    }
+
     async fn turns(&self) -> Result<Vec<SourceTurn>, symbiotic_memory::storage::StoreError> {
         match self {
             Self::Sqlite(store) => store.turns().await,
@@ -1283,6 +1389,7 @@ async fn process_sqlite_row<E, D, C>(
     chat_factory: &(impl Fn() -> C + Send + Sync),
     answer_retry_factory: Option<Arc<dyn Fn() -> Arc<dyn ChatProvider> + Send + Sync>>,
     planner_factory: Option<Arc<dyn Fn() -> Arc<dyn QueryPlanner> + Send + Sync>>,
+    reranker: Option<Arc<dyn Reranker>>,
     debug_metadata: Option<BenchDebugMetadata>,
     memory_trace_sink: Option<Arc<dyn MemoryTraceSink>>,
     policy: symbiotic_memory::config::RecallPolicy,
@@ -1370,7 +1477,7 @@ where
     );
 
     let step_started = Instant::now();
-    let zvec_cache_state = if store_backend == "zvec-hybrid" {
+    let mut zvec_cache_state = if store_backend == "zvec-hybrid" {
         Some(prepare_zvec_index_cache(
             &vault_dir,
             &source_hash,
@@ -1432,8 +1539,137 @@ where
     )
     .await;
 
+    // Non-embed redo stages: invalidate the target stage(s) so the ingest path below re-runs them,
+    // reusing every valid upstream stage. reweave re-runs consolidation (slotted ledgers are cleanly
+    // superseded by slot-key on upsert); index rebuilds only. embed is handled in its own branch.
+    let mut redo_invalidated_stage = false;
+    match redo_stage() {
+        Some("reweave") => {
+            // Re-running consolidation requires removing the prior briefs first (otherwise the
+            // consolidator reweaves over its own old output and stale briefs contaminate recall).
+            // Briefs now live in a dedicated table, so clear them wholesale and invalidate the
+            // consolidate + index stages; the ingest path below re-runs consolidation with the new
+            // prompt and reuses the base distilled facts untouched.
+            let cleared = store.clear_briefs().await?;
+            eprintln!(
+                "[longmemeval] {} SYMEM_REDO=reweave cleared {cleared} prior briefs",
+                row.question_id
+            );
+            manifest.stages.remove(&MemoryStage::Consolidate);
+            manifest.stages.remove(&MemoryStage::Index);
+            redo_invalidated_stage = true;
+        }
+        Some("index") => {
+            manifest.stages.remove(&MemoryStage::Index);
+            redo_invalidated_stage = true;
+            // Invalidate the cached zvec recall index so ensure_recall_index below does NOT trust
+            // the stale on-disk index (prepare_zvec_index_cache trusts it when the sqlite hash is
+            // unchanged, which it is for an index-only redo) and instead does a FULL rebuild. The
+            // full-rebuild path (rebuild_index, which re-upserts every recall record from sqlite,
+            // the source of truth) avoids the empty-index hard-bail that the incremental-flush path
+            // hits when the linked-vault prep had deleted the zvec dir on top of an empty index.
+            if let Some(state) = zvec_cache_state.as_mut() {
+                state.valid = false;
+                state.trusted_manifest = false;
+            }
+        }
+        Some("distill") => {
+            anyhow::bail!(
+                "--redo distill on an existing vault is not supported (base facts would duplicate); \
+                 run a fresh ingest to re-distill"
+            );
+        }
+        _ => {}
+    }
+    if redo_invalidated_stage {
+        // Persist the invalidation: the ingest pipeline below reloads the manifest FROM DISK and
+        // skips any stage still marked Succeeded there. Without this save the on-disk stage stays
+        // Succeeded, the rebuild is skipped, and for reweave the briefs are wiped (clear_briefs
+        // above) WITHOUT being re-woven. Saving forces the pipeline to actually re-run the stage.
+        manifest.save(&manifest_path)?;
+    }
+
     let mut incremental_ingest_completed = false;
-    if answer_only {
+    if reembed_mode() {
+        // Re-embed an already-distilled vault: rebuild each fact's embedding text from its metadata
+        // (content + subjects + slot_key + tags + event_time/valid_from dates) and re-embed facts +
+        // raw turns with the current embedder, overwriting the stored vectors. Reuses the persisted
+        // distill/consolidation — no LLM re-distill. The index then rebuilds at the current dims.
+        if existing_facts.is_empty() {
+            anyhow::bail!(
+                "--re-embed requires an ingested vault with facts for {}",
+                row.question_id
+            );
+        }
+        let reembed_started_at = Utc::now();
+        let reembed_started = Instant::now();
+        let embedder = embedder_factory();
+        let dims_profile = format!("dimensions:{}", embedder.dimensions());
+        let mut facts = existing_facts.clone();
+        for fact in facts.iter_mut() {
+            // Clear the distill-time search_text so enrich rebuilds it from current metadata logic.
+            fact.search_text = None;
+            fact.embedding_profile = Some(dims_profile.clone());
+            symbiotic_memory::enrich_fact_search_metadata(fact);
+        }
+        let fact_texts: Vec<String> = facts
+            .iter()
+            .map(symbiotic_memory::fact_retrieval_text)
+            .collect();
+        let fact_embeddings = embed_texts_in_chunks(&embedder, &fact_texts).await?;
+        anyhow::ensure!(
+            fact_embeddings.len() == facts.len(),
+            "re-embed produced {} embeddings for {} facts",
+            fact_embeddings.len(),
+            facts.len()
+        );
+        let reembedded_fact_count = facts.len();
+        store.upsert_facts(facts, fact_embeddings).await?;
+        let mut reembedded_turn_count = 0usize;
+        if !existing_turns.is_empty() {
+            let turn_texts: Vec<String> = existing_turns
+                .iter()
+                .map(|turn| turn.text.clone())
+                .collect();
+            let turn_embeddings = embed_texts_in_chunks(&embedder, &turn_texts).await?;
+            anyhow::ensure!(
+                turn_embeddings.len() == existing_turns.len(),
+                "re-embed produced {} embeddings for {} turns",
+                turn_embeddings.len(),
+                existing_turns.len()
+            );
+            reembedded_turn_count = existing_turns.len();
+            store
+                .upsert_turns(existing_turns.clone(), turn_embeddings)
+                .await?;
+        }
+        record_adapter_stage(
+            memory_trace_sink.as_ref(),
+            debug_run_id,
+            &row.question_id,
+            "re_embed",
+            reembed_started_at,
+            reembed_started.elapsed(),
+            BTreeMap::from([
+                (
+                    "reembedded_fact_count".to_string(),
+                    serde_json::json!(reembedded_fact_count),
+                ),
+                (
+                    "reembedded_turn_count".to_string(),
+                    serde_json::json!(reembedded_turn_count),
+                ),
+                (
+                    "embedding_dimensions".to_string(),
+                    serde_json::json!(embedder.dimensions()),
+                ),
+            ]),
+        )
+        .await;
+        // upsert_facts/upsert_turns already wrote the new vectors into the zvec index, so take the
+        // fast incremental-flush path in ensure_recall_index instead of a full 12s rebuild.
+        incremental_ingest_completed = true;
+    } else if answer_only {
         if existing_turns.is_empty()
             || existing_facts.is_empty()
             || !post_ingest_complete(&manifest, consolidate_briefs)
@@ -1565,12 +1801,18 @@ where
         );
     }
     let step_started = Instant::now();
+    // For SYMEM_REDO=index, force a FULL index rebuild (rebuild_index re-upserts every recall
+    // record from sqlite) instead of the incremental-flush path. The re-ingest above set
+    // incremental_ingest_completed = true, but incremental-flush hard-bails on an empty index if
+    // the linked-vault prep deleted the zvec dir; the full rebuild is robust and is the whole point
+    // of an index-only redo.
+    let ensure_index_incremental = incremental_ingest_completed && redo_stage() != Some("index");
     let recall_index_report = store
         .ensure_recall_index(
             &vault_dir,
             &source_hash,
             zvec_cache_state.as_ref(),
-            incremental_ingest_completed,
+            ensure_index_incremental,
         )
         .await?;
     insert_elapsed_ms(
@@ -1613,6 +1855,7 @@ where
     let answer_retry_chat = answer_retry_factory.as_ref().map(|factory| factory());
     let mut engine = RecallEngine::new(store, embedder_factory(), chat_factory(), policy)
         .with_optional_answer_retry_chat(answer_retry_chat)
+        .with_optional_reranker(reranker)
         .with_optional_trace_sink(memory_trace_sink.clone())
         .with_trace_context(RecallTraceContext::new(
             row.question_id.clone(),
@@ -1966,18 +2209,43 @@ where
         }
         let engine = RecallEngine::new(store, embedder_factory(), chat_factory(), policy.clone());
         let reference_date = longmemeval_answer_reference_datetime(row);
-        let answer = engine
+        // One bad question (e.g. a transient empty/timed-out embedding that leaves recall with no
+        // usable query vector) must cost at most this one question, never the whole run. Catch the
+        // per-question error, log it, and emit an "unavailable" hypothesis so the loop continues and
+        // the remaining questions still run. The recall engine already drops individual bad sub-query
+        // vectors; this only triggers when an entire question's recall genuinely cannot proceed.
+        let hypothesis = match engine
             .answer_with_reference_date(&row.question, Some(reference_date.as_str()))
-            .await?;
-        let hypothesis = BenchHypothesis {
-            question_id: row.question_id.clone(),
-            question_type: row.question_type.clone(),
-            question: row.question.clone(),
-            hypothesis: answer.text,
-            debug_artifact: None,
-            router_initial: None,
-            router_final: None,
-            router_reason: None,
+            .await
+        {
+            Ok(answer) => BenchHypothesis {
+                question_id: row.question_id.clone(),
+                question_type: row.question_type.clone(),
+                question: row.question.clone(),
+                hypothesis: answer.text,
+                debug_artifact: None,
+                router_initial: None,
+                router_final: None,
+                router_reason: None,
+            },
+            Err(err) => {
+                eprintln!(
+                    "[longmemeval] {}/{} {} recall-unavailable: {err}; marking question unavailable and continuing",
+                    idx + 1,
+                    rows.len(),
+                    row.question_id
+                );
+                BenchHypothesis {
+                    question_id: row.question_id.clone(),
+                    question_type: row.question_type.clone(),
+                    question: row.question.clone(),
+                    hypothesis: "UNAVAILABLE: recall failed for this question".to_string(),
+                    debug_artifact: None,
+                    router_initial: Some("recall-unavailable".to_string()),
+                    router_final: Some("recall-unavailable".to_string()),
+                    router_reason: Some(err.to_string()),
+                }
+            }
         };
         writeln!(file, "{}", serde_json::to_string(&hypothesis)?)?;
         file.flush()?;

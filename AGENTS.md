@@ -310,3 +310,70 @@ rg -n "source_path|task-[0-9]+|task152|v12|legacy python" . \
 
 Expected ignored local paths are `runs/` and any external target directory. `.debug-session/` and
 `target/` should not be present in the repo when preparing for publication.
+
+---
+
+# LongMemEval Push — Working Bible (READ ON EVERY CONTEXT RESET)
+
+**GOAL:** 95% on LongMemEval-S 500Q, CLEAN pipeline, NO LongMemEval hacks (no gold-string matching,
+no per-question special-casing). Detailed running ledger: [`PUSH-TO-95.md`](PUSH-TO-95.md). Durable
+memory: `~/.claude/projects/-Users-k-p-symbiotic-mem-bench/memory/longmemeval-{clean-ceiling,competition}.md`.
+
+**CURRENT STATE (forensic-corrected):** BEST CLEAN CONFIG = **rerank-ON ≈ 88.3–88.5%** + baseline 8229-char
+answer prompt + fact_top_k=20/raw_turn=10 + candidates=100 + briefs ON + reasoning=high (NOT max). A 9-agent
+forensic audit (verify-it-FIRED then real-or-noise) proved **the reranker is the ONLY real lever (+3.34pp,
+ranges fully separate 88.20 min > 86.00 max, causal mechanism confirmed).** My earlier "89.1 = +dedup+lowconf"
+was WRONG: lowconf@0.7 removes 0 facts (min confidence IS 0.70), dedup removes 0.43% then the 20-cap backfills,
+so the "+0.8 stack" had NO mechanism = variance. Even con→condcon "collapsed under replication" (con-r2 already
+fixed the questions condcon "fixed"). EVERYTHING except the reranker is a no-op (didn't fire), noise (fired,
+moved nothing), or worse. No clean comparable 95% exists publicly. **ANSWER SIDE EXHAUSTED at ~88.5; only the
+reranker moved the needle.** ALWAYS verify a lever FIRED (changed the prompt/evidence) before trusting a score delta.
+
+## GOLDEN RULES (hard-won — break these and you burn runs on noise)
+1. **VARIANCE IS ~±1.5pp (std ~0.8).** The think-on answerer is non-deterministic; the SAME config
+   scores 87.2–89.6 run to run. NEVER trust a single run or an N=2 aggregate delta under ~2pp.
+2. **DETECT LEVERS BY SUBSET ISOLATION, not aggregate score.** A lever changes a deterministic subset
+   (e.g. split-prompts only touches count/list questions). Compare ON THAT SUBSET, with a noise-check
+   on the untouched subset (must be ≈0). This is the only way to see a sub-noise effect.
+3. **INSPECT EVERYTHING manually after every run** — the exact prompt sent, the reasoning chain, which
+   questions flipped, the evidence. The aggregate score hides the story (Chain-of-Note "failed" at 87.8
+   but GAINED on counting/temporal, only lost on preference → made it conditional).
+4. **ONE LEVER AT A TIME**, behind a gated env flag (off by default). Answer-only (no re-ingest)
+   whenever possible: ~$0.25 / ~10 min vs a ~$13 re-ingest.
+5. **CHEAP-FIRST. NO HACKS.** Cross-check every "miss" vs the raw source — ~30% of LongMemEval misses
+   are broken golds / ambiguous data / format-dings. Noise floor ≈15/500 → effective ceiling ≈97%.
+6. **SETTLED — do not re-litigate:** reranker (cohere/rerank-4-fast, 100 cand) = +3.4pp, KEEP. Reader =
+   deepseek-v4-flash thinking-on(=high); `max` is high-variance, `pro` is worse, other models are noise.
+   Retrieval is SOLVED (51/52 misses have the gold in the candidate pool) — the bottleneck is the ANSWERER.
+7. **THE WEAK CLASS is counting:** count/list = 82.4% vs 90.1% for everything else. Prompt CONTENT does
+   not fix it (long/short/lean/split all +0.0 on the subset). Cleaner EVIDENCE is the live hypothesis.
+
+## CORE LOOP — answer-only A/B
+- Source vault: `runs/symbiotic-memory/long-mem-eval/500/factconsol-thinkon-500-20260624/vaults`
+- Rebuild after symem code change: `cargo build --release --features symbiotic-memory-adapter --bin membench`
+- Run (repo root; `.env.test.local` auto-loads keys):
+  `env SYMEM_DISTILL_THINKING=off SYMEM_ANSWER_THINKING=on SYMEM_EMBED_MODEL=qwen/qwen3-embedding-8b SYMEM_EMBED_DIMS=1024 SYMEM_EMBED_REQUEST_DIMS=1024 SYMEM_OPENROUTER_HTTP_HTTP1_ONLY=1 SYMEM_RERANK=on SYMEM_RERANK_MODEL=cohere/rerank-4-fast SYMEM_RERANK_CANDIDATES=100 <LEVER_ENV> ./target/release/membench --system symbiotic-memory --benchmark long-mem-eval --limit 500 --sample stratified --embedder openrouter --store zvec-hybrid --memory-config config/symbiotic-memory/longmemeval-raw-light.yaml --prompt-dir /tmp/prompts-v3 --answer-only --source-vault-root <SRC> --score --run-name <name>`
+- Score: `is_correct` in `runs/.../<name>/artifacts/verdicts.jsonl`. Prompt+reasoning: `runs/.../<name>/vaults/<qid>/debug/question-debug.json` → `recall.answerer_calls[0].{system_prompt,prompt,reasoning,response_text}`. Planner: `recall.query_plan` / `recall.query_planner_call`.
+- Fast single-question probe (no harness, ~10s): `/tmp/ask_one.py` replays a question's exact prompt to flash.
+- Paid runs serialize on `runs/.locks/paid-provider-run.lock` (one at a time). Sweep via a background script.
+
+## ENV KNOBS (gated in ../symbiotic-memory; all off by default)
+- Recall: `SYMEM_RERANK`(+`_MODEL`,`_CANDIDATES`,`_RESERVE`), `SYMEM_EXCLUDE_BRIEFS`, `SYMEM_MULTIHOP`, `SYMEM_TEMPORAL_FILTER`, `SYMEM_LEDGER_RETRIEVAL`.
+- Evidence cleaning (this push): `SYMEM_DEDUP_EVIDENCE`, `SYMEM_DROP_LOWCONF`(+`SYMEM_MIN_CONFIDENCE`), `SYMEM_DROP_CONFLICTING`, `SYMEM_RELEVANCE_CUTOFF`(frac 0–1).
+- Answer: `SYMEM_ANSWER_THINKING`(off/on/high/max), `SYMEM_ANSWER_OPERATOR`/`_MODEL`, `SYMEM_SPLIT_PROMPTS`, `SYMEM_DETERMINISTIC_COUNT`(shelved). k via the config yaml (`fact_top_k`/`raw_turn_top_k`).
+
+## LEVER LEDGER (vs ~88.5 baseline; detail in PUSH-TO-95.md)
+- Within-noise-or-worse: short prompt 84, rerank-200 87.3, Chain-of-Note 87.8, surgical 87.8, condcon
+  88.7, split-prompts +0.0 (count/list), smaller-k neutral, reasoning-max 90.8/86.8 (unstable), pro 87.
+- PROVEN: reranker +3.4. SHELVED: deterministic-count (user: don't count in code).
+- TODO (untried, lots): evidence cleaning (running), evidence-ROOT-following (top-k fact → its source
+  turns/related facts), prompt STRUCTURING, hybrid KEYWORD search (sparse_terms are generated but NEVER
+  used as BM25/FTS — a real gap), then STACK all non-negative levers and test N=3 vs baseline N=3.
+
+## FILE MAP
+- Answer prompt + per-task split: `../symbiotic-memory/src/recall/prompt_policy.rs`
+- Recall flow, evidence filters, env gates: `../symbiotic-memory/src/recall/engine.rs`
+- Query/search planner prompt: `../symbiotic-memory/src/recall/planner.rs:274` `query_planner_system_prompt`
+- Evidence ledger (structured emission): `../symbiotic-memory/src/recall/evidence_ledger.rs`
+- k / recall profiles: `config/symbiotic-memory/longmemeval-raw-light.yaml`
+- Cleaned dataset: `runs/inputs/longmemeval-cleaned/longmemeval_s_cleaned.json` (gold = `answer`, gold sessions = `answer_session_ids`)

@@ -1,0 +1,13 @@
+recall:
+  version: memory-recall-v3-topk40
+  fact_top_k: 40
+  raw_turn_top_k: 20
+  query_planner: flash
+  always_include_raw_turns: true
+  raw_recall_primary: true
+  raw_recall_include_facts: true
+  preference_grounding: true
+  answerer_enabled: true
+queue:
+  workflow_max_in_flight: 10
+  defaults: {timeout_seconds: 600, retry_attempts: 4, logical_retry_attempts: 4}

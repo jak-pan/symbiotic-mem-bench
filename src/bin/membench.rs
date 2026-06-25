@@ -99,6 +99,10 @@ struct Cli {
     no_routed: bool,
     #[arg(long)]
     answer_only: bool,
+    /// Re-embed an existing vault's facts+turns (from --source-vault-root) with the current
+    /// embedder/enrichment and rebuild the index — reuses distill, no LLM re-distill.
+    #[arg(long)]
+    re_embed: bool,
     #[arg(long)]
     consolidate_briefs: bool,
     #[arg(long)]
@@ -189,6 +193,12 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Manage the canonical vault store ($SYMEM_VAULT_STORE): back up per-run
+    /// vaults outside the disposable `runs/` tree and rediscover them by name.
+    Vault {
+        #[command(subcommand)]
+        command: VaultCommand,
+    },
     SaveRecord {
         #[arg(long)]
         run_root: PathBuf,
@@ -258,6 +268,28 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+enum VaultCommand {
+    /// Copy (or move) a run's `vaults/` into the canonical store keyed by name.
+    Save {
+        /// Run to back up: a run dir name under
+        /// `runs/symbiotic-memory/long-mem-eval/<limit>/<name>`, or an explicit path.
+        #[arg(long)]
+        run: String,
+        /// Store key (subdir under $SYMEM_VAULT_STORE). Defaults to the run dir name.
+        #[arg(long = "as")]
+        key: Option<String>,
+        /// Move instead of copy, then leave a symlink at the run's `vaults/`
+        /// pointing back into the store (keeps `--source-vault-root` working).
+        #[arg(long)]
+        r#move: bool,
+    },
+    /// List stored vaults: key, saved_at, vault_count, size, accuracy.
+    List,
+    /// Print `$SYMEM_VAULT_STORE/<key>/vaults` (for `--source-vault-root`).
+    Path { key: String },
+}
+
+#[derive(Subcommand)]
 enum TrialsCommand {
     /// Derive typed trial stack/delta artifacts from existing benchmark run artifacts.
     Derive {
@@ -312,6 +344,11 @@ fn main() -> anyhow::Result<()> {
                     explore_runs(run_root, resolve_repo_path(&registry_root))
                 }
             }
+            Command::Vault { command } => match command {
+                VaultCommand::Save { run, key, r#move } => vault_save(&run, key.as_deref(), r#move),
+                VaultCommand::List => vault_list(),
+                VaultCommand::Path { key } => vault_path(&key),
+            },
             Command::SaveRecord {
                 run_root,
                 records_root,
@@ -1424,6 +1461,7 @@ fn run_selected_benchmark(cli: Cli) -> anyhow::Result<()> {
                 answerer,
                 routed,
                 answer_only: cli.answer_only,
+                re_embed: cli.re_embed,
                 consolidate_briefs,
                 stop_after_raw_embed: cli.stop_after_raw_embed,
                 ingest_diagnostic: cli.ingest_diagnostic,
@@ -2455,6 +2493,302 @@ fn copy_dir_recursive(source: &std::path::Path, dest: &std::path::Path) -> anyho
     Ok(())
 }
 
+/// Environment variable naming the canonical vault store: an absolute path to a
+/// directory holding `<key>/vaults/` backups outside the disposable `runs/` tree.
+/// Unset ⇒ the store feature is inert and all current behavior is unchanged.
+const SYMEM_VAULT_STORE_ENV: &str = "SYMEM_VAULT_STORE";
+
+/// Read `$SYMEM_VAULT_STORE` if set to a non-empty value. Inert when unset; used
+/// by transparent by-name discovery, which must never fail just because the
+/// store is not configured.
+fn vault_store_dir_opt() -> Option<PathBuf> {
+    std::env::var_os(SYMEM_VAULT_STORE_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Like [`vault_store_dir_opt`], but errors clearly for the `vault` subcommands,
+/// which cannot operate without a configured store.
+fn require_vault_store_dir() -> anyhow::Result<PathBuf> {
+    vault_store_dir_opt().ok_or_else(|| {
+        anyhow::anyhow!(
+            "{SYMEM_VAULT_STORE_ENV} is not set; export it to an absolute store directory, e.g. {SYMEM_VAULT_STORE_ENV}=/Users/me/membench-vaults"
+        )
+    })
+}
+
+/// Resolve a `--source-vault-root` value with transparent by-name discovery: an
+/// existing path always wins, but a bare key that names `$SYMEM_VAULT_STORE/<key>/vaults`
+/// falls back to the store (logging one line). Never overrides an existing path.
+#[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
+fn resolve_source_vault_root(value: &Path) -> PathBuf {
+    resolve_source_vault_root_with_store(value, vault_store_dir_opt().as_deref())
+}
+
+/// Resolve a `vault save --run` value to a run root: an existing path (absolute
+/// or repo-relative) wins; otherwise treat it as a run dir name and search under
+/// `runs/symbiotic-memory/long-mem-eval/<limit>/<name>`.
+fn resolve_run_for_vault_save(run: &str) -> anyhow::Result<PathBuf> {
+    let direct = resolve_repo_path(Path::new(run));
+    if direct.is_dir() {
+        return Ok(direct);
+    }
+    let grouped_root = repo_root()
+        .join("runs")
+        .join("symbiotic-memory")
+        .join("long-mem-eval");
+    if let Ok(entries) = std::fs::read_dir(&grouped_root) {
+        let mut matches: Vec<PathBuf> = Vec::new();
+        for limit_entry in entries.flatten() {
+            let candidate = limit_entry.path().join(run);
+            if candidate.is_dir() {
+                matches.push(candidate);
+            }
+        }
+        matches.sort();
+        if let Some(found) = matches.first() {
+            return Ok(found.clone());
+        }
+    }
+    anyhow::bail!(
+        "could not resolve run '{run}': not an existing path and not found under {}/<limit>/{run}",
+        portable_path(&grouped_root)
+    )
+}
+
+/// Best-effort accuracy for a run, from `benchmark-report.json` then `score-summary.json`.
+fn read_run_accuracy(run_root: &Path) -> Option<f64> {
+    let report = run_root.join("benchmark-report.json");
+    if let Ok(value) = read_json(&report) {
+        if let Some(accuracy) = nested_f64(&value, &["metrics", "accuracy", "value"]) {
+            return Some(accuracy);
+        }
+    }
+    let summary = native_score_summary_path(run_root)?;
+    let value = read_json(&summary).ok()?;
+    nested_f64(&value, &["metrics", "overall_accuracy"])
+        .or_else(|| nested_f64(&value, &["overall_accuracy"]))
+}
+
+/// Number of per-question vault subdirectories directly under a `vaults/` dir.
+fn count_vault_subdirs(vaults_dir: &Path) -> usize {
+    std::fs::read_dir(vaults_dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| entry.path().is_dir())
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Human-readable directory size via `du -sh` (best effort; "n/a" on failure).
+fn dir_size_human(path: &Path) -> String {
+    std::process::Command::new("du")
+        .arg("-sh")
+        .arg(path)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .split_whitespace()
+                .next()
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
+/// `vault save`: copy (default) or move a run's `vaults/` into the canonical
+/// store at `$SYMEM_VAULT_STORE/<key>/vaults/`, then write `store-meta.json`.
+fn vault_save(run: &str, key: Option<&str>, move_vaults: bool) -> anyhow::Result<()> {
+    let store = require_vault_store_dir()?;
+    let run_root = resolve_run_for_vault_save(run)?;
+    vault_save_in(&store, &run_root, key, move_vaults)
+}
+
+fn vault_save_in(
+    store: &Path,
+    run_root: &Path,
+    key: Option<&str>,
+    move_vaults: bool,
+) -> anyhow::Result<()> {
+    let source_vaults = run_root.join("vaults");
+    if !source_vaults.is_dir() {
+        anyhow::bail!(
+            "run {} has no vaults/ directory to save",
+            portable_path(run_root)
+        );
+    }
+    let run_dir_name = run_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "could not derive a key from run path {}",
+                run_root.display()
+            )
+        })?;
+    let key = key.unwrap_or(run_dir_name);
+    let key_dir = store.join(sanitize_path_component(key));
+    let dest_vaults = key_dir.join("vaults");
+    if dest_vaults.exists() {
+        anyhow::bail!(
+            "store key already populated at {}; pick a different --as key or remove it first",
+            portable_path(&dest_vaults)
+        );
+    }
+    std::fs::create_dir_all(&key_dir)?;
+
+    if move_vaults {
+        // Move the tree, then leave a symlink behind so `--source-vault-root <run>`
+        // and answer-only reruns keep resolving the (now relocated) vault data.
+        std::fs::rename(&source_vaults, &dest_vaults).or_else(|err| {
+            // Fall back to copy+remove across filesystem boundaries (EXDEV).
+            if err.raw_os_error() == Some(libc_exdev()) {
+                copy_dir_recursive(&source_vaults, &dest_vaults)?;
+                std::fs::remove_dir_all(&source_vaults)?;
+                Ok(())
+            } else {
+                Err(anyhow::Error::from(err))
+            }
+        })?;
+        symlink_dir(&dest_vaults, &source_vaults)?;
+    } else {
+        copy_dir_recursive(&source_vaults, &dest_vaults)?;
+    }
+
+    let vault_count = count_vault_subdirs(&dest_vaults);
+    let saved_at = chrono::DateTime::<Utc>::from(std::time::SystemTime::now())
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let meta = json!({
+        "schema": "membench.vault_store_meta.v1",
+        "key": key,
+        "source_run": portable_path(run_root),
+        "saved_at": saved_at,
+        "vault_count": vault_count,
+        "accuracy": read_run_accuracy(run_root),
+        "moved": move_vaults,
+    });
+    std::fs::write(
+        key_dir.join("store-meta.json"),
+        serde_json::to_string_pretty(&meta)? + "\n",
+    )?;
+
+    println!(
+        "saved {} vault(s) -> {} ({})",
+        vault_count,
+        portable_path(&dest_vaults),
+        if move_vaults {
+            "moved, symlink left behind"
+        } else {
+            "copied"
+        }
+    );
+    Ok(())
+}
+
+/// `vault list`: table of stored vaults by scanning `$SYMEM_VAULT_STORE/*/store-meta.json`.
+fn vault_list() -> anyhow::Result<()> {
+    let store = require_vault_store_dir()?;
+    vault_list_in(&store)
+}
+
+fn vault_list_in(store: &Path) -> anyhow::Result<()> {
+    let mut keys: Vec<PathBuf> = std::fs::read_dir(store)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.join("vaults").is_dir())
+                .collect()
+        })
+        .unwrap_or_default();
+    keys.sort();
+    if keys.is_empty() {
+        println!("No stored vaults found under {}", portable_path(store));
+        return Ok(());
+    }
+    println!(
+        "{:<32}  {:<25}  {:>6}  {:>7}  {:>8}",
+        "KEY", "SAVED_AT", "VAULTS", "SIZE", "ACCURACY"
+    );
+    for key_dir in keys {
+        let key = key_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("?")
+            .to_string();
+        let vaults_dir = key_dir.join("vaults");
+        let meta = read_json(&key_dir.join("store-meta.json")).ok();
+        let saved_at = meta
+            .as_ref()
+            .and_then(|value| text_at(value, &["saved_at"]).map(ToOwned::to_owned))
+            .unwrap_or_else(|| "-".to_string());
+        let vault_count = meta
+            .as_ref()
+            .and_then(|value| nested_u64(value, &["vault_count"]))
+            .unwrap_or_else(|| count_vault_subdirs(&vaults_dir) as u64);
+        let accuracy = meta
+            .as_ref()
+            .and_then(|value| nested_f64(value, &["accuracy"]))
+            .map(|value| format!("{value:.3}"))
+            .unwrap_or_else(|| "n/a".to_string());
+        let size = dir_size_human(&vaults_dir);
+        println!("{key:<32}  {saved_at:<25}  {vault_count:>6}  {size:>7}  {accuracy:>8}");
+    }
+    Ok(())
+}
+
+/// `vault path <key>`: print `$SYMEM_VAULT_STORE/<key>/vaults` for scripting.
+fn vault_path(key: &str) -> anyhow::Result<()> {
+    let store = require_vault_store_dir()?;
+    let vaults = store.join(sanitize_path_component(key)).join("vaults");
+    if !vaults.is_dir() {
+        anyhow::bail!("no stored vaults for key '{key}' at {}", vaults.display());
+    }
+    println!("{}", vaults.display());
+    Ok(())
+}
+
+/// Core of [`resolve_source_vault_root`] with an explicit store dir, so by-name
+/// discovery can be unit-tested without mutating process environment.
+#[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
+fn resolve_source_vault_root_with_store(value: &Path, store: Option<&Path>) -> PathBuf {
+    let direct = resolve_repo_path(value);
+    if direct.is_dir() {
+        return direct;
+    }
+    if let Some(store) = store {
+        let candidate = store.join(value).join("vaults");
+        if candidate.is_dir() {
+            eprintln!(
+                "[vault] resolved '{}' from {SYMEM_VAULT_STORE_ENV}",
+                value.display()
+            );
+            return candidate;
+        }
+    }
+    direct
+}
+
+/// The `EXDEV` errno ("cross-device link"), used to detect when `rename` cannot
+/// move across filesystems and a copy+remove fallback is required.
+fn libc_exdev() -> i32 {
+    18
+}
+
+#[cfg(unix)]
+fn symlink_dir(source: &Path, target: &Path) -> anyhow::Result<()> {
+    std::os::unix::fs::symlink(source, target)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn symlink_dir(_source: &Path, _target: &Path) -> anyhow::Result<()> {
+    anyhow::bail!("vault save --move requires a Unix-like filesystem for the leave-behind symlink");
+}
+
 fn render_benchmark_report(report: &serde_json::Value) -> String {
     let system = text_at(report, &["system"]).unwrap_or("unknown");
     let benchmark = text_at(report, &["benchmark"]).unwrap_or("unknown");
@@ -2700,6 +3034,7 @@ struct SymbioticMemoryCliRun {
     answerer: bool,
     routed: bool,
     answer_only: bool,
+    re_embed: bool,
     consolidate_briefs: bool,
     stop_after_raw_embed: bool,
     ingest_diagnostic: Option<String>,
@@ -2798,19 +3133,59 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
     let provider_runtime = ProviderRuntime::new(&run, &config)?;
     let rows = symbiotic_mem_bench::symbiotic_memory_adapter::load_longmemeval(&run.dataset, None)?;
     let rows = select_longmemeval_rows(rows, run.limit, &run.sample)?;
+    // Redo stage: --re-embed is redo=embed; SYMEM_REDO=reweave|distill|index selects the others.
+    let redo_stage = if run.re_embed {
+        Some("embed".to_string())
+    } else {
+        run_env_value(&run, "SYMEM_REDO").map(|value| value.trim().to_ascii_lowercase())
+    };
+    if let Some(stage) = &redo_stage {
+        if !matches!(stage.as_str(), "embed" | "reweave" | "distill" | "index") {
+            anyhow::bail!(
+                "--redo/SYMEM_REDO must be one of: embed, reweave, distill, index (got {stage})"
+            );
+        }
+    }
+    let redo_active = redo_stage.is_some();
+    // Guardrail: warn loudly when a tuning knob is set while its enabling gate is OFF, so a knob
+    // never silently no-ops (which previously invalidated weeks of experiments).
+    warn_inert_tuning_knobs(&run, redo_stage.as_deref());
+    symbiotic_mem_bench::symbiotic_memory_adapter::set_redo_stage(redo_stage);
+    if redo_active && run.answer_only {
+        anyhow::bail!("a redo stage and --answer-only are mutually exclusive");
+    }
+    if redo_active && run.source_vault_root.is_none() {
+        anyhow::bail!("a redo stage requires --source-vault-root");
+    }
     if let Some(source_vault_root) = &run.source_vault_root {
-        if !run.answer_only {
-            anyhow::bail!("--source-vault-root is only valid with --answer-only");
+        if !run.answer_only && !redo_active {
+            anyhow::bail!("--source-vault-root is only valid with --answer-only or a redo stage");
         }
         if run.resume {
             anyhow::bail!(
                 "--source-vault-root creates a fresh linked vault view and cannot be combined with --resume"
             );
         }
-        prepare_answer_only_linked_vaults(&run.run_root, source_vault_root, &rows)?;
+        if redo_active {
+            // A redo stage COPIES memory.sqlite (re-running mutates it) and omits zvec-hybrid so the
+            // index rebuilds fresh at the current embedding dimensions.
+            prepare_re_embed_linked_vaults(&run.run_root, source_vault_root, &rows)?;
+        } else {
+            prepare_answer_only_linked_vaults(&run.run_root, source_vault_root, &rows)?;
+        }
     }
     let mut policy = config.recall.clone();
     policy.answerer_enabled = run.answerer;
+    // Wire the answerer system prompt: when an explicit --prompt-dir supplies an `answer` template,
+    // its `system` text overrides the engine's built-in default. Absent that, leave it None so the
+    // hardcoded default is used (no behavior change for runs without an answer.yaml).
+    if let Some(answer_system_prompt) = load_answer_system_prompt_override(&run) {
+        eprintln!(
+            "[longmemeval] answerer system prompt overridden from --prompt-dir ({} chars)",
+            answer_system_prompt.len()
+        );
+        policy.answer_system_prompt = Some(answer_system_prompt);
+    }
     if let Some(query_planner) = &run.query_planner {
         policy.query_planner = match query_planner.as_str() {
             "off" => symbiotic_memory::QueryPlannerMode::Off,
@@ -2856,19 +3231,22 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
         std::fs::write(&zvec_marker, format!("{selected_backend}\n"))?;
         let embedder_factory = provider_runtime.embedding_factory(&run)?;
         let distiller_factory = provider_runtime.distiller_factory(&run)?;
+        let consolidator_factory = provider_runtime.consolidator_factory(&run)?;
         let answer_factory = provider_runtime.answer_factory(&run)?;
         let answer_retry_factory = provider_runtime.answer_retry_factory(&run)?;
         let planner_factory = provider_runtime.query_planner_factory(&run)?;
+        let reranker = provider_runtime.reranker(&run)?;
         runtime.block_on(
             symbiotic_mem_bench::symbiotic_memory_adapter::run_longmemeval_sqlite_with_planner(
                 &rows,
                 &run.run_root,
                 move || embedder_factory(),
                 move || distiller_factory(),
-                None,
+                consolidator_factory,
                 move || answer_factory(),
                 answer_retry_factory,
                 planner_factory,
+                reranker,
                 Some(provider_runtime.debug_metadata(&run)),
                 memory_trace_sink,
                 policy,
@@ -3104,12 +3482,56 @@ fn clear_answer_only_run_outputs(run_root: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
+/// Like `prepare_answer_only_linked_vaults`, but COPIES `memory.sqlite` (re-embedding mutates it via
+/// `upsert_facts`, so symlinking would corrupt the shared source baseline) and intentionally omits
+/// `zvec-hybrid` so the recall index is rebuilt fresh at the current embedding dimensions.
+fn prepare_re_embed_linked_vaults(
+    run_root: &Path,
+    source_vault_root: &Path,
+    rows: &[symbiotic_mem_bench::symbiotic_memory_adapter::LongMemEvalRecord],
+) -> anyhow::Result<()> {
+    let source_vault_root = resolve_source_vault_root(source_vault_root);
+    if !source_vault_root.is_dir() {
+        anyhow::bail!(
+            "source vault root does not exist: {}",
+            source_vault_root.display()
+        );
+    }
+    let target_vault_root = run_root.join("vaults");
+    std::fs::create_dir_all(&target_vault_root)?;
+    for row in rows {
+        let source_vault = source_vault_root.join(&row.question_id);
+        let target_vault = target_vault_root.join(&row.question_id);
+        let source_manifest = source_vault.join("manifest.json");
+        let source_memory = source_vault.join("memory.sqlite");
+        if !source_manifest.is_file() || !source_memory.is_file() {
+            anyhow::bail!(
+                "source vault {} is missing manifest.json or memory.sqlite",
+                source_vault.display()
+            );
+        }
+        std::fs::create_dir_all(&target_vault)?;
+        remove_path_if_exists(&target_vault.join("manifest.json"))?;
+        remove_path_if_exists(&target_vault.join("memory.sqlite"))?;
+        remove_path_if_exists(&target_vault.join("archive"))?;
+        remove_path_if_exists(&target_vault.join("zvec-hybrid"))?;
+        std::fs::copy(&source_manifest, target_vault.join("manifest.json"))?;
+        std::fs::copy(&source_memory, target_vault.join("memory.sqlite"))?;
+        let source_archive = source_vault.join("archive");
+        if source_archive.exists() {
+            link_path(&source_archive, &target_vault.join("archive"))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
 fn prepare_answer_only_linked_vaults(
     run_root: &Path,
     source_vault_root: &Path,
     rows: &[symbiotic_mem_bench::symbiotic_memory_adapter::LongMemEvalRecord],
 ) -> anyhow::Result<()> {
-    let source_vault_root = resolve_repo_path(source_vault_root);
+    let source_vault_root = resolve_source_vault_root(source_vault_root);
     if !source_vault_root.is_dir() {
         anyhow::bail!(
             "source vault root does not exist: {}",
@@ -3317,8 +3739,31 @@ impl ProviderRuntime {
         &self,
         run: &SymbioticMemoryCliRun,
     ) -> Vec<symbiotic_mem_bench::symbiotic_memory_adapter::BenchModelDebug> {
-        ["DISTILL", "QUERY_PLANNER", "ANSWER", "EMBED", "JUDGE"]
-            .into_iter()
+        // Show the CONSOLIDATE (reweave) binding only when the consolidator is enabled, so the
+        // dashboard surfaces that the post-distill consolidation pass is running and which model /
+        // thinking / queue it uses (otherwise reweave is invisible behind the shared chat queue).
+        let consolidator_on = run_env_value(run, "SYMEM_CONSOLIDATOR")
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "llm" | "on" | "reweave" | "true" | "1"
+                )
+            })
+            .unwrap_or(false);
+        let roles: &[&str] = if consolidator_on {
+            &[
+                "DISTILL",
+                "CONSOLIDATE",
+                "QUERY_PLANNER",
+                "ANSWER",
+                "EMBED",
+                "JUDGE",
+            ]
+        } else {
+            &["DISTILL", "QUERY_PLANNER", "ANSWER", "EMBED", "JUDGE"]
+        };
+        roles
+            .iter()
             .filter_map(|role| self.model_debug_row(run, role))
             .collect()
     }
@@ -3331,6 +3776,7 @@ impl ProviderRuntime {
         use symbiotic_mem_bench::symbiotic_memory_adapter::BenchModelDebug;
         let base = match role {
             "DISTILL" => &self.config.providers.distill,
+            "CONSOLIDATE" => &self.config.providers.distill,
             "QUERY_PLANNER" => &self.config.providers.query_planner,
             "ANSWER" => &self.config.providers.answer,
             "EMBED" => &self.config.providers.embedding,
@@ -3560,6 +4006,40 @@ impl ProviderRuntime {
         }
     }
 
+    /// Optional LLM consolidation ("reweave") pass that runs after distill+embed and synthesizes
+    /// derived memory cards (itemized count/list ledgers, temporal anchors, current-state). Enabled
+    /// with `SYMEM_CONSOLIDATOR=llm`. Defaults to the distill chat binding; tune via the
+    /// `CONSOLIDATE` role env (e.g. `SYMEM_CONSOLIDATE_THINKING`, `SYMEM_CONSOLIDATE_MODEL`).
+    fn consolidator_factory(
+        &self,
+        run: &SymbioticMemoryCliRun,
+    ) -> anyhow::Result<Option<Arc<dyn Fn() -> Arc<dyn symbiotic_memory::Distiller> + Send + Sync>>>
+    {
+        let enabled = run_env_value(run, "SYMEM_CONSOLIDATOR")
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "llm" | "on" | "reweave" | "true" | "1"
+                )
+            })
+            .unwrap_or(false);
+        if !enabled {
+            return Ok(None);
+        }
+        let prompt = load_memory_prompt(run, "reweave")?;
+        let chat_factory = self.chat_factory(run, "CONSOLIDATE", &self.config.providers.distill)?;
+        let turns_per_window = run_env_value(run, "SYMEM_CONSOLIDATE_TURNS_PER_WINDOW")
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(64);
+        Ok(Some(Arc::new(move || {
+            let llm = symbiotic_memory::LlmDistiller::new(chat_factory(), prompt.clone());
+            Arc::new(symbiotic_memory::WindowedDistiller::new(
+                llm,
+                turns_per_window,
+            )) as Arc<dyn symbiotic_memory::Distiller>
+        })))
+    }
+
     fn answer_factory(
         &self,
         run: &SymbioticMemoryCliRun,
@@ -3588,6 +4068,34 @@ impl ProviderRuntime {
             "ANSWER_RETRY",
             &self.config.providers.answer,
         )?))
+    }
+
+    /// Builds the cross-encoder reranker when SYMEM_RERANK is enabled. Recall retrieves a wide
+    /// embedding candidate set and the reranker re-orders it to the answer top-k, recovering
+    /// evidence (e.g. itemized count ledgers) that embeds far from the question.
+    fn reranker(
+        &self,
+        run: &SymbioticMemoryCliRun,
+    ) -> anyhow::Result<Option<Arc<dyn symbiotic_memory::Reranker>>> {
+        let enabled = run_env_value(run, "SYMEM_RERANK")
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "on"
+                )
+            })
+            .unwrap_or(false);
+        if !enabled {
+            return Ok(None);
+        }
+        let api_key = required_operator_api_key(run, "openrouter")?;
+        let base_url = run_env_value(run, "SYMEM_RERANK_BASE_URL")
+            .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
+        let model = run_env_value(run, "SYMEM_RERANK_MODEL")
+            .unwrap_or_else(|| "cohere/rerank-4-fast".to_string());
+        Ok(Some(Arc::new(symbiotic_memory::OpenRouterReranker::new(
+            base_url, api_key, model,
+        ))))
     }
 
     fn query_planner_factory(
@@ -3743,6 +4251,25 @@ fn load_memory_prompt(
             prompt_dir.display()
         )
     })
+}
+
+/// Loads the answerer system-prompt override from an explicitly-provided `--prompt-dir`.
+///
+/// Returns `Some(system)` only when the operator passed `--prompt-dir` AND that dir contains an
+/// `answer` template; in every other case it returns `None` so the engine keeps using its built-in
+/// hardcoded answerer system prompt (no behavior change for runs without an `answer.yaml`). The
+/// crate's default `prompts/` directory is intentionally NOT consulted here — only the explicit
+/// `--prompt-dir` can override the answerer system prompt.
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn load_answer_system_prompt_override(run: &SymbioticMemoryCliRun) -> Option<String> {
+    // Only an explicit --prompt-dir can supply the override.
+    let prompt_dir = run.prompt_dir.as_ref()?;
+    let catalog = symbiotic_memory::PromptCatalog::load_dir(resolve_repo_path(prompt_dir)).ok()?;
+    let system = catalog.get("answer")?.system.trim();
+    if system.is_empty() {
+        return None;
+    }
+    Some(system.to_string())
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
@@ -5036,6 +5563,82 @@ fn scorer_judge_model(scorer: &str) -> Option<&str> {
 }
 
 #[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
+/// Warn when a tuning knob is set while the gate that enables it is OFF. Such knobs silently no-op,
+/// which has previously invalidated whole experiment sweeps. Each warning is a single clear line.
+/// Detection uses `run_env_value` (process env first, then the run's env file) so it matches whatever
+/// the engine's `std::env::var` gate reads. `redo_stage` is the resolved redo stage (e.g. "embed").
+#[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
+fn warn_inert_tuning_knobs(run: &SymbioticMemoryCliRun, redo_stage: Option<&str>) {
+    let is_set = |key: &str| run_env_value(run, key).is_some();
+
+    // (a) Consolidator knobs require the consolidator gate: SYMEM_CONSOLIDATOR truthy AND
+    //     consolidate_briefs on (i.e. not disabled via --no-consolidate-briefs).
+    let consolidator_truthy = run_env_value(run, "SYMEM_CONSOLIDATOR")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "llm" | "on" | "reweave" | "true" | "1"
+            )
+        })
+        .unwrap_or(false);
+    let consolidator_enabled = consolidator_truthy && run.consolidate_briefs;
+    if !consolidator_enabled {
+        for key in [
+            "SYMEM_CONSOLIDATE_INPUT",
+            "SYMEM_CONSOLIDATE_MODEL",
+            "SYMEM_CONSOLIDATE_THINKING",
+            "SYMEM_CONSOLIDATE_TURNS_PER_WINDOW",
+        ] {
+            if is_set(key) {
+                eprintln!(
+                    "WARNING: {key} is set but the consolidator is disabled (no truthy SYMEM_CONSOLIDATOR / --no-consolidate-briefs) — it will have NO effect."
+                );
+            }
+        }
+    }
+
+    // (b) Re-embed knobs require --re-embed or SYMEM_REDO=embed.
+    let reembed_active = run.re_embed || redo_stage == Some("embed");
+    if !reembed_active {
+        for key in ["SYMEM_REEMBED_CHUNK", "SYMEM_REEMBED_CONCURRENCY"] {
+            if is_set(key) {
+                eprintln!(
+                    "WARNING: {key} is set but re-embed is off (no --re-embed / SYMEM_REDO=embed) — it will have NO effect."
+                );
+            }
+        }
+    }
+
+    // (c) Multi-hop sub-knobs require the SYMEM_MULTIHOP gate.
+    let multihop_enabled = run_env_value(run, "SYMEM_MULTIHOP")
+        .map(|value| matches!(value.trim(), "1" | "true" | "on"))
+        .unwrap_or(false);
+    if !multihop_enabled {
+        for key in [
+            "SYMEM_MULTIHOP_SEED",
+            "SYMEM_MULTIHOP_ENTITIES",
+            "SYMEM_MULTIHOP_ROUND2_K",
+            "SYMEM_MULTIHOP_ALL",
+        ] {
+            if is_set(key) {
+                eprintln!(
+                    "WARNING: {key} is set but multi-hop is off (SYMEM_MULTIHOP not 1/true/on) — it will have NO effect."
+                );
+            }
+        }
+    }
+
+    // (d) Temporal-filter min-keep requires the SYMEM_TEMPORAL_FILTER gate.
+    let temporal_filter_enabled = run_env_value(run, "SYMEM_TEMPORAL_FILTER")
+        .map(|value| matches!(value.trim(), "1" | "true" | "on"))
+        .unwrap_or(false);
+    if !temporal_filter_enabled && is_set("SYMEM_TEMPORAL_FILTER_MIN") {
+        eprintln!(
+            "WARNING: SYMEM_TEMPORAL_FILTER_MIN is set but the temporal filter is off (SYMEM_TEMPORAL_FILTER not 1/true/on) — it will have NO effect."
+        );
+    }
+}
+
 fn run_env_value(run: &SymbioticMemoryCliRun, key: &str) -> Option<String> {
     if let Some(value) = std::env::var(key).ok().filter(|value| !value.is_empty()) {
         return Some(value);
@@ -5328,6 +5931,7 @@ mod tests {
             answerer: true,
             routed: false,
             answer_only: true,
+            re_embed: false,
             consolidate_briefs: false,
             stop_after_raw_embed: false,
             ingest_diagnostic: None,
@@ -5512,6 +6116,84 @@ mod tests {
             std::fs::read_to_string(source_vault.join("manifest.json")).unwrap(),
             r#"{"source":"stable"}"#
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vault_store_save_copy_records_meta_and_resolves_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store");
+        let run_root = dir.path().join("run-abc");
+        let vaults = run_root.join("vaults");
+        std::fs::create_dir_all(vaults.join("q1")).unwrap();
+        std::fs::create_dir_all(vaults.join("q2")).unwrap();
+        std::fs::write(vaults.join("q1/memory.sqlite"), b"sqlite").unwrap();
+        std::fs::write(
+            run_root.join("benchmark-report.json"),
+            r#"{"metrics":{"accuracy":{"value":0.874}}}"#,
+        )
+        .unwrap();
+
+        // COPY (default): store is populated, source survives intact.
+        vault_save_in(&store, &run_root, Some("golden"), false).unwrap();
+        let stored_vaults = store.join("golden/vaults");
+        assert!(stored_vaults.join("q1/memory.sqlite").is_file());
+        assert!(vaults.join("q1/memory.sqlite").is_file());
+        assert!(
+            !std::fs::symlink_metadata(&vaults)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+
+        let meta: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(store.join("golden/store-meta.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(meta["vault_count"].as_u64(), Some(2));
+        assert_eq!(meta["accuracy"].as_f64(), Some(0.874));
+        assert_eq!(meta["moved"].as_bool(), Some(false));
+        assert!(meta["saved_at"].as_str().is_some());
+
+        // Re-saving the same key is refused.
+        assert!(vault_save_in(&store, &run_root, Some("golden"), false).is_err());
+
+        // By-name discovery: a bare key resolves to the store's vaults dir.
+        let resolved =
+            resolve_source_vault_root_with_store(Path::new("golden"), Some(store.as_path()));
+        assert_eq!(resolved, stored_vaults);
+        // An existing path always wins over the store and is never overridden.
+        let direct = resolve_source_vault_root_with_store(&vaults, Some(store.as_path()));
+        assert_eq!(direct, vaults);
+        // Unknown key with no store falls through to the (non-existent) literal path.
+        let miss = resolve_source_vault_root_with_store(Path::new("nope"), Some(store.as_path()));
+        assert_eq!(miss, resolve_repo_path(Path::new("nope")));
+
+        // listing and path lookups succeed against the populated store.
+        vault_list_in(&store).unwrap();
+        assert!(vault_path_resolved(&store, "golden").unwrap().is_dir());
+
+        // MOVE: relocates the tree and leaves a symlink behind at the run's vaults/.
+        let move_run = dir.path().join("run-move");
+        let move_vaults = move_run.join("vaults");
+        std::fs::create_dir_all(move_vaults.join("q1")).unwrap();
+        vault_save_in(&store, &move_run, Some("moved-key"), true).unwrap();
+        assert!(store.join("moved-key/vaults/q1").is_dir());
+        let link = std::fs::symlink_metadata(&move_vaults).unwrap();
+        assert!(link.file_type().is_symlink());
+        assert_eq!(
+            std::fs::read_link(&move_vaults).unwrap(),
+            store.join("moved-key/vaults")
+        );
+    }
+
+    // Mirror of `vault_path`'s store-relative resolution for the test above.
+    fn vault_path_resolved(store: &Path, key: &str) -> anyhow::Result<PathBuf> {
+        let vaults = store.join(sanitize_path_component(key)).join("vaults");
+        if !vaults.is_dir() {
+            anyhow::bail!("no stored vaults for key '{key}'");
+        }
+        Ok(vaults)
     }
 
     #[test]
