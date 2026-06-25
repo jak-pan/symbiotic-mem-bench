@@ -34,7 +34,14 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 const enc = encodeURIComponent;
 
 export const api = {
-  health: () => get<{ ok: boolean }>("/health"),
+  health: () => get<{ ok: boolean; version?: string; git_sha?: string; binary_sha?: string }>("/health"),
+  uiVersion: async () => {
+    // Static sidecar written by scripts/write-version.mjs after each build.
+    // Fetch with no-store so a rebuilt bundle's new hash is always visible.
+    const res = await fetch("/version.json", { cache: "no-store" });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return res.json() as Promise<{ bundle: string; git: string; built: string }>;
+  },
   runs: () => get<{ runs: RunSummary[] }>("/runs").then((r) => r.runs),
   pending: () => get<{ pending: PendingRun[] }>("/pending").then((r) => r.pending),
   live: (id: string) => get<LiveResponse>(`/run/live?id=${enc(id)}`),

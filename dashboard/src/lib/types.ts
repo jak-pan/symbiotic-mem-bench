@@ -120,9 +120,28 @@ export interface QuestionDebug {
     query_plan?: Record<string, unknown> | null;
     initial_profile?: RetrievalProfileDebug | null;
     fallback_profile?: RetrievalProfileDebug | null;
+    /** Reranker scoring trace (present when the run used a reranker). One entry
+     *  per search profile (initial, then fallback). */
+    rerank_trace?: RerankProfile[] | null;
     [key: string]: unknown;
   } | null;
   [key: string]: unknown;
+}
+
+export interface RerankCandidate {
+  candidate_id: string;
+  /** Original dense-retrieval rank/score before reranking.
+   *  Fields are optional — older debug bundles may omit them. */
+  embedding_rank?: number | null;
+  embedding_score?: number | null;
+  final_rank?: number | null;
+  rerank_score?: number | null;
+  text?: string | null;
+}
+
+export interface RerankProfile {
+  candidate_type?: string | null;
+  candidates: RerankCandidate[];
 }
 
 export interface AnswererCallDebug {
@@ -200,8 +219,11 @@ export interface ModelRollup {
 
 export interface RunDetail {
   summary: RunSummary;
-  report: any;
-  params: any;
+  // Loose JSON passthrough from the server's `benchmark-report.json` blob. The
+  // UI renders summary/cohort/cost directly; `report` is carried for raw
+  // inspection only, so it stays untyped at the boundary.
+  report: Record<string, unknown> | null;
+  params: Record<string, unknown> | null;
   cohort: {
     dataset_fingerprint: string | null;
     judge_model: string | null;
@@ -272,7 +294,7 @@ export interface ParamField {
   name: string;
   label: string;
   kind: "path" | "int" | "bool" | "enum" | "string";
-  default: any;
+  default: unknown;
   options: string[];
   observed?: string[];
   group: string;
@@ -312,6 +334,35 @@ export interface QueueTiming {
   final_status?: string;
 }
 
+/** Aggregated per-queue timing row shown in the Provider Queue Summary panel. */
+export interface QueueSummaryRow {
+  name: string;
+  count: number;
+  failed: number;
+  wait_p50: number | null;
+  wait_p80: number | null;
+  wait_p95: number | null;
+  wait_p98: number | null;
+  run_p50: number | null;
+  run_p80: number | null;
+  run_p95: number | null;
+  run_p98: number | null;
+  total_p50: number | null;
+  total_p80: number | null;
+  total_p95: number | null;
+  total_p98: number | null;
+}
+
+export interface WorkflowQueueEventRow {
+  item_id: string;
+  queue_id: string;
+  kind: string;
+  status: string;
+  attempt: number;
+  timestamp?: string | null;
+  error?: string | null;
+}
+
 export interface WorkflowQueueDatabase {
   path: string;
   total_items: number;
@@ -321,8 +372,8 @@ export interface WorkflowQueueDatabase {
   queues: Record<string, number>;
   retried_items: number;
   max_attempt: number;
-  recent_errors: any[];
-  recent_events: any[];
+  recent_errors: WorkflowQueueEventRow[];
+  recent_events: WorkflowQueueEventRow[];
 }
 
 export interface WorkflowQueueSummary {
@@ -330,7 +381,7 @@ export interface WorkflowQueueSummary {
 }
 
 export interface TracesResponse {
-  memory_traces: { total: number; truncated: boolean; rows: any[] };
+  memory_traces: { total: number; truncated: boolean; rows: unknown[] };
   memory_stage_timing: Array<{
     operation: string;
     events: number;

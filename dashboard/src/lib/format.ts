@@ -1,5 +1,25 @@
 // Display formatting helpers — terminal-style: tabular, signed, terse.
 
+/** Coerce a possibly-null / NaN number to a finite number (0 otherwise). */
+export function num(value: number | null | undefined): number {
+  return Number.isFinite(value) ? Number(value) : 0;
+}
+
+/** Strip the `chat:` / `embedding:` prefix from a provider queue id. */
+export function shortQueue(id: string): string {
+  return id.replace(/^chat:/, "").replace(/^embedding:/, "");
+}
+
+/** `true` only when `value` is a real finite number. */
+export function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+/** Clamp a `value / max` ratio into a 0–100 percentage (for bar widths). */
+export function clampPct(value: number, max: number): number {
+  return Math.max(0, Math.min(100, (value / Math.max(1, max)) * 100));
+}
+
 export function pct(value: number | null | undefined, digits = 1): string {
   if (value === null || value === undefined) return "—";
   return (value * 100).toFixed(digits);

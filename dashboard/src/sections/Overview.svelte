@@ -2,19 +2,24 @@
   import { api } from "../lib/api";
   import type { RunDetail } from "../lib/types";
   import { pct, money, ms, tokens, shortHash } from "../lib/format";
+  import { createAsyncData } from "../lib/async.svelte";
   import Panel from "../components/Panel.svelte";
   import RingGauge from "../components/RingGauge.svelte";
 
   let { id }: { id: string } = $props();
-  let detail = $state<RunDetail | null>(null);
-  let loading = $state(true);
+  const ad = createAsyncData<RunDetail>();
 
   $effect(() => {
     const runId = id;
-    loading = true;
-    detail = null;
-    api.run(runId).then((d) => { detail = d; loading = false; });
+    ad.reset();
+    api.run(runId).then((d) => {
+      if (runId !== id) return; // user switched runs mid-flight
+      ad.set(d);
+    });
   });
+
+  const detail = $derived(ad.data);
+  const loading = $derived(ad.loading);
 
   const SKIP = new Set(["schema", "run_root", "run_name", "system", "benchmark", "artifact_manifest", "imported_artifacts"]);
   const paramEntries = $derived(

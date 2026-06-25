@@ -271,7 +271,9 @@ pub fn scan_trial_markers(repo_root: &Path) -> BTreeMap<String, Vec<TrialMarker>
     markers
 }
 
-fn collect_trial_paths(dir: &Path, out: &mut Vec<PathBuf>) {
+/// Recursively collect `trials.jsonl` paths beneath a directory. Used by
+/// [`scan_trial_markers`] and by the server's cache signature probe.
+pub fn collect_trial_paths(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -360,11 +362,14 @@ pub fn summarize_with_trials(
 
     let dataset_fingerprint = nested_string(report, &["cohort", "dataset_fingerprint"])
         .or_else(|| cohort::dataset_fingerprint(&record.run_root));
+    // `scored.json` is the largest per-run artifact after the trace files; read
+    // it once and let judge/per-question-type lookups share the parse.
+    let scored = artifacts::read_scored(&record.run_root);
     let judge_model = nested_string(report, &["cohort", "judge_model"])
-        .or_else(|| artifacts::judge_model(&record.run_root));
+        .or_else(|| artifacts::judge_model_from(scored.as_ref()));
     let judge_prompt_mode = nested_string(report, &["cohort", "judge_prompt_mode"])
         .or_else(|| nested_string(report, &["judge_prompt_mode"]))
-        .or_else(|| artifacts::judge_prompt_mode(&record.run_root));
+        .or_else(|| artifacts::judge_prompt_mode_from(scored.as_ref()));
     let models = report
         .get("models")
         .and_then(|value| serde_json::from_value::<Models>(value.clone()).ok())
@@ -395,7 +400,8 @@ pub fn summarize_with_trials(
             .unwrap_or_default()
     };
 
-    let per_question_type = artifacts::read_scored(&record.run_root)
+    let per_question_type = scored
+        .as_ref()
         .and_then(|scored| scored.get("per_question_type").cloned());
 
     let trial_markers = trial_index.get(&record.run_id).cloned().unwrap_or_default();
@@ -634,12 +640,23 @@ fn tuning_shape_from_name(run_name: &str) -> Option<String> {
 /// Derive cohort + cost fields for a run, reading trace files. Used at report
 /// finalize (persisted) and by the server's run-detail endpoint.
 pub fn compute_cohort_fields(run_root: &Path, params: &Value) -> CohortFields {
-    let dataset_fingerprint = cohort::dataset_fingerprint(run_root);
-    let judge_model = artifacts::judge_model(run_root);
-    let judge_prompt_mode = artifacts::judge_prompt_mode(run_root);
     let rollup = cost::rollup_model_traces(run_root);
+    compute_cohort_fields_with_rollup(run_root, params, rollup.as_ref())
+}
+
+/// Same as [`compute_cohort_fields`] but accepts a precomputed model-trace
+/// rollup, so callers that already need the rollup for their own payload (the
+/// server's run-detail endpoint) don't parse `model-traces.jsonl` twice.
+pub fn compute_cohort_fields_with_rollup(
+    run_root: &Path,
+    params: &Value,
+    rollup: Option<&cost::ModelTraceRollup>,
+) -> CohortFields {
+    let dataset_fingerprint = cohort::dataset_fingerprint(run_root);
+    let scored = artifacts::read_scored(run_root);
+    let judge_model = artifacts::judge_model_from(scored.as_ref());
+    let judge_prompt_mode = artifacts::judge_prompt_mode_from(scored.as_ref());
     let mut models = rollup
-        .as_ref()
         .map(|rollup| Models::from_roles(&rollup.roles))
         .unwrap_or_default();
     models = models_with_param_fallback(models, params, judge_model.as_deref());
@@ -650,21 +667,18 @@ pub fn compute_cohort_fields(run_root: &Path, params: &Value) -> CohortFields {
         judge_prompt_mode,
         models,
         role_stats: rollup
-            .as_ref()
             .map(|rollup| rollup.roles_detail.clone())
             .unwrap_or_default(),
         config_signature,
-        cost_micro_usd: rollup.as_ref().and_then(|rollup| rollup.cost_micro_usd),
-        latency_ms_p50: rollup.as_ref().and_then(|rollup| rollup.latency_ms_p50),
-        latency_ms_p95: rollup.as_ref().and_then(|rollup| rollup.latency_ms_p95),
-        cached_input_tokens: rollup.as_ref().map(|rollup| rollup.cached_input_tokens),
-        uncached_input_tokens: rollup.as_ref().map(|rollup| rollup.uncached_input_tokens),
-        response_cache_hits: rollup.as_ref().map(|rollup| rollup.response_cache_hits),
-        prompt_cache_hits: rollup.as_ref().map(|rollup| rollup.prompt_cache_hits),
-        prompt_cache_partial_hits: rollup
-            .as_ref()
-            .map(|rollup| rollup.prompt_cache_partial_hits),
-        prompt_cache_misses: rollup.as_ref().map(|rollup| rollup.prompt_cache_misses),
+        cost_micro_usd: rollup.and_then(|rollup| rollup.cost_micro_usd),
+        latency_ms_p50: rollup.and_then(|rollup| rollup.latency_ms_p50),
+        latency_ms_p95: rollup.and_then(|rollup| rollup.latency_ms_p95),
+        cached_input_tokens: rollup.map(|rollup| rollup.cached_input_tokens),
+        uncached_input_tokens: rollup.map(|rollup| rollup.uncached_input_tokens),
+        response_cache_hits: rollup.map(|rollup| rollup.response_cache_hits),
+        prompt_cache_hits: rollup.map(|rollup| rollup.prompt_cache_hits),
+        prompt_cache_partial_hits: rollup.map(|rollup| rollup.prompt_cache_partial_hits),
+        prompt_cache_misses: rollup.map(|rollup| rollup.prompt_cache_misses),
     }
 }
 
@@ -758,9 +772,37 @@ fn file_mtime_ms(path: &Path) -> Option<i64> {
 }
 
 fn count_nonempty_lines(path: &Path) -> u64 {
-    std::fs::read_to_string(path)
-        .map(|raw| raw.lines().filter(|line| !line.trim().is_empty()).count() as u64)
-        .unwrap_or(0)
+    count_nonempty_lines_opt(path).unwrap_or(0)
+}
+
+/// Count lines that contain at least one non-whitespace byte. Reads raw bytes
+/// (no UTF-8 validation, no `String` allocation) because these files can be
+/// large and are polled frequently by the dashboard. Returns `None` when the
+/// file is absent so callers can fall back across candidate paths.
+pub fn count_nonempty_lines_opt(path: &Path) -> Option<u64> {
+    let bytes = std::fs::read(path).ok()?;
+    Some(count_nonempty_lines_bytes(&bytes))
+}
+
+fn count_nonempty_lines_bytes(bytes: &[u8]) -> u64 {
+    let mut count = 0u64;
+    let mut has_non_ws = false;
+    for &byte in bytes {
+        match byte {
+            b'\n' => {
+                if has_non_ws {
+                    count += 1;
+                }
+                has_non_ws = false;
+            }
+            b' ' | b'\t' | b'\r' => {}
+            _ => has_non_ws = true,
+        }
+    }
+    if has_non_ws {
+        count += 1;
+    }
+    count
 }
 
 fn count_dir_entries(path: &Path) -> u64 {

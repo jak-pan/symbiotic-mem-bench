@@ -19,18 +19,36 @@
   }
 
   onMount(() => {
+    store.loadVersion();
     store.load();
     tick();
     const t = setInterval(tick, 1000);
-    const r = setInterval(() => store.load(), 15000);
+    // Poll the registry, but skip while the tab is hidden and re-pull
+    // immediately on focus so background tabs don't churn the server.
+    const r = setInterval(() => {
+      if (document.visibilityState === "visible") store.load();
+    }, 15000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") store.load();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       clearInterval(t);
       clearInterval(r);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   });
 
   function onKey(e: KeyboardEvent) {
-    if (e.key === "/" && document.activeElement !== cmdEl) {
+    // Never hijack typing in form fields (search box, selects, tuner inputs).
+    const t = e.target as HTMLElement | null;
+    const typing =
+      t instanceof HTMLInputElement ||
+      t instanceof HTMLSelectElement ||
+      t instanceof HTMLTextAreaElement ||
+      (t?.isContentEditable ?? false);
+    if (typing && !(e.key === "Escape")) return;
+    if (e.key === "/") {
       e.preventDefault();
       cmdEl?.focus();
     } else if (e.key === "F1") {
@@ -60,7 +78,7 @@
   }
 </script>
 
-<svelte:window on:keydown={onKey} />
+<svelte:window onkeydown={onKey} />
 
 <header class="topbar">
   <div class="brand">
@@ -125,9 +143,13 @@
   <span class="spacer"></span>
   <span class="hint"><kbd>/</kbd> cmd</span>
   <span class="hint"><kbd>F1</kbd>/<kbd>F2</kbd> view</span>
-  <span class="hint"><kbd>j</kbd><kbd>k</kbd> rows</span>
   <span class="sep">│</span>
-  <span class="stk">MEMBENCH v0.1</span>
+  <span
+    class="stk ver"
+    title={`server v${store.serverVersion || "?"} · ui bundle built ${store.uiBuilt || "?"}`}
+  >
+    SRV <b>{store.serverSha || "?"}</b><span class="dim">·</span>UI <b>{store.uiBundle || "?"}</b>
+  </span>
 </footer>
 
 <style>
@@ -287,14 +309,22 @@
   .st.off .dot {
     background: var(--red);
   }
-  @keyframes pulse {
-    50% {
-      opacity: 0.4;
-    }
-  }
   .stk b {
     color: var(--text);
     font-weight: 700;
+  }
+  .ver {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+  .ver b {
+    color: var(--amber);
+    font-weight: 600;
+  }
+  .ver .dim {
+    color: var(--text-faint);
+    margin: 0 5px;
   }
   .sep {
     color: var(--border-bright);
@@ -326,11 +356,6 @@
     background: var(--green);
     box-shadow: 0 0 6px var(--green);
     animation: pulse 1.4s ease infinite;
-  }
-  @keyframes pulse {
-    50% {
-      opacity: 0.35;
-    }
   }
   .spacer {
     flex: 1;

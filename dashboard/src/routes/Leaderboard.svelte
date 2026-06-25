@@ -18,6 +18,7 @@
   import CategoryHeat from "../components/CategoryHeat.svelte";
   import RingGauge from "../components/RingGauge.svelte";
   import Radar from "../components/Radar.svelte";
+  import { trialBadge, runKindLabel, runKindChipClass } from "../lib/run";
 
   let cohorts = $state<Cohort[]>([]);
   let activeId = $state<string>("");
@@ -39,6 +40,31 @@
 
   const active = $derived(cohorts.find((c) => c.cohort_id === activeId));
   const hasLatency = $derived(active?.rows.some((r) => r.latency_ms_p50 != null) ?? false);
+
+  type CompareMetric = {
+    key: string;
+    label: string;
+    kind: "ratio" | "money" | "ms";
+    qtype?: string;
+  };
+
+  const CORE_METRICS: CompareMetric[] = [
+    { key: "acc", label: "ACC", kind: "ratio" },
+    { key: "tavg", label: "T·AVG", kind: "ratio" },
+    { key: "abst", label: "ABST", kind: "ratio" },
+    { key: "cost", label: "COST", kind: "money" },
+    { key: "lat", label: "LAT", kind: "ms" },
+  ];
+  const COMPARE_METRICS: CompareMetric[] = [
+    ...CORE_METRICS,
+    ...QTYPES.map((qtype) => ({
+      key: `qtype:${qtype}`,
+      label: qtypeShort(qtype),
+      kind: "ratio" as const,
+      qtype,
+    })),
+  ];
+
   const visibleCompareMetrics = $derived(
     COMPARE_METRICS.filter((metric) => metric.key !== "lat" || hasLatency),
   );
@@ -100,34 +126,6 @@
   function radarValues(r: RankedRow): (number | null)[] {
     return QTYPES.map((qt) => r.per_question_type?.[qt]?.accuracy ?? null);
   }
-
-  function trialBadge(r: RankedRow): string {
-    return r.trial_markers.some((marker) => marker.focused) ? "FOCUSED" : "TRIAL";
-  }
-
-  type CompareMetric = {
-    key: string;
-    label: string;
-    kind: "ratio" | "money" | "ms";
-    qtype?: string;
-  };
-
-  const CORE_METRICS: CompareMetric[] = [
-    { key: "acc", label: "ACC", kind: "ratio" },
-    { key: "tavg", label: "T·AVG", kind: "ratio" },
-    { key: "abst", label: "ABST", kind: "ratio" },
-    { key: "cost", label: "COST", kind: "money" },
-    { key: "lat", label: "LAT", kind: "ms" },
-  ];
-  const COMPARE_METRICS: CompareMetric[] = [
-    ...CORE_METRICS,
-    ...QTYPES.map((qtype) => ({
-      key: `qtype:${qtype}`,
-      label: qtypeShort(qtype),
-      kind: "ratio" as const,
-      qtype,
-    })),
-  ];
 
   // Resolve the selected ids to rows (called inline in the template so it stays
   // reactive to `selected`).
@@ -236,8 +234,8 @@
                   <span class="fr-rank" class:gold={i === 0}>{r.rank}</span>
                   <span class="fr-name" title={r.run_name}>{r.run_name}</span>
                   <span class="metric-bar" class:lead={i === 0}>
-                    <span class="metric-fill" style="width:{Math.max(0, Math.min(1, r.accuracy)) * 100}%"></span>
-                    <span class="metric-mark" style="left:{Math.max(0, Math.min(1, r.task_averaged_accuracy)) * 100}%"></span>
+                    <span class="metric-fill" style="width:{Math.max(0, Math.min(1, r.accuracy ?? 0)) * 100}%"></span>
+                    <span class="metric-mark" style="left:{Math.max(0, Math.min(1, r.task_averaged_accuracy ?? 0)) * 100}%"></span>
                     <span class="metric-label mono-num">{pct(r.accuracy)}</span>
                   </span>
                   {#each QTYPES as qt (qt)}
@@ -327,23 +325,27 @@
         {/if}
       </section>
 
+      {#snippet sortableTh(key: string, label: string, cls: string)}
+        <th class={`sortable ${cls}`} scope="col" tabindex="0" onclick={() => setSort(key)} onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSort(key); } }}>{label}</th>
+      {/snippet}
+
       <!-- ranked table -->
       <Panel title="Leaderboard" tag="{active.benchmark} · {active.limit}Q" flush scroll>
         <table class="grid leaderboard-table" class:withLatency={hasLatency}>
           <thead>
             <tr>
-              <th class="sortable col-rank" onclick={() => setSort("rank")}>#</th>
-              <th class="sortable col-system" onclick={() => setSort("run")}>System / Config</th>
-              <th class="col-kind">Kind</th>
-              <th class="sortable num col-accuracy" onclick={() => setSort("acc")}>Accuracy</th>
-              <th class="sortable num col-small" onclick={() => setSort("tavg")}>Task·Avg</th>
-              <th class="sortable num col-small" onclick={() => setSort("abst")}>Abst</th>
-              <th class="col-categories">Categories</th>
-              <th class="sortable num col-money" onclick={() => setSort("cost")}>Cost</th>
+              {@render sortableTh("rank", "#", "col-rank")}
+              {@render sortableTh("run", "System / Config", "col-system")}
+              <th class="col-kind" scope="col">Kind</th>
+              {@render sortableTh("acc", "Accuracy", "num col-accuracy")}
+              {@render sortableTh("tavg", "Task·Avg", "num col-small")}
+              {@render sortableTh("abst", "Abst", "num col-small")}
+              <th class="col-categories" scope="col">Categories</th>
+              {@render sortableTh("cost", "Cost", "num col-money")}
               {#if hasLatency}
-                <th class="sortable num col-latency" onclick={() => setSort("lat")}>P50 Lat</th>
+                {@render sortableTh("lat", "P50 Lat", "num col-latency")}
               {/if}
-              <th class="sortable num col-updated" onclick={() => setSort("age")}>Updated</th>
+              {@render sortableTh("age", "Updated", "num col-updated")}
             </tr>
           </thead>
           <tbody>
@@ -357,11 +359,11 @@
                   {#if r.is_trial_run}<span class="trial-badge">{trialBadge(r)}</span>{/if}
                   <span class="cfg">{r.config_label}</span>
                 </td>
-                <td><span class="chip {r.run_kind === 'native' ? 'green' : 'cyan'}">{r.run_kind === "imported-artifact" ? "import" : r.run_kind}</span></td>
+                <td><span class="chip {runKindChipClass(r.run_kind)}">{runKindLabel(r.run_kind)}</span></td>
                 <td class="num">
                   <span class="metric-bar table-bar" class:lead={r.rank === 1}>
-                    <span class="metric-fill" style="width:{Math.max(0, Math.min(1, r.accuracy)) * 100}%"></span>
-                    <span class="metric-mark" style="left:{Math.max(0, Math.min(1, r.task_averaged_accuracy)) * 100}%"></span>
+                    <span class="metric-fill" style="width:{Math.max(0, Math.min(1, r.accuracy ?? 0)) * 100}%"></span>
+                    <span class="metric-mark" style="left:{Math.max(0, Math.min(1, r.task_averaged_accuracy ?? 0)) * 100}%"></span>
                     <span class="metric-label mono-num">{pct(r.accuracy)}</span>
                   </span>
                 </td>

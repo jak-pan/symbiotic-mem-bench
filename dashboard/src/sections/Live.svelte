@@ -2,7 +2,7 @@
   import { onDestroy } from "svelte";
   import { api } from "../lib/api";
   import type { LiveResponse, QueueBreakdown, StageProgress, StageSegment } from "../lib/types";
-  import { tokens } from "../lib/format";
+  import { tokens, num, shortQueue } from "../lib/format";
   import Panel from "../components/Panel.svelte";
   import Bar from "../components/Bar.svelte";
 
@@ -23,15 +23,25 @@
     }
   }
 
-  // Re-poll every 2s; restart cleanly when the selected run changes.
+  // Re-poll every 2s; restart cleanly when the selected run changes. Skip fires
+  // while the tab is hidden so background dashboard tabs don't poll the server.
   $effect(() => {
     const runId = id;
     data = null;
     err = null;
     poll(runId);
     clearInterval(timer);
-    timer = setInterval(() => poll(runId), 2000);
-    return () => clearInterval(timer);
+    timer = setInterval(() => {
+      if (document.visibilityState === "visible") poll(runId);
+    }, 2000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") poll(runId);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   });
   onDestroy(() => clearInterval(timer));
 
@@ -90,10 +100,6 @@
     return op;
   }
 
-  function shortQueue(id: string): string {
-    return id.replace(/^chat:/, "").replace(/^embedding:/, "");
-  }
-
   function queueUnit(q: QueueBreakdown): string {
     return q.operation === "embedding" ? "texts" : "calls";
   }
@@ -113,21 +119,18 @@
     return (timestamp ?? "").slice(11, 19);
   }
 
-  function num(value: number | null | undefined): number {
-    return Number.isFinite(value) ? Number(value) : 0;
-  }
-
   function oneDecimal(value: number | null | undefined): string {
     const v = num(value);
     return v.toFixed(v >= 10 ? 0 : 1);
   }
 
-  function pct(value: number): number {
+  /** Map a 0–1 ratio to a clamped 0–100 integer (for segment/progress widths). */
+  function clampPct(value: number): number {
     return Math.max(0, Math.min(100, Math.round(num(value) * 100)));
   }
 
   function segmentFill(segment: StageSegment): string {
-    const progress = pct(segment.progress);
+    const progress = clampPct(segment.progress);
     if (segment.status === "done") return "var(--green)";
     if (segment.status === "failed") return "var(--red)";
     if (segment.status === "partial") return `linear-gradient(90deg, var(--cyan) 0 ${progress}%, var(--amber) ${progress}% 100%)`;

@@ -25,7 +25,8 @@
   });
 
   // Re-plan whenever values change (debounced).
-  let timer: ReturnType<typeof setTimeout>;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let copiedTimer: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
     const snapshot = JSON.stringify(values);
     if (!schema) return;
@@ -35,6 +36,9 @@
       preview = await api.runnerPlan(JSON.parse(snapshot)).catch(() => null);
       planning = false;
     }, 220);
+    // Clear the pending plan if the component unmounts mid-debounce so we don't
+    // mutate state on a destroyed instance.
+    return () => clearTimeout(timer);
   });
 
   const groups = $derived.by(() => {
@@ -49,7 +53,8 @@
   async function copy(text: string, tag: string) {
     await navigator.clipboard.writeText(text);
     copied = tag;
-    setTimeout(() => (copied = null), 1200);
+    clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => (copied = null), 1200);
   }
 
   function fullScript(p: RunnerPreview): string {

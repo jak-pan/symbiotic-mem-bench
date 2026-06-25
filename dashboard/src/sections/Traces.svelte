@@ -1,24 +1,32 @@
 <script lang="ts">
   import { api } from "../lib/api";
-  import type { QueueTiming, TracesResponse } from "../lib/types";
-  import { ms, tokens } from "../lib/format";
+  import type { QueueSummaryRow, TracesResponse } from "../lib/types";
+  import { ms, tokens, num, shortQueue, isFiniteNumber, clampPct } from "../lib/format";
+  import { createAsyncData } from "../lib/async.svelte";
   import Panel from "../components/Panel.svelte";
+  import TraceLog from "../components/TraceLog.svelte";
+  import TraceWaterfall, { type WfBlock, type WfLane, type WfTick } from "../components/TraceWaterfall.svelte";
+  import QueueSummaryTable from "../components/QueueSummary.svelte";
 
   let { id }: { id: string } = $props();
-  let data = $state<TracesResponse | null>(null);
-  let loading = $state(true);
-  let traceKind = $state("all");
-  let traceFilter = $state("");
+  const ad = createAsyncData<TracesResponse>();
 
   $effect(() => {
     const runId = id;
-    loading = true;
-    data = null;
-    api.traces(runId).then((d) => { data = d; loading = false; });
+    ad.reset();
+    api.traces(runId).then((d) => {
+      if (runId !== id) return; // user switched runs mid-flight
+      ad.set(d);
+    });
   });
 
-  const queueSummaries = $derived.by(() => {
-    const groups = new Map<string, QueueTiming[]>();
+  const data = $derived(ad.data);
+  const loading = $derived(ad.loading);
+
+  // Aggregated per-queue timing. Sort each sample once and index for all four
+  // percentiles (previously every percentile re-sorted a fresh copy).
+  const queueSummaries = $derived.by<QueueSummaryRow[]>(() => {
+    const groups = new Map<string, NonNullable<TracesResponse["queue_timing"]>[number][]>();
     for (const row of data?.queue_timing ?? []) {
       const key = `${row.operation}:${shortQueue(row.queue_id)}`;
       const rows = groups.get(key) ?? [];
@@ -27,30 +35,36 @@
     }
     return [...groups.entries()]
       .map(([name, rows]) => {
-        const wait = rows.map((row) => row.wait_ms).filter(isFiniteNumber);
-        const run = rows.map((row) => row.run_ms).filter(isFiniteNumber);
-        const total = rows.map((row) => row.total_ms).filter(isFiniteNumber);
+        const wait = rows.map((row) => row.wait_ms).filter(isFiniteNumber).sort((a, b) => a - b);
+        const run = rows.map((row) => row.run_ms).filter(isFiniteNumber).sort((a, b) => a - b);
+        const total = rows.map((row) => row.total_ms).filter(isFiniteNumber).sort((a, b) => a - b);
         const failed = rows.filter((row) => row.final_status === "failed" || row.final_status === "dead").length;
         return {
           name,
           count: rows.length,
           failed,
-          wait_p50: percentile(wait, 50),
-          wait_p80: percentile(wait, 80),
-          wait_p95: percentile(wait, 95),
-          wait_p98: percentile(wait, 98),
-          run_p50: percentile(run, 50),
-          run_p80: percentile(run, 80),
-          run_p95: percentile(run, 95),
-          run_p98: percentile(run, 98),
-          total_p50: percentile(total, 50),
-          total_p80: percentile(total, 80),
-          total_p95: percentile(total, 95),
-          total_p98: percentile(total, 98),
+          wait_p50: percentileSorted(wait, 50),
+          wait_p80: percentileSorted(wait, 80),
+          wait_p95: percentileSorted(wait, 95),
+          wait_p98: percentileSorted(wait, 98),
+          run_p50: percentileSorted(run, 50),
+          run_p80: percentileSorted(run, 80),
+          run_p95: percentileSorted(run, 95),
+          run_p98: percentileSorted(run, 98),
+          total_p50: percentileSorted(total, 50),
+          total_p80: percentileSorted(total, 80),
+          total_p95: percentileSorted(total, 95),
+          total_p98: percentileSorted(total, 98),
         };
       })
       .sort((a, b) => num(b.total_p98) - num(a.total_p98));
   });
+
+  function percentileSorted(values: number[], p: number): number | null {
+    if (!values.length) return null;
+    const rank = Math.round((p / 100) * (values.length - 1));
+    return values[Math.max(0, Math.min(values.length - 1, rank))];
+  }
 
   const bottlenecks = $derived.by(() => {
     const memory = (data?.memory_stage_timing ?? [])
@@ -75,97 +89,48 @@
     }));
     return [...memory, ...queues].sort((a, b) => b.primary - a.primary).slice(0, 10);
   });
-
   const bottleneckMax = $derived.by(() => Math.max(1, ...bottlenecks.map((row) => row.primary)));
+
   const waterfall = $derived(data?.trace_waterfall);
   const dependencyWaterfall = $derived(data?.dependency_waterfall);
-  const filteredTraceEvents = $derived.by(() => {
-    const rows = data?.trace_events?.rows ?? [];
-    const needle = traceFilter.trim().toLowerCase();
-    return rows.filter((row) => {
-      if (traceKind === "error" && row.status !== "failed" && !row.error) return false;
-      if (traceKind !== "all" && traceKind !== "error" && row.kind !== traceKind) return false;
-      if (!needle) return true;
-      return [
-        row.timestamp,
-        row.kind,
-        row.operation,
-        row.lane,
-        row.event,
-        row.status,
-        row.source,
-        row.error ?? "",
-      ].join(" ").toLowerCase().includes(needle);
-    });
-  });
-  const waterfallTicks = $derived.by(() => {
+
+  const waterfallTicks = $derived.by<WfTick[]>(() => {
     const duration = Math.max(1, waterfall?.duration_ms ?? 1);
-    return [0, 0.25, 0.5, 0.75, 1].map((ratio) => ({
-      ratio,
-      label: ms(duration * ratio),
-    }));
+    return [0, 0.25, 0.5, 0.75, 1].map((ratio) => ({ ratio, label: ms(duration * ratio) }));
   });
-  const dependencyTicks = $derived.by(() => {
+  const dependencyTicks = $derived.by<WfTick[]>(() => {
     const duration = Math.max(1, dependencyWaterfall?.duration_ms ?? 1);
-    return [0, 0.25, 0.5, 0.75, 1].map((ratio) => ({
-      ratio,
-      label: ms(duration * ratio),
-    }));
+    return [0, 0.25, 0.5, 0.75, 1].map((ratio) => ({ ratio, label: ms(duration * ratio) }));
   });
 
-  function shortQueue(id: string): string {
-    return id.replace(/^chat:/, "").replace(/^embedding:/, "");
-  }
+  // Normalise both waterfall shapes into the shared component's lane type.
+  const traceLanes = $derived.by<WfLane[]>(
+    () =>
+      (waterfall?.lanes ?? []).map((lane) => ({
+        id: `${lane.kind}:${lane.name}`,
+        label: lane.name,
+        chipKind: lane.kind,
+        blocks: lane.blocks,
+      })),
+  );
+  const dependencyLanes = $derived.by<WfLane[]>(
+    () =>
+      (dependencyWaterfall?.lanes ?? []).map((lane) => ({
+        id: lane.source,
+        label: lane.source,
+        waitMs: lane.wait_ms,
+        setupMs: lane.setup_ms,
+        blocks: lane.blocks,
+      })),
+  );
 
-  function isFiniteNumber(value: number | null | undefined): value is number {
-    return Number.isFinite(value);
-  }
-
-  function num(value: number | null | undefined): number {
-    return Number.isFinite(value) ? Number(value) : 0;
-  }
-
-  function percentile(values: number[], p: number): number | null {
-    if (!values.length) return null;
-    const sorted = [...values].sort((a, b) => a - b);
-    const rank = Math.round((p / 100) * (sorted.length - 1));
-    return sorted[Math.max(0, Math.min(sorted.length - 1, rank))];
-  }
-
-  function pct(value: number, max: number): number {
-    return Math.max(0, Math.min(100, (value / Math.max(1, max)) * 100));
-  }
-
-  function blockLeft(startMs: number): number {
-    return pct(startMs, waterfall?.duration_ms ?? 1);
-  }
-
-  function blockWidth(block: { start_ms: number; end_ms: number; duration_ms: number }): number {
-    const width = pct(Math.max(block.duration_ms, block.end_ms - block.start_ms, 1), waterfall?.duration_ms ?? 1);
-    return Math.max(0.18, width);
-  }
-
-  function blockTitle(block: { label: string; duration_ms: number; source: string; item_count: number; item_unit: string; status: string }): string {
+  function traceBlockTitle(block: WfBlock): string {
     const items = block.item_count ? ` · ${tokens(block.item_count)} ${block.item_unit}` : "";
-    return `${block.label} · ${ms(block.duration_ms)} · ${block.status}${items} · ${block.source}`;
+    return `${block.label} · ${ms(block.duration_ms)} · ${block.status ?? ""}${items} · ${block.source ?? ""}`;
   }
-
-  function depLeft(startMs: number): number {
-    return pct(startMs, dependencyWaterfall?.duration_ms ?? 1);
-  }
-
-  function depWidth(block: { start_ms: number; end_ms: number; duration_ms: number }): number {
-    const width = pct(Math.max(block.duration_ms, block.end_ms - block.start_ms, 1), dependencyWaterfall?.duration_ms ?? 1);
-    return Math.max(0.18, width);
-  }
-
-  function depTitle(block: { label: string; duration_ms: number; item_count: number; item_unit: string }): string {
+  function depBlockTitle(block: WfBlock): string {
     const items = block.item_count ? ` · ${tokens(block.item_count)} ${block.item_unit}` : "";
     return `${block.label} · ${ms(block.duration_ms)}${items}`;
-  }
-
-  function itemText(count: number | null | undefined, unit: string | null | undefined): string {
-    return count ? `${tokens(count)} ${unit ?? "items"}` : "—";
   }
 
   function metricPair(row: TracesResponse["memory_stage_timing"][number], key: string, label: string): string | null {
@@ -199,36 +164,13 @@
 
     {#if dependencyWaterfall?.lanes?.length}
       <Panel title="Dependency Waterfall" tag="{dependencyWaterfall.lanes.length} sources · setup + blocked spans first" flush>
-        <div class="wf dep">
-          <div class="wf-axis">
-            <div></div>
-            <div class="wf-track axis">
-              {#each dependencyTicks as tick (tick.ratio)}
-                <span class="wf-tick" class:last={tick.ratio === 1} style:left={`${tick.ratio * 100}%`}><i></i><b>{tick.label}</b></span>
-              {/each}
-            </div>
-          </div>
-          {#each dependencyWaterfall.lanes as lane (lane.source)}
-            <div class="wf-row dep-row">
-              <div class="wf-name">
-                <span class="bkind memory">source</span>
-                <span class="wf-name-text">{lane.source}</span>
-                {#if lane.setup_ms}<span class="dep-setup mono-num">setup {ms(lane.setup_ms)}</span>{/if}
-                <span class="dep-wait mono-num">wait {ms(lane.wait_ms)}</span>
-              </div>
-              <div class="wf-track">
-                {#each lane.blocks as block, i (block.kind + block.start_ms + i)}
-                  <span
-                    class="wf-block dep-block {block.kind}"
-                    style:left={`${depLeft(block.start_ms)}%`}
-                    style:width={`${depWidth(block)}%`}
-                    title={depTitle(block)}
-                  ></span>
-                {/each}
-              </div>
-            </div>
-          {/each}
-        </div>
+        <TraceWaterfall
+          variant="dependency"
+          lanes={dependencyLanes}
+          ticks={dependencyTicks}
+          duration={dependencyWaterfall.duration_ms}
+          blockTitle={depBlockTitle}
+        />
         <div class="bkey">
           <span><i class="setup"></i>setup</span>
           <span><i class="capture"></i>capture</span>
@@ -264,41 +206,8 @@
     {/if}
 
     {#if data.trace_events?.rows?.length}
-      <Panel title="Unified Trace Log" tag="{filteredTraceEvents.length}/{data.trace_events.total} events{data.trace_events.truncated ? ' (capped)' : ''}" flush scroll>
-        <div class="trace-controls">
-          <select class="field mini" bind:value={traceKind}>
-            <option value="all">all</option>
-            <option value="memory">memory</option>
-            <option value="provider">provider</option>
-            <option value="error">errors</option>
-          </select>
-          <input class="field search" bind:value={traceFilter} placeholder="filter op, queue, source, error…" />
-        </div>
-        <table class="grid trace-log">
-          <thead><tr><th>Time</th><th>Kind</th><th>Operation</th><th>Event</th><th class="num">Dur</th><th class="num">Wait</th><th class="num">Run</th><th class="num">Total</th><th class="num">Try</th><th class="num">Items</th><th>Source / Error</th></tr></thead>
-          <tbody>
-            {#each filteredTraceEvents.slice(0, 1200) as row, i (row.timestamp + row.kind + row.source + row.event + i)}
-              <tr>
-                <td class="mono-num faint">{(row.timestamp ?? "").slice(11, 23)}</td>
-                <td><span class="bkind {row.kind}">{row.kind}</span></td>
-                <td>
-                  <div class="stacked">
-                    <span class="amber">{row.operation}</span>
-                    <span class="dim clip">{row.lane}</span>
-                  </div>
-                </td>
-                <td><span class:up={row.status === "succeeded"} class:down={row.status === "failed"}>{row.event}</span></td>
-                <td class="num mono-num dim">{ms(row.duration_ms)}</td>
-                <td class="num mono-num dim">{ms(row.wait_ms)}</td>
-                <td class="num mono-num dim">{ms(row.run_ms)}</td>
-                <td class="num mono-num">{ms(row.total_ms)}</td>
-                <td class="num mono-num dim">{row.attempt || "—"}</td>
-                <td class="num mono-num dim">{itemText(row.item_count, row.item_unit)}</td>
-                <td class="clip" class:down={!!row.error}>{row.error ?? row.source ?? "—"}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
+      <Panel title="Unified Trace Log" tag="{data.trace_events.total} events{data.trace_events.truncated ? ' (capped)' : ''}" flush scroll>
+        <TraceLog events={data.trace_events.rows} total={data.trace_events.total} truncated={data.trace_events.truncated} />
       </Panel>
     {/if}
 
@@ -313,10 +222,10 @@
               </div>
               <div class="bbar" title={row.meta}>
                 {#if row.kind === "provider"}
-                  <span class="bseg wait" style:width={`${pct(row.left, bottleneckMax)}%`}></span>
-                  <span class="bseg run" style:width={`${pct(row.right, bottleneckMax)}%`}></span>
+                  <span class="bseg wait" style:width={`${clampPct(row.left, bottleneckMax)}%`}></span>
+                  <span class="bseg run" style:width={`${clampPct(row.right, bottleneckMax)}%`}></span>
                 {:else}
-                  <span class="bseg work" style:width={`${pct(row.right, bottleneckMax)}%`}></span>
+                  <span class="bseg work" style:width={`${clampPct(row.right, bottleneckMax)}%`}></span>
                 {/if}
               </div>
               <div class="bval mono-num">{row.label}</div>
@@ -334,34 +243,13 @@
 
     {#if waterfall?.lanes?.length}
       <Panel title="Trace Waterfall" tag="{waterfall.lanes.length} lanes · {waterfall.block_count} blocks{waterfall.truncated ? ' (capped)' : ''}" flush>
-        <div class="wf">
-          <div class="wf-axis">
-            <div></div>
-            <div class="wf-track axis">
-              {#each waterfallTicks as tick (tick.ratio)}
-                <span class="wf-tick" class:last={tick.ratio === 1} style:left={`${tick.ratio * 100}%`}><i></i><b>{tick.label}</b></span>
-              {/each}
-            </div>
-          </div>
-          {#each waterfall.lanes as lane (lane.kind + lane.name)}
-            <div class="wf-row">
-              <div class="wf-name">
-                <span class="bkind {lane.kind}">{lane.kind}</span>
-                <span class="wf-name-text">{lane.name}</span>
-              </div>
-              <div class="wf-track">
-                {#each lane.blocks as block, i (block.source + block.kind + block.start_ms + i)}
-                  <span
-                    class="wf-block {block.kind} {block.status}"
-                    style:left={`${blockLeft(block.start_ms)}%`}
-                    style:width={`${blockWidth(block)}%`}
-                    title={blockTitle(block)}
-                  ></span>
-                {/each}
-              </div>
-            </div>
-          {/each}
-        </div>
+        <TraceWaterfall
+          variant="trace"
+          lanes={traceLanes}
+          ticks={waterfallTicks}
+          duration={waterfall.duration_ms}
+          blockTitle={traceBlockTitle}
+        />
         <div class="bkey">
           <span><i class="work"></i>memory work</span>
           <span><i class="wait"></i>provider wait</span>
@@ -373,24 +261,7 @@
 
     {#if queueSummaries.length}
       <Panel title="Provider Queue Summary" tag="{queueSummaries.length} queues" flush scroll>
-        <table class="grid">
-          <thead><tr><th>Queue</th><th class="num">Items</th><th class="num">Fail</th><th class="num">Wait p80</th><th class="num">Wait p95</th><th class="num">Run p80</th><th class="num">Run p95</th><th class="num">Total p80</th><th class="num">Total p98</th></tr></thead>
-          <tbody>
-            {#each queueSummaries as q (q.name)}
-              <tr>
-                <td class="amber">{q.name}</td>
-                <td class="num mono-num">{q.count}</td>
-                <td class="num mono-num" class:down={q.failed > 0}>{q.failed || "—"}</td>
-                <td class="num mono-num">{ms(q.wait_p80)}</td>
-                <td class="num mono-num dim">{ms(q.wait_p95)}</td>
-                <td class="num mono-num">{ms(q.run_p80)}</td>
-                <td class="num mono-num dim">{ms(q.run_p95)}</td>
-                <td class="num mono-num">{ms(q.total_p80)}</td>
-                <td class="num mono-num">{ms(q.total_p98)}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
+        <QueueSummaryTable rows={queueSummaries} />
       </Panel>
     {/if}
 
@@ -490,44 +361,10 @@
     color: var(--text-dim);
     font-size: 11px;
   }
-  .trace-controls {
-    display: grid;
-    grid-template-columns: 120px minmax(220px, 1fr);
-    gap: 6px;
-    padding: 8px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg);
-  }
-  .field {
-    background: var(--bg-panel);
-    border: 1px solid var(--border-bright);
-    color: var(--text);
-    font: inherit;
-    font-size: 10px;
-    min-height: 24px;
-    padding: 3px 7px;
-  }
-  .field.mini {
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-  }
-  .field.search {
-    width: 100%;
-  }
-  .trace-log th,
-  .trace-log td {
-    white-space: nowrap;
-  }
-  .stacked {
-    display: flex;
-    min-width: 0;
-    flex-direction: column;
-    gap: 1px;
-  }
-  .stacked .clip {
-    max-width: 360px;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .subtime {
+    font-size: 9.5px;
+    color: var(--text-dim);
+    white-space: normal;
   }
   .bottles {
     display: flex;
@@ -547,19 +384,6 @@
     align-items: center;
     gap: 6px;
     min-width: 0;
-  }
-  .bkind {
-    border: 1px solid var(--border-bright);
-    padding: 1px 5px;
-    font-size: 8px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-  }
-  .bkind.memory {
-    color: var(--cyan);
-  }
-  .bkind.provider {
-    color: var(--amber);
   }
   .bname {
     overflow: hidden;
@@ -594,7 +418,7 @@
     background: var(--red);
   }
   .bkey .setup {
-    background: #2f80ed;
+    background: var(--blue);
   }
   .bkey .capture {
     background: var(--cyan);
@@ -636,151 +460,6 @@
     height: 8px;
     margin-right: 4px;
     vertical-align: -1px;
-  }
-  .wf {
-    max-height: 360px;
-    overflow-y: auto;
-    overflow-x: hidden;
-    padding: 8px;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    min-width: 0;
-  }
-  .wf-axis,
-  .wf-row {
-    display: grid;
-    grid-template-columns: minmax(170px, 280px) minmax(0, 1fr);
-    gap: 8px;
-    align-items: center;
-    min-width: 0;
-  }
-  .wf.dep {
-    max-height: 300px;
-  }
-  .dep-row .wf-track {
-    height: 18px;
-  }
-  .dep-setup,
-  .dep-wait {
-    margin-left: auto;
-    font-size: 9px;
-  }
-  .dep-setup {
-    color: #46a9ff;
-  }
-  .dep-wait {
-    margin-left: 0;
-    color: var(--amber);
-  }
-  .wf-axis {
-    position: sticky;
-    top: 0;
-    z-index: 2;
-    background: var(--bg);
-    padding-bottom: 2px;
-  }
-  .wf-track {
-    position: relative;
-    height: 16px;
-    background: var(--bg-elev);
-    border: 1px solid var(--border);
-    overflow: hidden;
-    min-width: 0;
-  }
-  .wf-track.axis {
-    height: 18px;
-    overflow: hidden;
-    background:
-      linear-gradient(to right, rgba(255,255,255,0.04) 1px, transparent 1px) 0 0 / 25% 100%,
-      var(--bg-elev);
-  }
-  .wf-tick {
-    position: absolute;
-    top: 0;
-    height: 100%;
-    color: var(--text-faint);
-    font-size: 8px;
-    transform: translateX(-1px);
-  }
-  .wf-tick i {
-    display: block;
-    width: 1px;
-    height: 100%;
-    background: var(--border-bright);
-  }
-  .wf-tick b {
-    position: absolute;
-    top: 2px;
-    left: 4px;
-    font-weight: 500;
-    white-space: nowrap;
-  }
-  .wf-tick.last b {
-    left: auto;
-    right: 4px;
-  }
-  .wf-name {
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 10px;
-  }
-  .wf-name-text {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--text);
-  }
-  .wf-block {
-    position: absolute;
-    top: 3px;
-    height: 8px;
-    min-width: 2px;
-    opacity: 0.92;
-    border: 1px solid rgba(255,255,255,0.12);
-  }
-  .wf-block.memory_work {
-    background: var(--cyan);
-  }
-  .wf-block.dep-block {
-    top: 4px;
-    height: 8px;
-  }
-  .wf-block.dep-block.setup {
-    background: #2f80ed;
-  }
-  .wf-block.dep-block.capture {
-    background: var(--cyan);
-  }
-  .wf-block.dep-block.parallel {
-    background: var(--cyan);
-  }
-  .wf-block.dep-block.blocked_distill,
-  .wf-block.dep-block.blocked_raw {
-    background: var(--amber);
-    border-color: rgba(255, 174, 31, 0.7);
-  }
-  .wf-block.dep-block.archive,
-  .wf-block.dep-block.index,
-  .wf-block.dep-block.consolidate {
-    background: var(--green);
-  }
-  .wf-block.dep-block.answer {
-    background: var(--violet);
-  }
-  .wf-block.provider_wait {
-    background: var(--amber);
-  }
-  .wf-block.provider_run {
-    background: var(--green);
-  }
-  .wf-block.memory_failed,
-  .wf-block.provider_failed,
-  .wf-block.failed,
-  .wf-block.dead {
-    background: var(--red);
   }
   .qdb {
     padding: 8px;

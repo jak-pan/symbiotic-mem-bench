@@ -12,6 +12,7 @@
   const stroke = 9;
   const r = $derived((size - stroke) / 2);
   const cx = $derived(size / 2);
+  const cy = $derived(size / 2);
   const sweep = 270; // degrees
   const circ = $derived(2 * Math.PI * r);
   const arcLen = $derived((sweep / 360) * circ);
@@ -21,10 +22,10 @@
 
 <div class="gauge" style="width:{size}px;height:{size}px">
   <svg viewBox="0 0 {size} {size}" width={size} height={size}>
-    <g transform="rotate(135 {cx} {cx})">
+    <g transform="rotate(135 {cx} {cy})">
       <circle
         {cx}
-        cy={cx}
+        {cy}
         {r}
         fill="none"
         stroke="var(--bg-elev)"
@@ -34,7 +35,7 @@
       />
       <circle
         {cx}
-        cy={cx}
+        {cy}
         {r}
         fill="none"
         stroke={color}

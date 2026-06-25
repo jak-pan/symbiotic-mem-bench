@@ -28,7 +28,11 @@
     if (!b || !c) return;
     loading = true;
     data = null;
-    api.compare(b, c).then((d) => { data = d; loading = false; });
+    api.compare(b, c).then((d) => {
+      if (b !== baseId || c !== id) return; // baseline or candidate changed mid-flight
+      data = d;
+      loading = false;
+    });
   });
 
   const typeItems = $derived(

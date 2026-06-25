@@ -130,20 +130,30 @@ pub fn read_scored(run_root: &Path) -> Option<Value> {
     serde_json::from_str(&raw).ok()
 }
 
-/// The judge model recorded in `scored.json`, when present.
-pub fn judge_model(run_root: &Path) -> Option<String> {
-    read_scored(run_root)?
-        .get("judge_model")?
+/// The judge model recorded in a pre-parsed `scored.json`. Pass the value
+/// returned by [`read_scored`] so multiple lookups share a single file read
+/// (`scored.json` is large; reading it once per field was the dominant cost on
+/// the bulk index path).
+pub fn judge_model_from(scored: Option<&Value>) -> Option<String> {
+    scored?.get("judge_model")?.as_str().map(ToOwned::to_owned)
+}
+
+/// The judge prompt mode recorded in a pre-parsed `scored.json`.
+pub fn judge_prompt_mode_from(scored: Option<&Value>) -> Option<String> {
+    scored?
+        .get("judge_prompt_mode")?
         .as_str()
         .map(ToOwned::to_owned)
 }
 
+/// The judge model recorded in `scored.json`, when present.
+pub fn judge_model(run_root: &Path) -> Option<String> {
+    judge_model_from(read_scored(run_root).as_ref())
+}
+
 /// The judge prompt mode recorded in `scored.json`, when present.
 pub fn judge_prompt_mode(run_root: &Path) -> Option<String> {
-    read_scored(run_root)?
-        .get("judge_prompt_mode")?
-        .as_str()
-        .map(ToOwned::to_owned)
+    judge_prompt_mode_from(read_scored(run_root).as_ref())
 }
 
 /// The sorted, de-duplicated set of question ids this run covered. Used to

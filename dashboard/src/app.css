@@ -33,8 +33,12 @@
   --red: #ff5347;
   --red-dim: #8f3029;
   --cyan: #46a9ff;
+  --cyan-dim: #1f4a73;
+  --blue: #2f80ed;
   --violet: #b285ff;
+  --violet-dim: #5b3f8a;
   --gold: #e8c34a;
+  --gold-dim: #8a7328;
 
   --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --sans: "Archivo", system-ui, sans-serif;
@@ -197,8 +201,23 @@ a {
 }
 .chip.cyan {
   color: var(--cyan);
-  border-color: #1f4a73;
+  border-color: var(--cyan-dim);
   background: rgba(70, 169, 255, 0.07);
+}
+
+/* Kind chip used across the trace panels (memory / provider lanes, etc.). */
+.bkind {
+  border: 1px solid var(--border-bright);
+  padding: 1px 5px;
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.bkind.memory {
+  color: var(--cyan);
+}
+.bkind.provider {
+  color: var(--amber);
 }
 
 /* generic table */
@@ -312,6 +331,14 @@ textarea.field:focus {
 @keyframes blink {
   50% {
     opacity: 0;
+  }
+}
+
+/* Shared "live" pulse for status dots. Components reference this by name;
+ * keep exactly one definition so sibling <style> blocks don't override it. */
+@keyframes pulse {
+  50% {
+    opacity: 0.4;
   }
 }
 

@@ -1,13 +1,15 @@
 # Membench Dashboard
 
-A Bloomberg-terminal-style dashboard for memory-system benchmarks. Two screens:
+A Bloomberg-terminal-style terminal for memory-system benchmarks (in-app:
+**MEMBENCH · MEMORY SYSTEM TERMINAL**). Two screens:
 
-- **Leaderboard** — Geekbench-style ranking of systems/configs within a comparable
-  cohort (same benchmark + size + question set + judge). Cohort selector, ranked
-  field, per-category matrix, and a head-to-head compare rail.
-- **Debugger / Tuner / Runner** — per-run overview, a filterable question browser,
-  baseline comparison, model/memory/queue traces, and a parameter tuner that
-  previews the exact `membench`/`symem` command (live execution is the next phase).
+- **Leaderboard** (`F1`) — Geekbench-style ranking of systems/configs within a
+  comparable cohort (same benchmark + size + question set + judge). Cohort
+  selector, ranked field, per-category matrix, and a head-to-head compare rail.
+- **Debugger** (`F2`) — per-run Overview, a filterable Questions browser,
+  baseline Compare, model/memory/queue Traces, a Live monitor for in-flight
+  native runs, and a **Tuner** that previews the exact `membench`/`symem`
+  command (live execution is the next phase).
 
 Frontend is a no-SSR Svelte 5 + Vite SPA. The backend is the Rust
 `membench-server` binary, which serves the same `runs/` and `records/` files the

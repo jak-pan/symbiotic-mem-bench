@@ -5,6 +5,7 @@
     QueryPlannerCallDebug,
     QuestionDebug,
     QuestionRow,
+    RerankProfile,
     RetrievalProfileDebug,
   } from "../lib/types";
   import { qtypeShort } from "../lib/format";
@@ -15,10 +16,26 @@
   let verdict = $state<"all" | "correct" | "wrong" | "abstain" | "error">("all");
   let qtype = $state<string>("all");
   let search = $state("");
+  // Debounced search term + a render cap so a 500-question run doesn't render
+  // every matching row on each keystroke. The cap grows via "show more".
+  let debouncedSearch = $state("");
+  let renderCap = $state(200);
+  let searchTimer: ReturnType<typeof setTimeout> | undefined;
   let active = $state<QuestionRow | null>(null);
+  let drawerEl: HTMLElement | null = $state(null);
   let debugByPath = $state<Record<string, QuestionDebug | undefined>>({});
   let debugLoading = $state<Record<string, boolean | undefined>>({});
   let debugError = $state<Record<string, string | undefined>>({});
+
+  $effect(() => {
+    const q = search;
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      debouncedSearch = q;
+      renderCap = 200;
+    }, 120);
+    return () => clearTimeout(searchTimer);
+  });
 
   $effect(() => {
     const runId = id;
@@ -57,7 +74,7 @@
   const types = $derived(["all", ...new Set(rows.map((r) => r.question_type).filter(Boolean) as string[])]);
 
   const filtered = $derived.by(() => {
-    const q = search.trim().toLowerCase();
+    const q = debouncedSearch.trim().toLowerCase();
     return rows.filter((r) => {
       if (verdict === "correct" && r.label !== true) return false;
       if (verdict === "wrong" && r.label !== false) return false;
@@ -67,6 +84,14 @@
       if (q && !(`${r.question ?? ""} ${r.gold_answer ?? ""} ${r.hypothesis ?? ""} ${r.question_id}`.toLowerCase().includes(q))) return false;
       return true;
     });
+  });
+
+  // Cap the rendered rows so huge tables stay responsive (see renderCap).
+  const visible = $derived(filtered.slice(0, renderCap));
+
+  // Move focus into the drawer when it opens so Escape/keyboard users land inside.
+  $effect(() => {
+    if (active && drawerEl) drawerEl.focus();
   });
 
   const stats = $derived.by(() => {
@@ -132,6 +157,8 @@
   }
 </script>
 
+<svelte:window onkeydown={(e) => { if (e.key === "Escape" && active) active = null; }} />
+
 <div class="q">
   <div class="qbar">
     <div class="seg">
@@ -146,7 +173,10 @@
     <div class="qstat">
       <span class="up">{stats.correct}✓</span>
       <span class="down">{stats.wrong}✗</span>
-      <span class="faint">/ {filtered.length} shown</span>
+      <span class="faint">
+        / {filtered.length} match{filtered.length === 1 ? "" : "es"}
+        {#if renderCap < filtered.length}<span class="dim"> · {visible.length} rendered</span>{/if}
+      </span>
     </div>
   </div>
 
@@ -168,8 +198,21 @@
             </tr>
           </thead>
           <tbody>
-            {#each filtered as r (r.question_id)}
-              <tr class:selected={active?.question_id === r.question_id} onclick={() => (active = r)}>
+            {#each visible as r (r.question_id)}
+              <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role a11y_click_events_have_key_events -->
+              <tr
+                class:selected={active?.question_id === r.question_id}
+                tabindex="0"
+                role="button"
+                aria-current={active?.question_id === r.question_id ? "true" : undefined}
+                onclick={() => (active = r)}
+                onkeydown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    active = r;
+                  }
+                }}
+              >
                 <td class="vc">
                   {#if r.error}<span class="down" title={r.error}>!</span>
                   {:else if r.label === true}<span class="up">✓</span>
@@ -186,6 +229,12 @@
             {/each}
           </tbody>
         </table>
+        {#if renderCap < filtered.length}
+          <div class="capmore">
+            <span class="faint">rendered {visible.length} of {filtered.length}</span>
+            <button class="btn" onclick={() => (renderCap = Math.min(filtered.length, renderCap + 200))}>SHOW 200 MORE</button>
+          </div>
+        {/if}
       {/if}
   </div>
 
@@ -193,7 +242,14 @@
       {@const planner = plannerCall(active)}
       {@const recall = recallDebug(active)}
       {@const calls = answererCalls(active)}
-      <aside class="drawer fade-in">
+      <div
+        class="drawer fade-in"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Question detail"
+        tabindex="-1"
+        bind:this={drawerEl}
+      >
         <div class="dh">
           <span class="chip {active.label === true ? 'green' : active.label === false ? 'red' : ''}">
             {active.label === true ? "CORRECT" : active.label === false ? "WRONG" : "UNSCORED"}
@@ -272,6 +328,18 @@
                 {/if}
               </section>
 
+              {#if recall?.rerank_trace?.length}
+                <section class="debug-section">
+                  <h3>Rerank</h3>
+                  {#each recall.rerank_trace as rt, i (`rerank-trace-${i}`)}
+                    <details class="prompt" open>
+                      <summary>{i === 0 ? "INITIAL" : "FALLBACK"} RERANK · {rt.candidates.length} candidates</summary>
+                      {@render rerankProfile(rt)}
+                    </details>
+                  {/each}
+                </section>
+              {/if}
+
               <section class="debug-section">
                 <h3>Answer</h3>
                 <div class="debug-grid">
@@ -304,7 +372,7 @@
           {/if}
           {#if active.error}<section class="debug-section"><h3>Error</h3><div class="txt down">{active.error}</div></section>{/if}
         </div>
-      </aside>
+      </div>
   {/if}
   </div>
 </div>
@@ -350,6 +418,33 @@
       {#if !profile.facts?.length && !profile.raw_turns?.length}
         <pre>—</pre>
       {/if}
+    </div>
+  {:else}
+    <pre>—</pre>
+  {/if}
+{/snippet}
+
+{#snippet rerankProfile(rt: RerankProfile | null | undefined)}
+  {#if rt?.candidates?.length}
+    {@const top = [...rt.candidates]
+      .sort((a, b) => (a.final_rank ?? 9999) - (b.final_rank ?? 9999))
+      .slice(0, 12)}
+    <div class="search-profile">
+      <div class="search-title">
+        RERANKED {(rt.candidate_type ?? "FACT").toUpperCase()} · top {top.length} of {rt.candidates.length}
+      </div>
+      {#each top as c, i (`rr-${i}-${c.candidate_id ?? i}`)}
+        <div class="result">
+          <div class="rmeta">
+            <span>final #{c.final_rank ?? "?"}</span>
+            <span>rerank {scoreText(c.rerank_score)}</span>
+            <span class:amber={(c.embedding_rank ?? null) !== (c.final_rank ?? null)}>
+              embed #{c.embedding_rank ?? "?"} ({scoreText(c.embedding_score)})
+            </span>
+          </div>
+          <pre>{c.text ?? "—"}</pre>
+        </div>
+      {/each}
     </div>
   {:else}
     <pre>—</pre>
@@ -408,8 +503,20 @@
     font-size: 11px;
     font-weight: 600;
   }
+  .qstat .dim {
+    color: var(--text-faint);
+  }
   .faint {
     color: var(--text-faint);
+  }
+  .capmore {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 10px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-panel);
   }
 
   .qmain {
@@ -449,7 +556,7 @@
 
   .drawer {
     position: fixed;
-    inset: 42px 16px 28px;
+    inset: calc(var(--h-topbar) + 4px) 16px calc(var(--h-statusbar) + 2px);
     z-index: 30;
     border: 1px solid var(--border-bright);
     background: var(--bg-panel);

@@ -16,4 +16,17 @@ fn main() {
             zvec_lib_dir.display()
         );
     }
+
+    // Bake the current git commit into the binary so the server can report the
+    // exact code it was built from (refreshed whenever HEAD changes).
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    let sha = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+    println!("cargo:rustc-env=GIT_SHA={sha}");
 }

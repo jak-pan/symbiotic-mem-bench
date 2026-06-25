@@ -23,7 +23,8 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+use std::time::SystemTime;
 use symbiotic_mem_bench::{
     BenchQueueEvent, artifacts, compare, cost, leaderboard, live, registry, runner,
     summarize_queue_timing,
@@ -52,22 +53,193 @@ struct Cli {
 struct AppState {
     repo_root: PathBuf,
     roots: Vec<PathBuf>,
+    /// Mtime-keyed cache of the registry index, trial markers, and derived
+    /// summaries. Refreshed only when a `benchmark-report.json` path appears,
+    /// disappears, or changes mtime (or a `trials.jsonl` does). The dashboard
+    /// polls frequently; without this every list/leaderboard/detail request
+    /// re-walked `runs/` + `records/` and re-parsed every report.
+    registry_cache: RwLock<Option<Arc<RegistrySnapshot>>>,
+    /// Short-TTL cache for `live::live_detail`, keyed on the mtimes of the
+    /// trace files it reads. Live polling (2s) is faster than the files grow
+    /// meaningfully, so a brief TTL collapses repeated multi-MB parses.
+    live_cache: RwLock<HashMap<String, LiveCacheEntry>>,
 }
 
+/// Cached projection of the whole registry.
+struct RegistrySnapshot {
+    records: Vec<registry::RunRecord>,
+    summaries: Vec<registry::RunSummary>,
+    summary_by_id: HashMap<String, registry::RunSummary>,
+    by_id: HashMap<String, registry::RunRecord>,
+    /// Sorted `(path, mtime)` fingerprints used to invalidate this snapshot.
+    report_sig: Vec<(PathBuf, Option<SystemTime>)>,
+    trial_sig: Vec<(PathBuf, Option<SystemTime>)>,
+}
+
+/// One cached `live_detail` result.
+struct LiveCacheEntry {
+    detail: Arc<live::LiveDetail>,
+    built_at: SystemTime,
+    /// Trace-file mtimes at build time; a change invalidates immediately.
+    signature: Vec<(PathBuf, Option<SystemTime>)>,
+}
+
+/// Live detail TTL: serve cached within this window (subject to mtime change).
+const LIVE_CACHE_TTL: std::time::Duration = std::time::Duration::from_millis(2500);
+
 impl AppState {
-    fn scan(&self) -> Vec<registry::RunRecord> {
-        registry::scan_registry(&self.roots, &self.repo_root)
+    /// Sorted `(path, mtime)` fingerprint of every `benchmark-report.json`
+    /// beneath the registry roots. Cheap (pruned walk + one `stat` per report),
+    /// and changes the moment a run finalizes or a report is rewritten.
+    fn report_signature(&self) -> Vec<(PathBuf, Option<SystemTime>)> {
+        let mut paths = Vec::new();
+        for root in &self.roots {
+            registry::collect_report_paths(root, &mut paths);
+        }
+        paths.sort();
+        paths
+            .into_iter()
+            .map(|path| {
+                let mtime = std::fs::metadata(&path)
+                    .and_then(|meta| meta.modified())
+                    .ok();
+                (path, mtime)
+            })
+            .collect()
     }
 
-    fn find(&self, run_id: &str) -> Option<registry::RunRecord> {
-        self.scan()
+    /// Sorted `(path, mtime)` fingerprint of every `trials.jsonl` ledger.
+    fn trial_signature(&self) -> Vec<(PathBuf, Option<SystemTime>)> {
+        let mut paths = Vec::new();
+        registry::collect_trial_paths(&self.repo_root.join("runs").join("analysis"), &mut paths);
+        paths.sort();
+        paths
             .into_iter()
-            .find(|record| record.run_id == run_id)
+            .map(|path| {
+                let mtime = std::fs::metadata(&path)
+                    .and_then(|meta| meta.modified())
+                    .ok();
+                (path, mtime)
+            })
+            .collect()
+    }
+
+    /// Return the current registry snapshot, refreshing it if the on-disk
+    /// fingerprints have changed. Does blocking I/O — call from
+    /// `spawn_blocking`. Uses double-checked locking so concurrent requests
+    /// only rebuild once.
+    fn registry_snapshot(&self) -> Arc<RegistrySnapshot> {
+        let report_sig = self.report_signature();
+        let trial_sig = self.trial_signature();
+        {
+            let cache = self.registry_cache.read().unwrap();
+            if let Some(snapshot) = cache.as_ref()
+                && snapshot.report_sig == report_sig
+                && snapshot.trial_sig == trial_sig
+            {
+                return Arc::clone(snapshot);
+            }
+        }
+        let mut cache = self.registry_cache.write().unwrap();
+        if let Some(snapshot) = cache.as_ref()
+            && snapshot.report_sig == report_sig
+            && snapshot.trial_sig == trial_sig
+        {
+            return Arc::clone(snapshot);
+        }
+        let records = registry::scan_registry(&self.roots, &self.repo_root);
+        let trial_index = registry::scan_trial_markers(&self.repo_root);
+        let summaries: Vec<registry::RunSummary> = records
+            .iter()
+            .map(|record| registry::summarize_with_trials(record, &trial_index))
+            .collect();
+        let summary_by_id = summaries
+            .iter()
+            .map(|summary| (summary.run_id.clone(), summary.clone()))
+            .collect();
+        let by_id = records
+            .iter()
+            .map(|record| (record.run_id.clone(), record.clone()))
+            .collect();
+        let snapshot = Arc::new(RegistrySnapshot {
+            records,
+            summaries,
+            summary_by_id,
+            by_id,
+            report_sig,
+            trial_sig,
+        });
+        *cache = Some(Arc::clone(&snapshot));
+        snapshot
+    }
+
+    /// Look up a single run record by id (one clone, not a full scan).
+    fn find(&self, run_id: &str) -> Option<registry::RunRecord> {
+        self.registry_snapshot().by_id.get(run_id).cloned()
     }
 
     fn pending(&self) -> Vec<registry::PendingRun> {
         registry::scan_pending(&self.roots, &self.repo_root)
     }
+
+    /// Cached `live_detail`. Keyed on the mtimes of the trace files; expires
+    /// after `LIVE_CACHE_TTL` even if mtimes are unchanged (so a growing file
+    /// whose mtime second rounds the same still refreshes periodically).
+    fn live_detail(&self, run_id: &str) -> Option<Arc<live::LiveDetail>> {
+        let run_root = self.repo_root.join(run_id);
+        if !run_root.is_dir() {
+            return None;
+        }
+        let signature = live_detail_signature(&run_root);
+        let now = SystemTime::now();
+        {
+            let cache = self.live_cache.read().unwrap();
+            if let Some(entry) = cache.get(run_id)
+                && entry.signature == signature
+                && now
+                    .duration_since(entry.built_at)
+                    .map(|d| d < LIVE_CACHE_TTL)
+                    .unwrap_or(false)
+            {
+                return Some(Arc::clone(&entry.detail));
+            }
+        }
+        let detail = Arc::new(live::live_detail(&run_root));
+        let mut cache = self.live_cache.write().unwrap();
+        cache.insert(
+            run_id.to_string(),
+            LiveCacheEntry {
+                detail: Arc::clone(&detail),
+                built_at: now,
+                signature,
+            },
+        );
+        Some(detail)
+    }
+}
+
+/// Fingerprint the trace files `live_detail` reads so a cache entry invalidates
+/// the moment any of them is touched.
+fn live_detail_signature(run_root: &Path) -> Vec<(PathBuf, Option<SystemTime>)> {
+    let mut paths: Vec<PathBuf> = vec![
+        run_root.join("provider-queue/model-queue-traces.jsonl"),
+        run_root.join("artifacts/model-traces.jsonl"),
+        run_root.join("raw/model-traces.jsonl"),
+        run_root.join("artifacts/memory-traces.jsonl"),
+        run_root.join("raw/memory-traces.jsonl"),
+        run_root.join("traces/memory-events.jsonl"),
+        run_root.join("run-params.json"),
+    ];
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|path| {
+            let mtime = std::fs::metadata(&path)
+                .and_then(|meta| meta.modified())
+                .ok();
+            (path, mtime)
+        })
+        .collect()
 }
 
 type Shared = Arc<AppState>;
@@ -86,6 +258,8 @@ async fn main() -> anyhow::Result<()> {
     let state: Shared = Arc::new(AppState {
         repo_root: repo_root.clone(),
         roots,
+        registry_cache: RwLock::new(None),
+        live_cache: RwLock::new(HashMap::new()),
     });
 
     let api = Router::new()
@@ -122,7 +296,12 @@ async fn main() -> anyhow::Result<()> {
 
     let addr = SocketAddr::from(([127, 0, 0, 1], cli.port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    eprintln!("membench-server listening on http://{addr}");
+    eprintln!(
+        "membench-server v{} (git {}, bin {}) listening on http://{addr}",
+        env!("CARGO_PKG_VERSION"),
+        option_env!("GIT_SHA").unwrap_or("unknown"),
+        &*BINARY_SHA,
+    );
     eprintln!("registry roots: {:?}", state.roots);
     axum::serve(listener, app).await?;
     Ok(())
@@ -133,8 +312,37 @@ fn err(status: StatusCode, message: impl Into<String>) -> (StatusCode, Json<Valu
 }
 
 async fn health() -> impl IntoResponse {
-    Json(json!({ "ok": true, "service": "membench-server" }))
+    Json(json!({
+        "ok": true,
+        "service": "membench-server",
+        "version": env!("CARGO_PKG_VERSION"),
+        "git_sha": option_env!("GIT_SHA").unwrap_or("unknown"),
+        "binary_sha": BINARY_SHA.as_str(),
+    }))
 }
+
+/// Short content hash of this server's own executable, computed once at startup.
+/// Changes on every rebuild that changes the binary — no commit or version bump
+/// required — so it identifies the exact binary the dashboard is talking to.
+fn compute_binary_sha() -> String {
+    let Some(path) = std::env::current_exe().ok() else {
+        return "unknown".to_string();
+    };
+    let Ok(bytes) = std::fs::read(&path) else {
+        return "unknown".to_string();
+    };
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let digest = hasher.finalize();
+    digest
+        .iter()
+        .take(6)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+static BINARY_SHA: std::sync::LazyLock<String> = std::sync::LazyLock::new(compute_binary_sha);
 
 #[derive(Deserialize)]
 struct RunsQuery {
@@ -147,76 +355,96 @@ async fn list_runs(
     State(state): State<Shared>,
     Query(query): Query<RunsQuery>,
 ) -> impl IntoResponse {
-    let trial_index = registry::scan_trial_markers(&state.repo_root);
-    let summaries: Vec<registry::RunSummary> = state
-        .scan()
-        .iter()
-        .map(|record| registry::summarize_with_trials(record, &trial_index))
-        .filter(|summary| {
-            query
-                .system
-                .as_ref()
-                .is_none_or(|system| &summary.system == system)
-                && query
-                    .benchmark
+    let summaries = tokio::task::spawn_blocking(move || {
+        let snapshot = state.registry_snapshot();
+        snapshot
+            .summaries
+            .iter()
+            .filter(|summary| {
+                query
+                    .system
                     .as_ref()
-                    .is_none_or(|benchmark| &summary.benchmark == benchmark)
-                && query
-                    .origin
-                    .as_ref()
-                    .is_none_or(|origin| &summary.origin == origin)
-        })
-        .collect();
+                    .is_none_or(|system| &summary.system == system)
+                    && query
+                        .benchmark
+                        .as_ref()
+                        .is_none_or(|benchmark| &summary.benchmark == benchmark)
+                    && query
+                        .origin
+                        .as_ref()
+                        .is_none_or(|origin| &summary.origin == origin)
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap_or_default();
     Json(json!({ "runs": summaries }))
 }
 
 async fn pending_handler(State(state): State<Shared>) -> impl IntoResponse {
-    Json(json!({ "pending": state.pending() }))
+    let pending = tokio::task::spawn_blocking(move || state.pending())
+        .await
+        .unwrap_or_default();
+    Json(json!({ "pending": pending }))
 }
 
 async fn run_live(
     State(state): State<Shared>,
     Query(query): Query<IdQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let pending = if let Some(pending) = state
-        .pending()
-        .into_iter()
-        .find(|run| run.run_id == query.id)
-    {
-        pending
-    } else {
-        let record = state
-            .find(&query.id)
-            .ok_or_else(|| err(StatusCode::NOT_FOUND, "run not found"))?;
-        let trial_index = registry::scan_trial_markers(&state.repo_root);
-        let summary = registry::summarize_with_trials(&record, &trial_index);
-        registry::PendingRun {
-            run_id: summary.run_id.clone(),
-            origin: summary.origin,
-            system: summary.system,
-            benchmark: summary.benchmark,
-            limit: summary.limit,
-            run_name: summary.run_name,
-            config_label: summary.config_label,
-            settings_label: summary.settings_label,
-            status: "complete".to_string(),
-            started_ms: None,
-            updated_ms: record.modified_ms,
-            age_secs: None,
-            hypotheses: count_nonempty_lines(&record.run_root.join("artifacts/hypotheses.jsonl"))
-                .or_else(|| count_nonempty_lines(&record.run_root.join("raw/hypotheses.jsonl")))
+    let id = query.id.clone();
+    let out = tokio::task::spawn_blocking(move || {
+        let pending = if let Some(pending) =
+            state.pending().into_iter().find(|run| run.run_id == id)
+        {
+            pending
+        } else {
+            let snapshot = state.registry_snapshot();
+            let record = snapshot
+                .by_id
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| err(StatusCode::NOT_FOUND, "run not found"))?;
+            let summary = snapshot
+                .summary_by_id
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| err(StatusCode::NOT_FOUND, "run not found"))?;
+            registry::PendingRun {
+                run_id: summary.run_id.clone(),
+                origin: summary.origin,
+                system: summary.system,
+                benchmark: summary.benchmark,
+                limit: summary.limit,
+                run_name: summary.run_name,
+                config_label: summary.config_label,
+                settings_label: summary.settings_label,
+                status: "complete".to_string(),
+                started_ms: None,
+                updated_ms: record.modified_ms,
+                age_secs: None,
+                hypotheses: registry::count_nonempty_lines_opt(
+                    &record.run_root.join("artifacts/hypotheses.jsonl"),
+                )
+                .or_else(|| {
+                    registry::count_nonempty_lines_opt(
+                        &record.run_root.join("raw/hypotheses.jsonl"),
+                    )
+                })
                 .unwrap_or_default(),
-            ingested: count_dir_entries(&record.run_root.join("vaults")).unwrap_or_default(),
-        }
-    };
-    let run_root = state.repo_root.join(&pending.run_id);
-    let detail = live::live_detail(&run_root);
-    Ok(Json(json!({ "pending": pending, "detail": detail })))
-}
-
-fn count_nonempty_lines(path: &Path) -> Option<u64> {
-    let raw = std::fs::read_to_string(path).ok()?;
-    Some(raw.lines().filter(|line| !line.trim().is_empty()).count() as u64)
+                ingested: count_dir_entries(&record.run_root.join("vaults")).unwrap_or_default(),
+            }
+        };
+        let detail = state
+            .live_detail(&pending.run_id)
+            .ok_or_else(|| err(StatusCode::NOT_FOUND, "run not found"))?;
+        Ok::<_, (StatusCode, Json<Value>)>((pending, detail))
+    })
+    .await
+    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    let (pending, detail) = out;
+    Ok(Json(json!({ "pending": pending, "detail": *detail })))
 }
 
 fn count_dir_entries(path: &Path) -> Option<u64> {
@@ -233,19 +461,19 @@ async fn leaderboard_handler(
     State(state): State<Shared>,
     Query(query): Query<LeaderboardQuery>,
 ) -> impl IntoResponse {
-    let trial_index = registry::scan_trial_markers(&state.repo_root);
-    let summaries: Vec<registry::RunSummary> = state
-        .scan()
-        .iter()
-        .map(|record| registry::summarize_with_trials(record, &trial_index))
-        .collect();
-    let mut cohorts = leaderboard::build_cohorts(summaries);
-    if let Some(benchmark) = &query.benchmark {
-        cohorts.retain(|cohort| &cohort.benchmark == benchmark);
-    }
-    if let Some(limit) = query.limit {
-        cohorts.retain(|cohort| cohort.limit == Some(limit));
-    }
+    let cohorts = tokio::task::spawn_blocking(move || {
+        let snapshot = state.registry_snapshot();
+        let mut cohorts = leaderboard::build_cohorts(snapshot.summaries.clone());
+        if let Some(benchmark) = &query.benchmark {
+            cohorts.retain(|cohort| &cohort.benchmark == benchmark);
+        }
+        if let Some(limit) = query.limit {
+            cohorts.retain(|cohort| cohort.limit == Some(limit));
+        }
+        cohorts
+    })
+    .await
+    .unwrap_or_default();
     Json(json!({ "cohorts": cohorts }))
 }
 
@@ -258,30 +486,53 @@ async fn run_detail(
     State(state): State<Shared>,
     Query(query): Query<IdQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let record = state
-        .find(&query.id)
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "run not found"))?;
-    let trial_index = registry::scan_trial_markers(&state.repo_root);
-    let summary = registry::summarize_with_trials(&record, &trial_index);
-    let cohort_fields = registry::compute_cohort_fields(&record.run_root, &record.params);
-    let cost_rollup = cost::rollup_model_traces(&record.run_root);
-    Ok(Json(json!({
-        "summary": summary,
-        "report": record.report,
-        "params": record.params,
-        "cohort": cohort_fields,
-        "cost": cost_rollup,
-    })))
+    let id = query.id.clone();
+    let payload = tokio::task::spawn_blocking(move || {
+        let snapshot = state.registry_snapshot();
+        let record = snapshot
+            .by_id
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| err(StatusCode::NOT_FOUND, "run not found"))?;
+        let summary = snapshot
+            .summary_by_id
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| err(StatusCode::NOT_FOUND, "run not found"))?;
+        // Roll up model traces once and reuse it for both the cohort fields and
+        // the top-level cost payload (previously parsed twice per request).
+        let cost_rollup = cost::rollup_model_traces(&record.run_root);
+        let cohort_fields = registry::compute_cohort_fields_with_rollup(
+            &record.run_root,
+            &record.params,
+            cost_rollup.as_ref(),
+        );
+        Ok::<_, (StatusCode, Json<Value>)>(json!({
+            "summary": summary,
+            "report": record.report,
+            "params": record.params,
+            "cohort": cohort_fields,
+            "cost": cost_rollup,
+        }))
+    })
+    .await
+    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(payload))
 }
 
 async fn run_questions(
     State(state): State<Shared>,
     Query(query): Query<IdQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let record = state
-        .find(&query.id)
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "run not found"))?;
-    let rows = artifacts::question_rows(&record.run_root);
+    let id = query.id.clone();
+    let rows = tokio::task::spawn_blocking(move || {
+        let record = state
+            .find(&id)
+            .ok_or_else(|| err(StatusCode::NOT_FOUND, "run not found"))?;
+        Ok::<_, (StatusCode, Json<Value>)>(artifacts::question_rows(&record.run_root))
+    })
+    .await
+    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
     Ok(Json(json!({ "total": rows.len(), "questions": rows })))
 }
 
@@ -295,15 +546,22 @@ async fn run_question_debug(
     State(state): State<Shared>,
     Query(query): Query<QuestionDebugQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let record = state
-        .find(&query.id)
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "run not found"))?;
-    let path = question_debug_path(&record.run_root, &query.path)?;
-    let raw = std::fs::read_to_string(&path)
-        .map_err(|_| err(StatusCode::NOT_FOUND, "question debug not present"))?;
-    let value: Value = serde_json::from_str(&raw)
-        .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
-    Ok(Json(json!({ "path": query.path, "json": value })))
+    let id = query.id.clone();
+    let artifact = query.path.clone();
+    let payload = tokio::task::spawn_blocking(move || {
+        let record = state
+            .find(&id)
+            .ok_or_else(|| err(StatusCode::NOT_FOUND, "run not found"))?;
+        let debug_path = question_debug_path(&record.run_root, &artifact)?;
+        let raw = std::fs::read_to_string(&debug_path)
+            .map_err(|_| err(StatusCode::NOT_FOUND, "question debug not present"))?;
+        let value: Value = serde_json::from_str(&raw)
+            .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+        Ok::<_, (StatusCode, Json<Value>)>(json!({ "path": artifact, "json": value }))
+    })
+    .await
+    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(payload))
 }
 
 fn question_debug_path(
@@ -372,45 +630,68 @@ async fn run_artifact(
     State(state): State<Shared>,
     Query(query): Query<ArtifactQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let record = state
-        .find(&query.id)
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "run not found"))?;
-    let (file, is_jsonl) = artifact_file(&query.kind)
-        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "unknown artifact kind"))?;
-    let path = record.run_root.join("artifacts").join(file);
+    let id = query.id.clone();
+    let payload = tokio::task::spawn_blocking(move || {
+        let record = state
+            .find(&id)
+            .ok_or_else(|| err(StatusCode::NOT_FOUND, "run not found"))?;
+        let (file, is_jsonl) = artifact_file(&query.kind)
+            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "unknown artifact kind"))?;
+        let path = record.run_root.join("artifacts").join(file);
 
-    if !is_jsonl {
-        let raw = std::fs::read_to_string(&path)
-            .map_err(|_| err(StatusCode::NOT_FOUND, "artifact not present"))?;
-        let value: Value = serde_json::from_str(&raw)
-            .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
-        return Ok(Json(json!({ "kind": query.kind, "json": value })));
-    }
+        if !is_jsonl {
+            let raw = std::fs::read_to_string(&path)
+                .map_err(|_| err(StatusCode::NOT_FOUND, "artifact not present"))?;
+            let value: Value = serde_json::from_str(&raw)
+                .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+            return Ok::<_, (StatusCode, Json<Value>)>(json!({
+                "kind": query.kind,
+                "json": value,
+            }));
+        }
 
-    let offset = query.offset.unwrap_or(0);
-    let limit = query.limit.unwrap_or(200).min(2000);
-    let (total, rows) = read_jsonl_values(&path, offset, limit);
-    Ok(Json(json!({
-        "kind": query.kind,
-        "total": total,
-        "offset": offset,
-        "limit": limit,
-        "rows": rows,
-    })))
+        let offset = query.offset.unwrap_or(0);
+        let limit = query.limit.unwrap_or(200).min(2000);
+        let (total, rows) = read_jsonl_values(&path, offset, limit);
+        Ok(json!({
+            "kind": query.kind,
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "rows": rows,
+        }))
+    })
+    .await
+    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(payload))
 }
 
 fn read_jsonl_values(path: &Path, offset: usize, limit: usize) -> (usize, Vec<Value>) {
     let Ok(raw) = std::fs::read_to_string(path) else {
         return (0, Vec::new());
     };
-    let lines: Vec<&str> = raw.lines().filter(|line| !line.trim().is_empty()).collect();
-    let total = lines.len();
-    let rows = lines
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .collect();
+    // Iterate lazily so we never materialize a `Vec<&str>` of every line just
+    // to slice a page out of it (the JSONL files can be hundreds of thousands
+    // of lines). `total` counts non-empty lines to match historical semantics.
+    let mut total = 0usize;
+    let mut rows = Vec::new();
+    let mut in_window = 0usize;
+    for line in raw.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if total < offset {
+            total += 1;
+            continue;
+        }
+        total += 1;
+        in_window += 1;
+        if in_window <= limit
+            && let Ok(value) = serde_json::from_str::<Value>(line)
+        {
+            rows.push(value);
+        }
+    }
     (total, rows)
 }
 
@@ -422,45 +703,54 @@ async fn run_traces(
     State(state): State<Shared>,
     Query(query): Query<IdQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let record = state
-        .find(&query.id)
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "run not found"))?;
-    let root = &record.run_root;
+    let id = query.id.clone();
+    let payload = tokio::task::spawn_blocking(move || {
+        let record = state
+            .find(&id)
+            .ok_or_else(|| err(StatusCode::NOT_FOUND, "run not found"))?;
+        let root = &record.run_root;
 
-    let (memory_total, memory_rows) = read_jsonl_values(
-        &root.join("artifacts").join("memory-traces.jsonl"),
-        0,
-        TRACE_ROW_CAP,
-    );
-    let memory_stage_timing = summarize_memory_stage_timing(&memory_rows);
-    let model_rollup = cost::rollup_model_traces(root);
+        let (memory_total, memory_rows) = read_jsonl_values(
+            &root.join("artifacts").join("memory-traces.jsonl"),
+            0,
+            TRACE_ROW_CAP,
+        );
+        let memory_stage_timing = summarize_memory_stage_timing(&memory_rows);
+        let model_rollup = cost::rollup_model_traces(root);
 
-    // Provider/model queue timing, when provider-backed runs emit queue JSONL.
-    let queue_events = read_queue_events(root).unwrap_or_default();
-    let queue_timing = if queue_events.is_empty() {
-        None
-    } else {
-        serde_json::to_value(summarize_queue_timing(&queue_events)).ok()
-    };
-    let trace_waterfall = summarize_trace_waterfall(&memory_rows, &queue_events);
-    let dependency_waterfall = summarize_dependency_waterfall(&memory_rows);
-    let trace_events = summarize_trace_events(&memory_rows, &queue_events);
-    let workflow_queue = read_workflow_queue(root);
+        // Provider/model queue timing, when provider-backed runs emit queue
+        // JSONL. Computed once and reused for both the `queue_timing` payload
+        // and the unified trace-event rows (previously parsed twice).
+        let queue_events = read_queue_events(root).unwrap_or_default();
+        let queue_timing_rows = summarize_queue_timing(&queue_events);
+        let queue_timing = if queue_events.is_empty() {
+            None
+        } else {
+            serde_json::to_value(&queue_timing_rows).ok()
+        };
+        let trace_waterfall = summarize_trace_waterfall(&memory_rows, &queue_events);
+        let dependency_waterfall = summarize_dependency_waterfall(&memory_rows);
+        let trace_events = summarize_trace_events(&memory_rows, &queue_events, &queue_timing_rows);
+        let workflow_queue = read_workflow_queue(root);
 
-    Ok(Json(json!({
-        "memory_traces": {
-            "total": memory_total,
-            "truncated": memory_total > memory_rows.len(),
-            "rows": memory_rows,
-        },
-        "memory_stage_timing": memory_stage_timing,
-        "model_rollup": model_rollup,
-        "queue_timing": queue_timing,
-        "trace_waterfall": trace_waterfall,
-        "dependency_waterfall": dependency_waterfall,
-        "trace_events": trace_events,
-        "workflow_queue": workflow_queue,
-    })))
+        Ok::<_, (StatusCode, Json<Value>)>(json!({
+            "memory_traces": {
+                "total": memory_total,
+                "truncated": memory_total > memory_rows.len(),
+                "rows": memory_rows,
+            },
+            "memory_stage_timing": memory_stage_timing,
+            "model_rollup": model_rollup,
+            "queue_timing": queue_timing,
+            "trace_waterfall": trace_waterfall,
+            "dependency_waterfall": dependency_waterfall,
+            "trace_events": trace_events,
+            "workflow_queue": workflow_queue,
+        }))
+    })
+    .await
+    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(payload))
 }
 
 fn read_queue_events(run_root: &Path) -> Option<Vec<BenchQueueEvent>> {
@@ -483,10 +773,14 @@ fn read_queue_events(run_root: &Path) -> Option<Vec<BenchQueueEvent>> {
     Some(events)
 }
 
-fn summarize_trace_events(memory_rows: &[Value], queue_events: &[BenchQueueEvent]) -> Value {
-    let queue_timing: HashMap<(String, String), symbiotic_mem_bench::BenchTimingSummary> =
-        summarize_queue_timing(queue_events)
-            .into_iter()
+fn summarize_trace_events(
+    memory_rows: &[Value],
+    queue_events: &[BenchQueueEvent],
+    queue_timing: &[symbiotic_mem_bench::BenchTimingSummary],
+) -> Value {
+    let queue_timing: HashMap<(String, String), &symbiotic_mem_bench::BenchTimingSummary> =
+        queue_timing
+            .iter()
             .map(|row| ((row.queue_id.clone(), row.item_id.clone()), row))
             .collect();
 
@@ -1323,6 +1617,10 @@ fn summarize_memory_stage_timing(rows: &[Value]) -> Vec<Value> {
             } else {
                 (acc.terminal_item_count, acc.terminal_item_unit.as_str())
             };
+            // Sort the cadence sample once and index into it for all four
+            // percentiles (previously each percentile re-cloned + re-sorted).
+            let mut cadence = acc.cadence_ms;
+            cadence.sort_unstable();
             json!({
                 "operation": operation,
                 "events": acc.events,
@@ -1331,10 +1629,10 @@ fn summarize_memory_stage_timing(rows: &[Value]) -> Vec<Value> {
                 "failed": acc.failed,
                 "item_count": item_count,
                 "item_unit": if item_unit.is_empty() { "items" } else { item_unit },
-                "work_ms_p50": percentile_u64(&acc.cadence_ms, 50.0),
-                "work_ms_p80": percentile_u64(&acc.cadence_ms, 80.0),
-                "work_ms_p95": percentile_u64(&acc.cadence_ms, 95.0),
-                "work_ms_p98": percentile_u64(&acc.cadence_ms, 98.0),
+                "work_ms_p50": percentile_sorted_u64(&cadence, 50.0),
+                "work_ms_p80": percentile_sorted_u64(&cadence, 80.0),
+                "work_ms_p95": percentile_sorted_u64(&cadence, 95.0),
+                "work_ms_p98": percentile_sorted_u64(&cadence, 98.0),
                 "numeric_metrics": summarize_numeric_metrics(acc.numeric_metrics),
             })
         })
@@ -1436,14 +1734,14 @@ fn memory_item_count_for_trace(trace: &Value) -> Option<(u64, &'static str)> {
         .map(|count| (count, "items"))
 }
 
-fn percentile_u64(values: &[u64], percentile: f64) -> Option<f64> {
+/// Percentile over a sample already sorted ascending, so callers that need
+/// several percentiles of the same sample can sort once and index repeatedly.
+fn percentile_sorted_u64(values: &[u64], percentile: f64) -> Option<f64> {
     if values.is_empty() {
         return None;
     }
-    let mut sorted = values.to_vec();
-    sorted.sort_unstable();
-    let rank = ((percentile / 100.0) * (sorted.len().saturating_sub(1)) as f64).round() as usize;
-    sorted.get(rank).map(|value| *value as f64)
+    let rank = ((percentile / 100.0) * (values.len().saturating_sub(1)) as f64).round() as usize;
+    values.get(rank).map(|value| *value as f64)
 }
 
 fn percentile_sorted_f64(values: &[f64], percentile: f64) -> Option<f64> {
@@ -1635,76 +1933,111 @@ async fn compare_handler(
     State(state): State<Shared>,
     Query(query): Query<CompareQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let base = state
-        .find(&query.base)
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "base run not found"))?;
-    let cand = state
-        .find(&query.cand)
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "candidate run not found"))?;
-    let result = compare::compare_runs(&base.run_root, &cand.run_root);
-    let trial_index = registry::scan_trial_markers(&state.repo_root);
-    Ok(Json(json!({
-        "base": registry::summarize_with_trials(&base, &trial_index),
-        "candidate": registry::summarize_with_trials(&cand, &trial_index),
-        "result": result,
-    })))
+    let (base_id, cand_id) = (query.base.clone(), query.cand.clone());
+    let payload = tokio::task::spawn_blocking(move || {
+        // One registry snapshot resolves both ids (previously two full scans).
+        let snapshot = state.registry_snapshot();
+        let base_record = snapshot
+            .by_id
+            .get(&base_id)
+            .cloned()
+            .ok_or_else(|| err(StatusCode::NOT_FOUND, "base run not found"))?;
+        let cand_record = snapshot
+            .by_id
+            .get(&cand_id)
+            .cloned()
+            .ok_or_else(|| err(StatusCode::NOT_FOUND, "candidate run not found"))?;
+        let base_summary = snapshot
+            .summary_by_id
+            .get(&base_id)
+            .cloned()
+            .ok_or_else(|| err(StatusCode::NOT_FOUND, "base run not found"))?;
+        let cand_summary = snapshot
+            .summary_by_id
+            .get(&cand_id)
+            .cloned()
+            .ok_or_else(|| err(StatusCode::NOT_FOUND, "candidate run not found"))?;
+        let result = compare::compare_runs(&base_record.run_root, &cand_record.run_root);
+        Ok::<_, (StatusCode, Json<Value>)>(json!({
+            "base": base_summary,
+            "candidate": cand_summary,
+            "result": result,
+        }))
+    })
+    .await
+    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(payload))
 }
 
 async fn runner_schema(State(state): State<Shared>) -> impl IntoResponse {
-    // Enrich enum options with values observed in existing runs so the form
-    // reflects the configurations actually used here.
-    let records = state.scan();
-    let mut observed: HashMap<String, Vec<String>> = HashMap::new();
-    for record in &records {
-        for key in [
-            "distiller",
-            "embedder",
-            "store",
-            "query_planner",
-            "scorer",
-            "dataset",
-            "oracle",
-            "memory_config",
-            "symem_bin",
-        ] {
-            if let Some(value) = record.params.get(key).and_then(Value::as_str)
-                && !value.is_empty()
-            {
-                let entry = observed.entry(key.to_string()).or_default();
-                if !entry.contains(&value.to_string()) {
-                    entry.push(value.to_string());
+    let body = tokio::task::spawn_blocking(move || {
+        // Enrich enum options with values observed in existing runs so the form
+        // reflects the configurations actually used here.
+        let snapshot = state.registry_snapshot();
+        let records = &snapshot.records;
+        let mut observed: HashMap<String, Vec<String>> = HashMap::new();
+        for record in records {
+            for key in [
+                "distiller",
+                "embedder",
+                "store",
+                "query_planner",
+                "scorer",
+                "dataset",
+                "oracle",
+                "memory_config",
+                "symem_bin",
+            ] {
+                if let Some(value) = record.params.get(key).and_then(Value::as_str)
+                    && !value.is_empty()
+                {
+                    let entry = observed.entry(key.to_string()).or_default();
+                    if !entry.contains(&value.to_string()) {
+                        entry.push(value.to_string());
+                    }
                 }
             }
         }
-    }
 
-    let mut fields: Vec<Value> = runner::symem_param_schema()
-        .into_iter()
-        .map(|field| {
-            let mut value = serde_json::to_value(&field).unwrap_or(Value::Null);
-            if let Some(seen) = observed.get(&field.name) {
-                value["observed"] = json!(seen);
-            }
-            value
+        let mut fields: Vec<Value> = runner::symem_param_schema()
+            .into_iter()
+            .map(|field| {
+                let mut value = serde_json::to_value(&field).unwrap_or(Value::Null);
+                if let Some(seen) = observed.get(&field.name) {
+                    value["observed"] = json!(seen);
+                }
+                value
+            })
+            .collect();
+        fields.sort_by(|a, b| {
+            a["group"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["group"].as_str().unwrap_or(""))
+        });
+
+        json!({
+            "system": "symbiotic-memory",
+            "benchmark": "long-mem-eval",
+            "fields": fields,
         })
-        .collect();
-    fields.sort_by(|a, b| {
-        a["group"]
-            .as_str()
-            .unwrap_or("")
-            .cmp(b["group"].as_str().unwrap_or(""))
-    });
-
-    Json(json!({
-        "system": "symbiotic-memory",
-        "benchmark": "long-mem-eval",
-        "fields": fields,
-    }))
+    })
+    .await
+    .unwrap_or_else(
+        |_| json!({ "system": "symbiotic-memory", "benchmark": "long-mem-eval", "fields": [] }),
+    );
+    Json(body)
 }
 
 async fn runner_plan(State(state): State<Shared>, Json(params): Json<Value>) -> impl IntoResponse {
-    let plan = runner::plan_from_params(&params, &state.repo_root);
-    Json(serde_json::to_value(plan.preview()).unwrap_or(Value::Null))
+    let repo_root = state.repo_root.clone();
+    let plan = tokio::task::spawn_blocking(move || runner::plan_from_params(&params, &repo_root))
+        .await
+        .ok();
+    Json(
+        plan.map(|p| serde_json::to_value(p.preview()).unwrap_or(Value::Null))
+            .unwrap_or(Value::Null),
+    )
 }
 
 #[cfg(test)]
@@ -1892,7 +2225,7 @@ mod tests {
                 .is_empty()
         );
         assert!(
-            summarize_trace_events(&rows, &[])["rows"]
+            summarize_trace_events(&rows, &[], &[])["rows"]
                 .as_array()
                 .unwrap()
                 .is_empty()
