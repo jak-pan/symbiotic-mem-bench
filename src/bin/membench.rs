@@ -4088,14 +4088,31 @@ impl ProviderRuntime {
         if !enabled {
             return Ok(None);
         }
-        let api_key = required_operator_api_key(run, "openrouter")?;
         let base_url = run_env_value(run, "SYMEM_RERANK_BASE_URL")
             .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
         let model = run_env_value(run, "SYMEM_RERANK_MODEL")
             .unwrap_or_else(|| "cohere/rerank-4-fast".to_string());
-        Ok(Some(Arc::new(symbiotic_memory::OpenRouterReranker::new(
-            base_url, api_key, model,
-        ))))
+        // Local single-GPU MLX rerank servers (localhost) must serialize so concurrent recalls don't
+        // thrash the GPU: the operator drives the queue concurrency cap ("local" -> max_in_flight=1
+        // via the foundation default; otherwise the openrouter fallback at 1000). Override with
+        // SYMEM_RERANK_OPERATOR.
+        let is_local = base_url.contains("localhost")
+            || base_url.contains("127.0.0.1")
+            || base_url.contains("[::1]");
+        let operator = run_env_value(run, "SYMEM_RERANK_OPERATOR")
+            .unwrap_or_else(|| if is_local { "local" } else { "openrouter" }.to_string());
+        let api_key = if is_local {
+            "local".to_string()
+        } else {
+            required_operator_api_key(run, "openrouter")?
+        };
+        let adapter =
+            symbiotic_memory::ProviderAdapterConfig::new("rerank", operator, model.clone());
+        let queue = self.provider_queue(&adapter)?;
+        let inner = symbiotic_memory::OpenRouterReranker::new(base_url, api_key, model);
+        Ok(Some(Arc::new(
+            symbiotic_memory::providers::QueuedReranker::new(inner, queue),
+        )))
     }
 
     fn query_planner_factory(

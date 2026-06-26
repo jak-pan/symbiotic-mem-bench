@@ -48,6 +48,9 @@ tempfile = "3"
 [[bin]]
 name = "membench"
 path = "src/bin/membench.rs"
+# Requires the adapter feature: a plain `cargo build` SKIPS this bin rather than
+# silently emitting a feature-less binary that compiles but fails every native run.
+required-features = ["symbiotic-memory-adapter"]
 
 [[bin]]
 name = "membench-server"
