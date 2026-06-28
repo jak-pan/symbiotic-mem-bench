@@ -5018,7 +5018,7 @@ fn artifact_manifest<'a>(
 }
 
 const DEFAULT_WORKFLOW_MAX_IN_FLIGHT: usize = 50;
-const ANSWER_ONLY_WORKFLOW_MAX_IN_FLIGHT: usize = 32;
+const ANSWER_ONLY_WORKFLOW_MAX_IN_FLIGHT: usize = 64;
 
 #[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
 #[cfg(test)]
@@ -5040,9 +5040,9 @@ fn effective_workflow_max_in_flight_for_run(
     run: &SymbioticMemoryCliRun,
     configured: Option<usize>,
 ) -> usize {
-    // answer-only reuses a stored vault (no ingest), but the workflow queue is SQLite-backed and
-    // contends hard at high concurrency — 500 livelocks it (claim/reclaim thrash). Use a sane
-    // default in the 20-50 band, still overridable via SYMEM_WORKFLOW_MAX_IN_FLIGHT.
+    // answer-only reuses a stored vault (no ingest) so it can run wide. 64 is a validated default
+    // (122Q at 732 q/min, zero rerank throttle after the rpm-bucket fix); 500 still stresses the
+    // SQLite workflow queue's claim/reclaim, so cap here. Overridable via SYMEM_WORKFLOW_MAX_IN_FLIGHT.
     let base_default = if run.answer_only {
         ANSWER_ONLY_WORKFLOW_MAX_IN_FLIGHT
     } else {
@@ -6032,7 +6032,7 @@ mod tests {
 
     #[test]
     fn answer_only_uses_sane_workflow_window_by_default() {
-        assert_eq!(effective_workflow_max_in_flight(true, Some(25)), 32);
+        assert_eq!(effective_workflow_max_in_flight(true, Some(25)), 64);
         assert_eq!(effective_workflow_max_in_flight(false, Some(25)), 25);
         assert_eq!(effective_workflow_max_in_flight(false, None), 50);
     }
@@ -7031,7 +7031,7 @@ mod tests {
             params["runtime_models"]["answer"],
             serde_json::json!("queued:configured-chat")
         );
-        assert_eq!(params["workflow_max_in_flight"], serde_json::json!(32));
+        assert_eq!(params["workflow_max_in_flight"], serde_json::json!(64));
         assert_eq!(params["provider_queue_available"], serde_json::json!(true));
         assert_eq!(params["workflow_queue_available"], serde_json::json!(true));
     }
