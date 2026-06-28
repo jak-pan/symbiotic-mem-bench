@@ -46,6 +46,22 @@ use symbiotic_queue::{
     QueueStatus as DurableQueueStatus, SqliteQueue,
 };
 
+/// The reranker configuration threaded from the harness into the `RecallEngine`. Carries the main
+/// (stage-2) reranker plus an optional cheap stage-1 prefilter reranker and its top-x cut. Built by
+/// `membench`'s `reranker()` from the `SYMEM_RERANK*` env knobs; a `None` cascade (or a cascade with
+/// `main == None`) means rerank is disabled.
+#[cfg(feature = "symbiotic-memory-adapter")]
+#[derive(Clone, Default)]
+pub struct RerankCascade {
+    /// Main (stage-2) reranker. `None` when SYMEM_RERANK is off.
+    pub main: Option<Arc<dyn Reranker>>,
+    /// Optional cheap stage-1 prefilter reranker (enabled when SYMEM_RERANK_STAGE1_MODEL is set).
+    pub stage1: Option<Arc<dyn Reranker>>,
+    /// Stage-1 -> stage-2 count cut (SYMEM_RERANK_STAGE1_TOP_X, default 20). Only meaningful when
+    /// `stage1` is present.
+    pub stage1_top_x: usize,
+}
+
 fn current_reference_datetime() -> String {
     Local::now().to_rfc3339_opts(SecondsFormat::Secs, false)
 }
@@ -257,7 +273,12 @@ pub fn longmemeval_to_source(record: &LongMemEvalRecord) -> SourceDocument {
                 turn_id: format!("{session_id}:{msg_idx}"),
                 source_id: record.question_id.clone(),
                 speaker: Some(msg.role.clone()),
-                event_time: session_time,
+                // The LongMemEval haystack date is when the session was held — i.e. the capture
+                // timestamp. A raw turn is never a resolved event, so event_time is None and
+                // ingested_at is stamped at persist time.
+                captured_at: session_time,
+                event_time: None,
+                ingested_at: None,
                 text: msg.content.clone(),
                 ordinal: turns.len(),
             });
@@ -435,7 +456,7 @@ where
         chat_factory,
         None,
         None,
-        None,
+        RerankCascade::default(),
         None,
         None,
         policy,
@@ -461,7 +482,7 @@ pub async fn run_longmemeval_sqlite_with_planner<E, D, C>(
     chat_factory: impl Fn() -> C + Send + Sync + 'static,
     answer_retry_factory: Option<Arc<dyn Fn() -> Arc<dyn ChatProvider> + Send + Sync>>,
     planner_factory: Option<Arc<dyn Fn() -> Arc<dyn QueryPlanner> + Send + Sync>>,
-    reranker: Option<Arc<dyn Reranker>>,
+    reranker: RerankCascade,
     debug_metadata: Option<BenchDebugMetadata>,
     memory_trace_sink: Option<Arc<dyn MemoryTraceSink>>,
     policy: symbiotic_memory::config::RecallPolicy,
@@ -538,7 +559,7 @@ pub async fn run_longmemeval_sqlite_with_workflow_queue<E, D, C>(
     chat_factory: impl Fn() -> C + Send + Sync + 'static,
     answer_retry_factory: Option<Arc<dyn Fn() -> Arc<dyn ChatProvider> + Send + Sync>>,
     planner_factory: Option<Arc<dyn Fn() -> Arc<dyn QueryPlanner> + Send + Sync>>,
-    reranker: Option<Arc<dyn Reranker>>,
+    reranker: RerankCascade,
     debug_metadata: Option<BenchDebugMetadata>,
     memory_trace_sink: Option<Arc<dyn MemoryTraceSink>>,
     policy: symbiotic_memory::config::RecallPolicy,
@@ -1102,6 +1123,18 @@ fn strict_zvec_manifest_validation() -> bool {
         .unwrap_or(false)
 }
 
+/// SYMEM_IGNORE_SOURCE_HASH opt-out for the answer-only manifest gate. A field-name rename in
+/// `SourceDocument` changes the serialized shape (and thus `source_shape_hash`) even when the
+/// underlying source DATA is unchanged, which makes the answer-only path refuse to reuse a golden
+/// vault. When this is set, the gate logs a warning and proceeds instead of refusing. Off by default.
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn ignore_source_hash() -> bool {
+    std::env::var("SYMEM_IGNORE_SOURCE_HASH")
+        .ok()
+        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes"))
+        .unwrap_or(false)
+}
+
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn zvec_flush_before_recall() -> bool {
     std::env::var("SYMEM_ZVEC_SKIP_FLUSH_BEFORE_RECALL")
@@ -1338,6 +1371,36 @@ impl MemoryStore for BenchMemoryStore {
             Self::ZvecHybrid(store) => store.raw_turn_search(query_embedding, query, top_k).await,
         }
     }
+
+    async fn get_turns_by_turn_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<RawTurnEvidence>, symbiotic_memory::storage::StoreError> {
+        match self {
+            Self::Sqlite(store) => store.get_turns_by_turn_ids(ids).await,
+            Self::ZvecHybrid(store) => store.get_turns_by_turn_ids(ids).await,
+        }
+    }
+
+    async fn get_facts_by_source_turn_ids(
+        &self,
+        turn_ids: &[String],
+    ) -> Result<Vec<FactEvidence>, symbiotic_memory::storage::StoreError> {
+        match self {
+            Self::Sqlite(store) => store.get_facts_by_source_turn_ids(turn_ids).await,
+            Self::ZvecHybrid(store) => store.get_facts_by_source_turn_ids(turn_ids).await,
+        }
+    }
+
+    async fn get_facts_by_memory_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<FactEvidence>, symbiotic_memory::storage::StoreError> {
+        match self {
+            Self::Sqlite(store) => store.get_facts_by_memory_ids(ids).await,
+            Self::ZvecHybrid(store) => store.get_facts_by_memory_ids(ids).await,
+        }
+    }
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
@@ -1389,7 +1452,7 @@ async fn process_sqlite_row<E, D, C>(
     chat_factory: &(impl Fn() -> C + Send + Sync),
     answer_retry_factory: Option<Arc<dyn Fn() -> Arc<dyn ChatProvider> + Send + Sync>>,
     planner_factory: Option<Arc<dyn Fn() -> Arc<dyn QueryPlanner> + Send + Sync>>,
-    reranker: Option<Arc<dyn Reranker>>,
+    reranker: RerankCascade,
     debug_metadata: Option<BenchDebugMetadata>,
     memory_trace_sink: Option<Arc<dyn MemoryTraceSink>>,
     policy: symbiotic_memory::config::RecallPolicy,
@@ -1459,10 +1522,22 @@ where
         manifest
     });
     if manifest.source_hash != source_hash {
-        anyhow::bail!(
-            "vault {} manifest source hash changed; use a fresh run root",
-            row.question_id
-        );
+        // SYMEM_IGNORE_SOURCE_HASH opt-out: a field-name rename in SourceDocument changes the
+        // serialized shape (and thus this hash) even though the underlying source DATA is unchanged.
+        // When set, log a warning and PROCEED reusing the existing vault instead of refusing. The
+        // stored manifest source_hash is left untouched (we do not rewrite it), so the check still
+        // fires for anyone who has not opted out.
+        if ignore_source_hash() {
+            eprintln!(
+                "[longmemeval] WARNING: vault {} manifest source hash mismatch (stored={} computed={}); SYMEM_IGNORE_SOURCE_HASH set, proceeding with existing vault",
+                row.question_id, manifest.source_hash, source_hash
+            );
+        } else {
+            anyhow::bail!(
+                "vault {} manifest source hash changed; use a fresh run root",
+                row.question_id
+            );
+        }
     }
     manifest.index_backend = Some(store_backend.to_string());
     manifest.save(&manifest_path)?;
@@ -1853,9 +1928,16 @@ where
     .await;
 
     let answer_retry_chat = answer_retry_factory.as_ref().map(|factory| factory());
+    let RerankCascade {
+        main: reranker_main,
+        stage1: reranker_stage1,
+        stage1_top_x: rerank_stage1_top_x,
+    } = reranker;
     let mut engine = RecallEngine::new(store, embedder_factory(), chat_factory(), policy)
         .with_optional_answer_retry_chat(answer_retry_chat)
-        .with_optional_reranker(reranker)
+        .with_optional_reranker(reranker_main)
+        .with_optional_reranker_stage1(reranker_stage1.clone())
+        .with_rerank_stage1_top_x(reranker_stage1.is_some().then_some(rerank_stage1_top_x))
         .with_optional_trace_sink(memory_trace_sink.clone())
         .with_trace_context(RecallTraceContext::new(
             row.question_id.clone(),
@@ -3088,7 +3170,7 @@ mod tests {
         assert_eq!(source.turns.len(), 2);
         assert_eq!(source.turns[0].turn_id, "s1:0");
         assert_eq!(
-            source.turns[0].event_time.unwrap().to_rfc3339(),
+            source.turns[0].captured_at.unwrap().to_rfc3339(),
             "2023-01-01T00:00:00+00:00"
         );
     }
@@ -3357,11 +3439,12 @@ mod tests {
                         &receipt.receipt_id,
                         &turn.turn_id,
                     )
-                    .with_captured_at(turn.event_time),
+                    .with_captured_at(turn.captured_at),
                 ],
             );
-            fact.event_time = turn.event_time;
-            fact.valid_from = turn.event_time;
+            fact.captured_at = turn.captured_at;
+            fact.event_time = turn.captured_at;
+            fact.valid_from = turn.captured_at;
             self.active.fetch_sub(1, Ordering::SeqCst);
             Ok(vec![fact])
         }
@@ -3508,11 +3591,12 @@ mod tests {
                         &receipt.receipt_id,
                         &turn.turn_id,
                     )
-                    .with_captured_at(turn.event_time),
+                    .with_captured_at(turn.captured_at),
                 ],
             );
-            fact.event_time = turn.event_time;
-            fact.valid_from = turn.event_time;
+            fact.captured_at = turn.captured_at;
+            fact.event_time = turn.captured_at;
+            fact.valid_from = turn.captured_at;
             Ok(vec![fact])
         }
     }

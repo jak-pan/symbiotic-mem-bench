@@ -1811,6 +1811,7 @@ fn enrich_report_with_cohort(
     report["metrics"]["cache"] = json!({
         "cached_input_tokens": fields.cached_input_tokens,
         "uncached_input_tokens": fields.uncached_input_tokens,
+        "output_tokens": fields.output_tokens,
         "response_cache_hits": fields.response_cache_hits,
         "prompt_cache_hits": fields.prompt_cache_hits,
         "prompt_cache_partial_hits": fields.prompt_cache_partial_hits,
@@ -4076,7 +4077,9 @@ impl ProviderRuntime {
     fn reranker(
         &self,
         run: &SymbioticMemoryCliRun,
-    ) -> anyhow::Result<Option<Arc<dyn symbiotic_memory::Reranker>>> {
+    ) -> anyhow::Result<
+        symbiotic_mem_bench::symbiotic_memory_adapter::RerankCascade,
+    > {
         let enabled = run_env_value(run, "SYMEM_RERANK")
             .map(|value| {
                 matches!(
@@ -4086,12 +4089,48 @@ impl ProviderRuntime {
             })
             .unwrap_or(false);
         if !enabled {
-            return Ok(None);
+            return Ok(Default::default());
         }
+        // Main (stage-2) reranker. SYMEM_RERANK_BASE_URL overrides the base url (e.g. point at the
+        // local Nemotron /serve server at http://localhost:8088).
         let base_url = run_env_value(run, "SYMEM_RERANK_BASE_URL")
             .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
         let model = run_env_value(run, "SYMEM_RERANK_MODEL")
             .unwrap_or_else(|| "cohere/rerank-4-fast".to_string());
+        let main = Some(self.build_reranker(run, &base_url, &model)?);
+
+        // Optional cheap stage-1 prefilter reranker. Enabled iff SYMEM_RERANK_STAGE1_MODEL is set.
+        // Its base url defaults to the OpenRouter base (so a Cohere prefilter works out of the box);
+        // set SYMEM_RERANK_STAGE1_BASE_URL to route stage-1 elsewhere (e.g. the local Nemotron).
+        let (stage1, stage1_top_x) = match run_env_value(run, "SYMEM_RERANK_STAGE1_MODEL") {
+            Some(stage1_model) if !stage1_model.trim().is_empty() => {
+                let stage1_base_url = run_env_value(run, "SYMEM_RERANK_STAGE1_BASE_URL")
+                    .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
+                let stage1 = self.build_reranker(run, &stage1_base_url, stage1_model.trim())?;
+                let top_x = run_env_value(run, "SYMEM_RERANK_STAGE1_TOP_X")
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or(20);
+                (Some(stage1), top_x)
+            }
+            _ => (None, 20),
+        };
+
+        Ok(symbiotic_mem_bench::symbiotic_memory_adapter::RerankCascade {
+            main,
+            stage1,
+            stage1_top_x,
+        })
+    }
+
+    /// Builds a single queued `OpenRouterReranker` (Cohere-compatible `POST {base}/rerank`). The
+    /// `base_url` may point at OpenRouter or a local Cohere-compatible server (e.g. the Nemotron
+    /// /serve server at http://localhost:8088, which appends `/rerank` -> `http://localhost:8088/rerank`).
+    fn build_reranker(
+        &self,
+        run: &SymbioticMemoryCliRun,
+        base_url: &str,
+        model: &str,
+    ) -> anyhow::Result<Arc<dyn symbiotic_memory::Reranker>> {
         // Local single-GPU MLX rerank servers (localhost) must serialize so concurrent recalls don't
         // thrash the GPU: the operator drives the queue concurrency cap ("local" -> max_in_flight=1
         // via the foundation default; otherwise the openrouter fallback at 1000). Override with
@@ -4101,17 +4140,25 @@ impl ProviderRuntime {
             || base_url.contains("[::1]");
         let operator = run_env_value(run, "SYMEM_RERANK_OPERATOR")
             .unwrap_or_else(|| if is_local { "local" } else { "openrouter" }.to_string());
+        // The local server ignores api_key + model; a dummy key is fine for localhost.
         let api_key = if is_local {
             "local".to_string()
         } else {
             required_operator_api_key(run, "openrouter")?
         };
-        let adapter =
-            symbiotic_memory::ProviderAdapterConfig::new("rerank", operator, model.clone());
+        let adapter = symbiotic_memory::ProviderAdapterConfig::new(
+            "rerank",
+            operator,
+            model.to_string(),
+        );
         let queue = self.provider_queue(&adapter)?;
-        let inner = symbiotic_memory::OpenRouterReranker::new(base_url, api_key, model);
-        Ok(Some(Arc::new(
-            symbiotic_memory::providers::QueuedReranker::new(inner, queue),
+        let inner = symbiotic_memory::OpenRouterReranker::new(
+            base_url.to_string(),
+            api_key,
+            model.to_string(),
+        );
+        Ok(Arc::new(symbiotic_memory::providers::QueuedReranker::new(
+            inner, queue,
         )))
     }
 

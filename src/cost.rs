@@ -261,6 +261,16 @@ fn pricing_for(operator: &str, operation: &str, model: &str) -> Option<Pricing> 
     }
 }
 
+/// Per-search price for a rerank operation, in micro-USD. OpenRouter rerankers are billed per
+/// SEARCH (one rerank query = one search) regardless of document count — NOT per token or per
+/// document. Source: https://openrouter.ai/cohere/rerank-4-fast = $0.002/search.
+fn rerank_search_price_micro_usd(operator: &str, model: &str) -> Option<u64> {
+    match (operator, model) {
+        ("openrouter", "cohere/rerank-4-fast") => Some(2000), // $0.002/search
+        _ => None,
+    }
+}
+
 fn estimate_cost_micro_usd(
     pricing: Pricing,
     input_tokens: u64,
@@ -340,7 +350,7 @@ pub fn rollup_model_trace_file(path: &Path) -> Option<ModelTraceRollup> {
         }
 
         let (operation, operator, model) = model_identity(&trace);
-        let usage_input_fallback = (operation == "embedding")
+        let usage_input_fallback = (operation == "embedding" || operation == "rerank")
             .then(|| {
                 trace
                     .usage
@@ -386,10 +396,16 @@ pub fn rollup_model_trace_file(path: &Path) -> Option<ModelTraceRollup> {
         }
         let reported_cost = usage.cost_micro_usd.or(trace.cost_micro_usd);
         let estimated_cost = reported_cost.or_else(|| {
-            has_usage
-                .then(|| pricing_for(&operator, &operation, &model))
-                .flatten()
-                .and_then(|pricing| estimate_cost_micro_usd(pricing, input, cached, output))
+            // Rerank is billed per SEARCH (one query = one search), not per token —
+            // https://openrouter.ai/cohere/rerank-4-fast = $0.002/search.
+            if operation == "rerank" {
+                rerank_search_price_micro_usd(&operator, &model)
+            } else {
+                has_usage
+                    .then(|| pricing_for(&operator, &operation, &model))
+                    .flatten()
+                    .and_then(|pricing| estimate_cost_micro_usd(pricing, input, cached, output))
+            }
         });
         let pricing = pricing_for(&operator, &operation, &model);
         let cost_was_estimated = reported_cost.is_none() && estimated_cost.is_some();
@@ -681,6 +697,35 @@ mod tests {
                 && stat.operation == "embedding"
                 && stat.input_tokens == 100000
                 && stat.cost_micro_usd == Some(1000)
+        }));
+    }
+
+    #[test]
+    fn prices_cohere_rerank_from_input_units() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("artifacts").join("model-traces.jsonl");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // A rerank call carries `input_units` (reranked doc tokens) and no `usage` block,
+        // exactly like an OpenRouter embedding call — it must be priced, not dropped to $0.
+        std::fs::write(
+            &path,
+            "{\"queue_id\":\"rerank:openrouter:cohere/rerank-4-fast\",\"item_id\":\"r\",\"operation\":\"rerank\",\"status\":\"succeeded\",\"attempt\":1,\"timestamp\":\"2026-01-01T00:00:00Z\",\"input_units\":17930,\"request_units\":221}\n",
+        )
+        .unwrap();
+
+        let rollup = rollup_model_traces(dir.path()).unwrap();
+        assert_eq!(rollup.calls, 1);
+        assert_eq!(rollup.input_tokens, 17930);
+        assert_eq!(rollup.output_tokens, 0);
+        // Rerank is billed per SEARCH: 1 query = 1 search = $0.002 = 2000 micro-USD (doc count irrelevant)
+        assert_eq!(rollup.cost_micro_usd, Some(2000));
+        assert!(rollup.cost_estimated);
+        assert!(rollup.models.iter().any(|stat| {
+            stat.model == "cohere/rerank-4-fast"
+                && stat.operator == "openrouter"
+                && stat.operation == "rerank"
+                && stat.input_tokens == 17930
+                && stat.cost_micro_usd == Some(2000)
         }));
     }
 }

@@ -110,6 +110,7 @@ pub struct CohortFields {
     pub latency_ms_p95: Option<f64>,
     pub cached_input_tokens: Option<u64>,
     pub uncached_input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
     pub response_cache_hits: Option<u64>,
     pub prompt_cache_hits: Option<u64>,
     pub prompt_cache_partial_hits: Option<u64>,
@@ -675,6 +676,7 @@ pub fn compute_cohort_fields_with_rollup(
         latency_ms_p95: rollup.and_then(|rollup| rollup.latency_ms_p95),
         cached_input_tokens: rollup.map(|rollup| rollup.cached_input_tokens),
         uncached_input_tokens: rollup.map(|rollup| rollup.uncached_input_tokens),
+        output_tokens: rollup.map(|rollup| rollup.output_tokens),
         response_cache_hits: rollup.map(|rollup| rollup.response_cache_hits),
         prompt_cache_hits: rollup.map(|rollup| rollup.prompt_cache_hits),
         prompt_cache_partial_hits: rollup.map(|rollup| rollup.prompt_cache_partial_hits),
@@ -713,9 +715,12 @@ fn configured_model(params: &Value, role: &str) -> Option<String> {
 
 fn runtime_model(params: &Value, role: &str) -> Option<String> {
     let raw = nested_string(params, &["runtime_models", role])?;
+    // Queue keys are `status:operator:model`, and `model` may itself contain ':'
+    // (e.g. an OpenRouter `:free` suffix) — take everything after the 2nd colon, not the
+    // last segment. `rsplit(':').next()` would wrongly yield "free" for `.../model:free`.
     Some(
-        raw.rsplit(':')
-            .next()
+        raw.splitn(3, ':')
+            .nth(2)
             .filter(|part| !part.is_empty())
             .unwrap_or(&raw)
             .to_string(),
