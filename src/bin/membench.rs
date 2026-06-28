@@ -5018,7 +5018,7 @@ fn artifact_manifest<'a>(
 }
 
 const DEFAULT_WORKFLOW_MAX_IN_FLIGHT: usize = 50;
-const ANSWER_ONLY_WORKFLOW_MAX_IN_FLIGHT: usize = 500;
+const ANSWER_ONLY_WORKFLOW_MAX_IN_FLIGHT: usize = 32;
 
 #[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
 #[cfg(test)]
@@ -5040,14 +5040,18 @@ fn effective_workflow_max_in_flight_for_run(
     run: &SymbioticMemoryCliRun,
     configured: Option<usize>,
 ) -> usize {
-    if run.answer_only {
+    // answer-only reuses a stored vault (no ingest), but the workflow queue is SQLite-backed and
+    // contends hard at high concurrency — 500 livelocks it (claim/reclaim thrash). Use a sane
+    // default in the 20-50 band, still overridable via SYMEM_WORKFLOW_MAX_IN_FLIGHT.
+    let base_default = if run.answer_only {
         ANSWER_ONLY_WORKFLOW_MAX_IN_FLIGHT
     } else {
-        workflow_max_in_flight_env_override(run)
-            .or(configured)
-            .unwrap_or(DEFAULT_WORKFLOW_MAX_IN_FLIGHT)
-            .max(1)
-    }
+        DEFAULT_WORKFLOW_MAX_IN_FLIGHT
+    };
+    workflow_max_in_flight_env_override(run)
+        .or(if run.answer_only { None } else { configured })
+        .unwrap_or(base_default)
+        .max(1)
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
@@ -6027,8 +6031,8 @@ mod tests {
     }
 
     #[test]
-    fn answer_only_uses_wide_workflow_window_by_default() {
-        assert_eq!(effective_workflow_max_in_flight(true, Some(25)), 500);
+    fn answer_only_uses_sane_workflow_window_by_default() {
+        assert_eq!(effective_workflow_max_in_flight(true, Some(25)), 32);
         assert_eq!(effective_workflow_max_in_flight(false, Some(25)), 25);
         assert_eq!(effective_workflow_max_in_flight(false, None), 50);
     }
@@ -7027,7 +7031,7 @@ mod tests {
             params["runtime_models"]["answer"],
             serde_json::json!("queued:configured-chat")
         );
-        assert_eq!(params["workflow_max_in_flight"], serde_json::json!(500));
+        assert_eq!(params["workflow_max_in_flight"], serde_json::json!(32));
         assert_eq!(params["provider_queue_available"], serde_json::json!(true));
         assert_eq!(params["workflow_queue_available"], serde_json::json!(true));
     }
