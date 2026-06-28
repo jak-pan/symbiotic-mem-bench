@@ -5,9 +5,23 @@ export function num(value: number | null | undefined): number {
   return Number.isFinite(value) ? Number(value) : 0;
 }
 
-/** Strip the `chat:` / `embedding:` prefix from a provider queue id. */
+/**
+ * Short, readable label for a provider queue id.
+ *
+ * Queue ids are `operation:operator:model`, and the model itself may contain
+ * `:` (e.g. an OpenRouter `:free` suffix, like
+ * `rerank:openrouter:nvidia/llama-nemotron-rerank-vl-1b-v2:free`). Splitting on
+ * the last colon (or naively on every colon) corrupts the model, and a fixed
+ * `chat:`/`embedding:` prefix strip silently mangles `rerank:` queues into a
+ * double-prefixed mess. So split into at most 3 parts — drop the operation
+ * prefix, keep `operator:model` with the full model intact. Mirrors the
+ * backend `splitn(3, ':')` fix in src/registry.rs.
+ */
 export function shortQueue(id: string): string {
-  return id.replace(/^chat:/, "").replace(/^embedding:/, "");
+  const parts = id.split(/:(.*)/s); // operation, rest (model may contain ':')
+  // parts[1] is everything after the first colon (operator:model); fall back to
+  // the whole id if there was no colon at all.
+  return parts.length > 1 && parts[1] ? parts[1] : id;
 }
 
 /** `true` only when `value` is a real finite number. */
