@@ -1750,7 +1750,7 @@ dependencies = [
 [[package]]
 name = "symbiotic-memory"
 version = "0.1.0"
-source = "git+https://github.com/jak-pan/symbiotic-memory?branch=rerank-provider-queue#932bc80db8d26d9b96f22bd9b5da698ed70e2abf"
+source = "git+https://github.com/jak-pan/symbiotic-memory?branch=master#49aa2a3d5e7ac968c660edea183367a84365df3b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2629,7 +2629,7 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 [[package]]
 name = "zvec"
 version = "0.5.0"
-source = "git+https://github.com/jak-pan/symbiotic-memory?branch=rerank-provider-queue#932bc80db8d26d9b96f22bd9b5da698ed70e2abf"
+source = "git+https://github.com/jak-pan/symbiotic-memory?branch=master#49aa2a3d5e7ac968c660edea183367a84365df3b"
 dependencies = [
  "zvec-sys",
 ]
@@ -2637,4 +2637,4 @@ dependencies = [
 [[package]]
 name = "zvec-sys"
 version = "0.5.0"
-source = "git+https://github.com/jak-pan/symbiotic-memory?branch=rerank-provider-queue#932bc80db8d26d9b96f22bd9b5da698ed70e2abf"
+source = "git+https://github.com/jak-pan/symbiotic-memory?branch=master#49aa2a3d5e7ac968c660edea183367a84365df3b"
