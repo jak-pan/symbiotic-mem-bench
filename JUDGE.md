@@ -86,4 +86,35 @@ So our earlier numbers were faithful and a full-500 re-judge was not warranted. 
 deltas seen when *re-answering* under the official judge were OpenRouter non-determinism at temp 0,
 not the judge.)
 
-*Last updated: 2026-06-29.*
+## Gold labeling & gold-eval — `artifacts/gold-eval.json`
+
+Separate from grading (above), **gold-eval** answers *where the evidence was*: did retrieval
+surface the gold, and when the answer was wrong, was it a **retrieval gap** or a **reader failure**.
+It runs automatically after every scored run (and on demand via `membench gold-eval --run <run>`);
+the per-question record is `artifacts/gold-eval.json`.
+
+**Gold identity — the one valid method.** Gold is the question's `answer_session_ids` annotation,
+refined to the `has_answer` turns within those sessions (`gold_turn_ids`), and matched to candidates
+**by turn id**.
+
+> ⚠️ **Never identify gold by substring-matching the answer string against candidate content.** It
+> over-matches (a candidate that merely *contains* the answer string by coincidence) and under-matches
+> (paraphrased gold), and it is not the dataset's ground truth. A substring "forensics" helper
+> (`gold_positions`) once shipped in the adapter and quietly misled analysis — it was removed.
+> Turn-id matching against `has_answer` turns is the only valid way.
+
+**Retrieval rank** is computed raw-only: sort the raw-turn candidates by embedding score, then by
+rerank score, and take `deepest_gold_rank` (the worst-ranked gold turn that is in the candidate set
+at all; absent gold ⇒ `None`, excluded from the `*_in_set` denominator). Per-question fields:
+
+| field | meaning |
+|---|---|
+| `gold_embed_rank` / `gold_rerank_rank` | deepest gold turn's rank by embed / by rerank score |
+| `gold_top_rank` / `gold_deepest_rank` | best / worst gold-turn rank (multi-piece gold) |
+| `gold_turns_in_set` / `gold_turns_total` | gold turns present in the candidate set / total |
+| `covered_by_fact` / `covered_by_raw` (axis `fact`\|`raw`\|`both`\|`none`) | how each gold piece is carried |
+| `class` | `correct` · `retrieval_gap` (gold missing from kept facts) · `reader_fail` (gold present, reader still wrong) |
+
+Code: `gold_eval()` + `gold_turn_ids()` + `deepest_gold_rank()` in `src/bin/membench.rs`.
+
+*Last updated: 2026-06-30.*

@@ -2118,7 +2118,6 @@ fn write_question_debug(
             "trace_note": "Answerer calls inline their returned usage/cache tokens when the provider returns them; full provider queue/model events remain in the trace artifacts.",
         },
         "recall": recall_debug,
-        "gold_positions": gold_position_report(row.answer.as_ref(), recall_debug),
         "hypothesis": hypothesis,
         "provider_trace_artifacts": provider_trace_artifacts,
         "scoring": serde_json::Value::Null,
@@ -2145,119 +2144,6 @@ fn question_debug_snapshot_path(vault_dir: &Path, debug_run_id: &str) -> std::pa
         .join("hypotheses")
         .join(debug_run_id)
         .join("question-debug.json")
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn gold_position_report(gold: Option<&Value>, debug: &RecallAnswerDebug) -> Value {
-    let candidates = gold_candidates(gold);
-    let mut rows = Vec::new();
-    for candidate in &candidates {
-        rows.push(serde_json::json!({
-            "candidate": candidate,
-            "initial_fact_rank": ranked_fact_position(&debug.initial_profile.facts, candidate),
-            "initial_raw_turn_rank": ranked_raw_position(&debug.initial_profile.raw_turns, candidate),
-            "fallback_fact_rank": debug
-                .fallback_profile
-                .as_ref()
-                .and_then(|profile| ranked_fact_position(&profile.facts, candidate)),
-            "fallback_raw_turn_rank": debug
-                .fallback_profile
-                .as_ref()
-                .and_then(|profile| ranked_raw_position(&profile.raw_turns, candidate)),
-        }));
-    }
-    serde_json::json!({
-        "method": "case-insensitive normalized substring over gold answer values; forensics only, not a scorer",
-        "candidates": rows,
-        "first_initial_fact_rank": first_candidate_rank(&candidates, |candidate| {
-            ranked_fact_position(&debug.initial_profile.facts, candidate)
-        }),
-        "first_initial_raw_turn_rank": first_candidate_rank(&candidates, |candidate| {
-            ranked_raw_position(&debug.initial_profile.raw_turns, candidate)
-        }),
-        "first_fallback_raw_turn_rank": debug
-            .fallback_profile
-            .as_ref()
-            .and_then(|profile| first_candidate_rank(&candidates, |candidate| {
-                ranked_raw_position(&profile.raw_turns, candidate)
-            })),
-    })
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn gold_candidates(gold: Option<&Value>) -> Vec<String> {
-    let mut out = Vec::new();
-    collect_gold_candidates(gold.unwrap_or(&Value::Null), &mut out);
-    out.sort();
-    out.dedup();
-    out
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn collect_gold_candidates(value: &Value, out: &mut Vec<String>) {
-    match value {
-        Value::String(value) => push_gold_candidate(out, value),
-        Value::Number(value) => push_gold_candidate(out, &value.to_string()),
-        Value::Bool(value) => push_gold_candidate(out, &value.to_string()),
-        Value::Array(values) => {
-            for value in values {
-                collect_gold_candidates(value, out);
-            }
-        }
-        Value::Object(values) => {
-            for value in values.values() {
-                collect_gold_candidates(value, out);
-            }
-        }
-        Value::Null => {}
-    }
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn push_gold_candidate(out: &mut Vec<String>, value: &str) {
-    let normalized = normalize_debug_match(value);
-    if !normalized.is_empty() && !out.contains(&normalized) {
-        out.push(normalized);
-    }
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn ranked_fact_position(facts: &[FactEvidence], candidate: &str) -> Option<usize> {
-    facts
-        .iter()
-        .position(|evidence| normalize_debug_match(&evidence.fact.content).contains(candidate))
-        .map(|idx| idx + 1)
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn ranked_raw_position(raw_turns: &[RawTurnEvidence], candidate: &str) -> Option<usize> {
-    raw_turns
-        .iter()
-        .position(|evidence| normalize_debug_match(&evidence.text).contains(candidate))
-        .map(|idx| idx + 1)
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn first_candidate_rank<F>(candidates: &[String], mut rank: F) -> Option<usize>
-where
-    F: FnMut(&str) -> Option<usize>,
-{
-    candidates
-        .iter()
-        .filter_map(|candidate| rank(candidate))
-        .min()
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn normalize_debug_match(value: &str) -> String {
-    value
-        .to_ascii_lowercase()
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { ' ' })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]

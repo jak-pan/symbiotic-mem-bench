@@ -2709,6 +2709,19 @@ fn deepest_gold_rank(
 ///                        evidence was there; the reader still failed).
 /// A second, descriptive axis reports per gold piece HOW it is covered —
 /// distilled `fact`, `raw` turn, `both`, or `none` — without feeding the class.
+///
+/// GOLD IDENTITY — the one valid method. Gold is the question's
+/// `answer_session_ids` annotation, refined to the `has_answer` turns within
+/// those sessions (`gold_turn_ids`), matched to candidates by TURN ID, and
+/// ranked with `deepest_gold_rank` (raw-only: sort raw candidates by embed
+/// score, then by rerank score). The per-question record lands in
+/// `artifacts/gold-eval.json` (`gold_embed_rank` / `gold_rerank_rank` /
+/// `gold_top_rank` / `gold_deepest_rank` / `gold_turns_in_set`, and coverage by
+/// fact/raw/both/none). NEVER identify gold by substring-matching the answer
+/// text against candidate content: that over-matches (a candidate that merely
+/// contains the answer string by coincidence) and under-matches (paraphrased
+/// gold), and it is not the dataset's ground truth. (A substring "forensics"
+/// helper once shipped in the adapter and misled analysis; it was removed.)
 fn gold_eval(run: &str) -> anyhow::Result<()> {
     let run_root = resolve_run_for_vault_save(run)?;
     let run_name = run_root

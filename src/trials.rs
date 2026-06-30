@@ -450,7 +450,6 @@ fn debug_summary(run_root: &Path, row: Option<&QuestionRow>) -> Option<Value> {
             .and_then(|call| call.get("prompt"))
             .and_then(Value::as_str)
             .map(hash_text),
-        "gold_positions": parsed.get("gold_positions").cloned(),
     }))
 }
 
