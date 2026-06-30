@@ -9,6 +9,7 @@ export type DebugSubscreen =
   | "questions"
   | "compare"
   | "traces"
+  | "gold-coverage"
   | "live"
   | "tuner";
 
@@ -17,6 +18,7 @@ const DEBUG_SUBSCREENS = new Set<DebugSubscreen>([
   "questions",
   "compare",
   "traces",
+  "gold-coverage",
   "live",
   "tuner",
 ]);

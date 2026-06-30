@@ -1,5 +1,6 @@
 <script lang="ts">
   import { api } from "../lib/api";
+  import { store } from "../lib/store.svelte";
   import type {
     AnswererCallDebug,
     QueryPlannerCallDebug,
@@ -11,6 +12,9 @@
   import { qtypeShort } from "../lib/format";
 
   let { id }: { id: string } = $props();
+  // Run-level oracle-gold flag (gold evidence fed straight to the answerer, recall bypassed). Read
+  // from the shared registry so the per-question drawer can flag it without an extra fetch.
+  const oracleGold = $derived(store.byId(id)?.oracle_gold ?? false);
   let rows = $state<QuestionRow[]>([]);
   let loading = $state(true);
   let verdict = $state<"all" | "correct" | "wrong" | "abstain" | "error">("all");
@@ -150,6 +154,18 @@
     return Array.isArray(calls) ? (calls as AnswererCallDebug[]) : [];
   }
 
+  // The EXACT context handed to the answerer (first call). This is the ground truth of what the
+  // model saw — distinct from the recall "Search Results", which can differ (oracle mode bypasses
+  // recall entirely; cuts/dedup also reshape it). Each item is "[type: ... ] <content>".
+  function answererContextItems(calls: AnswererCallDebug[]): string[] {
+    const ctx = calls[0]?.context;
+    return Array.isArray(ctx) ? ctx.map((x) => String(x)) : [];
+  }
+  function parseContextItem(raw: string): { type: string; content: string } {
+    const m = raw.match(/^\[type:\s*([a-z_]+)[^\]]*\]\s*([\s\S]*)$/);
+    return m ? { type: m[1], content: m[2] } : { type: "?", content: raw };
+  }
+
   function unknownText(value: unknown): string {
     if (value == null) return "—";
     if (typeof value === "string") return value;
@@ -254,6 +270,9 @@
           <span class="chip {active.label === true ? 'green' : active.label === false ? 'red' : ''}">
             {active.label === true ? "CORRECT" : active.label === false ? "WRONG" : "UNSCORED"}
           </span>
+          {#if oracleGold}
+            <span class="chip gold" title="Oracle-gold run: the answerer was fed gold-session evidence directly (reader-ceiling method), bypassing recall">G</span>
+          {/if}
           <span class="did mono-num">{active.question_id}</span>
           <button class="x" onclick={() => (active = null)}>✕</button>
         </div>
@@ -275,12 +294,46 @@
             </div>
           </section>
 
+          {#if active.judge_system_prompt || active.judge_user_prompt}
+            <section class="debug-section">
+              <h3>Judge Input — the exact prompt sent to the grader</h3>
+              <div class="kv">
+                <span class="label">GRADER</span>
+                <div>{active.judge_model ?? "—"} · {active.question_type ?? "—"} prompt → <b class:up={active.label} class:down={active.label === false}>{active.judge_raw ?? "—"}</b></div>
+              </div>
+              <div class="debug-grid">
+                <div class="mini full"><span class="label">JUDGE SYSTEM PROMPT</span><pre>{active.judge_system_prompt ?? "—"}</pre></div>
+                <div class="mini full"><span class="label">JUDGE USER MESSAGE</span><pre>{active.judge_user_prompt ?? "—"}</pre></div>
+              </div>
+            </section>
+          {/if}
+
           {#if active.debug_artifact}
             {#if debugLoading[active.debug_artifact]}
               <section class="debug-section"><h3>Debug</h3><div class="txt faint">LOADING QUESTION DEBUG…</div></section>
             {:else if debugError[active.debug_artifact]}
               <section class="debug-section"><h3>Debug</h3><div class="txt down">{debugError[active.debug_artifact]}</div></section>
             {:else}
+              {@const ctxItems = answererContextItems(calls)}
+              <section class="debug-section">
+                <h3>Answerer Context — what the model actually received</h3>
+                <div class="pmeta">
+                  <span><b>{ctxItems.length}</b> items fed to the answerer</span>
+                  {#if oracleGold}<span class="gold-meta">GOLD · ORACLE — this context is gold-session evidence (score 1.000), fed directly; recall below is diagnostic only</span>{/if}
+                  <span>Search Results / Rerank below are retrieval candidates — NOT necessarily fed (oracle mode bypasses recall; cuts reshape it)</span>
+                </div>
+                <div class="search-profile">
+                  {#each ctxItems as item, i (`ctx-${i}`)}
+                    {@const p = parseContextItem(item)}
+                    <div class="result">
+                      <div class="rmeta"><span>#{i + 1}</span><span>{p.type}</span></div>
+                      <pre>{p.content}</pre>
+                    </div>
+                  {/each}
+                  {#if !ctxItems.length}<pre>— no answerer context recorded —</pre>{/if}
+                </div>
+              </section>
+
               <section class="debug-section">
                 <h3>Base Search Prompt</h3>
                 <div class="pmeta">
@@ -315,7 +368,7 @@
               </section>
 
               <section class="debug-section">
-                <h3>Search Results</h3>
+                <h3>Search Results — retrieval candidates (not necessarily fed to the answerer)</h3>
                 <details class="prompt" open>
                   <summary>INITIAL SEARCH RESPONSE · {profileCount(recall?.initial_profile)}</summary>
                   {@render searchProfile(recall?.initial_profile)}
@@ -670,6 +723,12 @@
   }
   .pmeta b {
     color: var(--text);
+    font-weight: 600;
+  }
+  .pmeta .gold-meta {
+    color: var(--gold);
+    border-color: var(--gold-dim);
+    background: rgba(232, 195, 74, 0.08);
     font-weight: 600;
   }
   .mini {

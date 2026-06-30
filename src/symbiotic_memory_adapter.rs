@@ -46,6 +46,22 @@ use symbiotic_queue::{
     QueueStatus as DurableQueueStatus, SqliteQueue,
 };
 
+/// The reranker configuration threaded from the harness into the `RecallEngine`. Carries the main
+/// (stage-2) reranker plus an optional cheap stage-1 prefilter reranker and its top-x cut. Built by
+/// `membench`'s `reranker()` from the `SYMEM_RERANK*` env knobs; a `None` cascade (or a cascade with
+/// `main == None`) means rerank is disabled.
+#[cfg(feature = "symbiotic-memory-adapter")]
+#[derive(Clone, Default)]
+pub struct RerankCascade {
+    /// Main (stage-2) reranker. `None` when SYMEM_RERANK is off.
+    pub main: Option<Arc<dyn Reranker>>,
+    /// Optional cheap stage-1 prefilter reranker (enabled when SYMEM_RERANK_STAGE1_MODEL is set).
+    pub stage1: Option<Arc<dyn Reranker>>,
+    /// Stage-1 -> stage-2 count cut (SYMEM_RERANK_STAGE1_TOP_X, default 20). Only meaningful when
+    /// `stage1` is present.
+    pub stage1_top_x: usize,
+}
+
 fn current_reference_datetime() -> String {
     Local::now().to_rfc3339_opts(SecondsFormat::Secs, false)
 }
@@ -95,6 +111,10 @@ pub struct LongMemEvalRecord {
     pub question: String,
     pub question_date: Option<String>,
     pub answer: Option<Value>,
+    /// Gold evidence session ids (`answer_<hash>[_<N>]`); the pieces a correct
+    /// answer must draw on. Used by `gold-eval` to ground retrieval coverage.
+    #[serde(default)]
+    pub answer_session_ids: Vec<String>,
     pub haystack_dates: Vec<String>,
     pub haystack_session_ids: Vec<String>,
     pub haystack_sessions: Vec<Vec<LongMemEvalMessage>>,
@@ -104,6 +124,10 @@ pub struct LongMemEvalRecord {
 pub struct LongMemEvalMessage {
     pub role: String,
     pub content: String,
+    /// LongMemEval ground-truth turn-level evidence flag: true on the exact turns that contain the
+    /// answer. Most turns are false (assistant lectures, chit-chat, adjacent topics = noise).
+    #[serde(default)]
+    pub has_answer: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -257,7 +281,12 @@ pub fn longmemeval_to_source(record: &LongMemEvalRecord) -> SourceDocument {
                 turn_id: format!("{session_id}:{msg_idx}"),
                 source_id: record.question_id.clone(),
                 speaker: Some(msg.role.clone()),
-                event_time: session_time,
+                // The LongMemEval haystack date is when the session was held — i.e. the capture
+                // timestamp. A raw turn is never a resolved event, so event_time is None and
+                // ingested_at is stamped at persist time.
+                captured_at: session_time,
+                event_time: None,
+                ingested_at: None,
                 text: msg.content.clone(),
                 ordinal: turns.len(),
             });
@@ -435,7 +464,7 @@ where
         chat_factory,
         None,
         None,
-        None,
+        RerankCascade::default(),
         None,
         None,
         policy,
@@ -461,7 +490,7 @@ pub async fn run_longmemeval_sqlite_with_planner<E, D, C>(
     chat_factory: impl Fn() -> C + Send + Sync + 'static,
     answer_retry_factory: Option<Arc<dyn Fn() -> Arc<dyn ChatProvider> + Send + Sync>>,
     planner_factory: Option<Arc<dyn Fn() -> Arc<dyn QueryPlanner> + Send + Sync>>,
-    reranker: Option<Arc<dyn Reranker>>,
+    reranker: RerankCascade,
     debug_metadata: Option<BenchDebugMetadata>,
     memory_trace_sink: Option<Arc<dyn MemoryTraceSink>>,
     policy: symbiotic_memory::config::RecallPolicy,
@@ -538,7 +567,7 @@ pub async fn run_longmemeval_sqlite_with_workflow_queue<E, D, C>(
     chat_factory: impl Fn() -> C + Send + Sync + 'static,
     answer_retry_factory: Option<Arc<dyn Fn() -> Arc<dyn ChatProvider> + Send + Sync>>,
     planner_factory: Option<Arc<dyn Fn() -> Arc<dyn QueryPlanner> + Send + Sync>>,
-    reranker: Option<Arc<dyn Reranker>>,
+    reranker: RerankCascade,
     debug_metadata: Option<BenchDebugMetadata>,
     memory_trace_sink: Option<Arc<dyn MemoryTraceSink>>,
     policy: symbiotic_memory::config::RecallPolicy,
@@ -1102,6 +1131,23 @@ fn strict_zvec_manifest_validation() -> bool {
         .unwrap_or(false)
 }
 
+/// SYMEM_IGNORE_SOURCE_HASH opt-out for the answer-only manifest gate. A field-name rename in
+/// `SourceDocument` changes the serialized shape (and thus `source_shape_hash`) even when the
+/// underlying source DATA is unchanged, which makes the answer-only path refuse to reuse a golden
+/// vault. When this is set, the gate logs a warning and proceeds instead of refusing. Off by default.
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn ignore_source_hash() -> bool {
+    std::env::var("SYMEM_IGNORE_SOURCE_HASH")
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "on" | "yes"
+            )
+        })
+        .unwrap_or(false)
+}
+
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn zvec_flush_before_recall() -> bool {
     std::env::var("SYMEM_ZVEC_SKIP_FLUSH_BEFORE_RECALL")
@@ -1338,6 +1384,36 @@ impl MemoryStore for BenchMemoryStore {
             Self::ZvecHybrid(store) => store.raw_turn_search(query_embedding, query, top_k).await,
         }
     }
+
+    async fn get_turns_by_turn_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<RawTurnEvidence>, symbiotic_memory::storage::StoreError> {
+        match self {
+            Self::Sqlite(store) => store.get_turns_by_turn_ids(ids).await,
+            Self::ZvecHybrid(store) => store.get_turns_by_turn_ids(ids).await,
+        }
+    }
+
+    async fn get_facts_by_source_turn_ids(
+        &self,
+        turn_ids: &[String],
+    ) -> Result<Vec<FactEvidence>, symbiotic_memory::storage::StoreError> {
+        match self {
+            Self::Sqlite(store) => store.get_facts_by_source_turn_ids(turn_ids).await,
+            Self::ZvecHybrid(store) => store.get_facts_by_source_turn_ids(turn_ids).await,
+        }
+    }
+
+    async fn get_facts_by_memory_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<FactEvidence>, symbiotic_memory::storage::StoreError> {
+        match self {
+            Self::Sqlite(store) => store.get_facts_by_memory_ids(ids).await,
+            Self::ZvecHybrid(store) => store.get_facts_by_memory_ids(ids).await,
+        }
+    }
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
@@ -1389,7 +1465,7 @@ async fn process_sqlite_row<E, D, C>(
     chat_factory: &(impl Fn() -> C + Send + Sync),
     answer_retry_factory: Option<Arc<dyn Fn() -> Arc<dyn ChatProvider> + Send + Sync>>,
     planner_factory: Option<Arc<dyn Fn() -> Arc<dyn QueryPlanner> + Send + Sync>>,
-    reranker: Option<Arc<dyn Reranker>>,
+    reranker: RerankCascade,
     debug_metadata: Option<BenchDebugMetadata>,
     memory_trace_sink: Option<Arc<dyn MemoryTraceSink>>,
     policy: symbiotic_memory::config::RecallPolicy,
@@ -1459,10 +1535,22 @@ where
         manifest
     });
     if manifest.source_hash != source_hash {
-        anyhow::bail!(
-            "vault {} manifest source hash changed; use a fresh run root",
-            row.question_id
-        );
+        // SYMEM_IGNORE_SOURCE_HASH opt-out: a field-name rename in SourceDocument changes the
+        // serialized shape (and thus this hash) even though the underlying source DATA is unchanged.
+        // When set, log a warning and PROCEED reusing the existing vault instead of refusing. The
+        // stored manifest source_hash is left untouched (we do not rewrite it), so the check still
+        // fires for anyone who has not opted out.
+        if ignore_source_hash() {
+            eprintln!(
+                "[longmemeval] WARNING: vault {} manifest source hash mismatch (stored={} computed={}); SYMEM_IGNORE_SOURCE_HASH set, proceeding with existing vault",
+                row.question_id, manifest.source_hash, source_hash
+            );
+        } else {
+            anyhow::bail!(
+                "vault {} manifest source hash changed; use a fresh run root",
+                row.question_id
+            );
+        }
     }
     manifest.index_backend = Some(store_backend.to_string());
     manifest.save(&manifest_path)?;
@@ -1509,8 +1597,18 @@ where
     setup_metrics.extend(store_open_metrics);
 
     let step_started = Instant::now();
-    let existing_turns = store.turns().await?;
-    let existing_facts = store.active_facts().await?;
+    let mut existing_turns = store.turns().await?;
+    let mut existing_facts = store.active_facts().await?;
+    // Capture the counts we actually need downstream, then for answer-only — which only ever reads
+    // these counts/emptiness below, never the data itself — free the embeddings immediately instead
+    // of carrying ~100MB/vault through recall+answer. Under buffer_unordered concurrency that
+    // retention was the multi-GB blowup. Re-embed needs the full vectors, so keep them when reembed.
+    let existing_turn_count = existing_turns.len();
+    let existing_fact_count = existing_facts.len();
+    if answer_only && !reembed_mode() {
+        existing_turns = Vec::new();
+        existing_facts = Vec::new();
+    }
     insert_elapsed_ms(
         &mut setup_metrics,
         "load_existing_ms",
@@ -1522,11 +1620,11 @@ where
     );
     setup_metrics.insert(
         "existing_turn_count".to_string(),
-        serde_json::json!(existing_turns.len()),
+        serde_json::json!(existing_turn_count),
     );
     setup_metrics.insert(
         "existing_fact_count".to_string(),
-        serde_json::json!(existing_facts.len()),
+        serde_json::json!(existing_fact_count),
     );
     record_adapter_stage(
         memory_trace_sink.as_ref(),
@@ -1670,8 +1768,8 @@ where
         // fast incremental-flush path in ensure_recall_index instead of a full 12s rebuild.
         incremental_ingest_completed = true;
     } else if answer_only {
-        if existing_turns.is_empty()
-            || existing_facts.is_empty()
+        if existing_turn_count == 0
+            || existing_fact_count == 0
             || !post_ingest_complete(&manifest, consolidate_briefs)
         {
             anyhow::bail!(
@@ -1782,7 +1880,7 @@ where
     }
     let step_started = Instant::now();
     let (fact_count, turn_count) = if answer_only {
-        (existing_facts.len(), existing_turns.len())
+        (existing_fact_count, existing_turn_count)
     } else {
         (
             store.active_facts().await?.len(),
@@ -1853,10 +1951,30 @@ where
     .await;
 
     let answer_retry_chat = answer_retry_factory.as_ref().map(|factory| factory());
+    let RerankCascade {
+        main: reranker_main,
+        stage1: reranker_stage1,
+        stage1_top_x: rerank_stage1_top_x,
+    } = reranker;
+    // Gold-oracle mode: build the answerer's context from ONLY the gold-session turns and hand it to
+    // the engine as a forced context. Recall still runs (so the question-debug profile/plan stay
+    // populated) but its retrieved evidence is discarded before the answerer — the reader sees nothing
+    // but clean gold. None outside oracle mode (or if the record has no resolvable gold sessions),
+    // which leaves the normal recall→rerank→answer path untouched.
+    let gold_oracle_context = if oracle_gold_enabled() {
+        // Always Some in oracle mode — empty for abstention questions (forces an abstain), never a
+        // fallback to the noisy recall path.
+        build_gold_oracle_context(&row)
+    } else {
+        None
+    };
     let mut engine = RecallEngine::new(store, embedder_factory(), chat_factory(), policy)
         .with_optional_answer_retry_chat(answer_retry_chat)
-        .with_optional_reranker(reranker)
+        .with_optional_reranker(reranker_main)
+        .with_optional_reranker_stage1(reranker_stage1.clone())
+        .with_rerank_stage1_top_x(reranker_stage1.is_some().then_some(rerank_stage1_top_x))
         .with_optional_trace_sink(memory_trace_sink.clone())
+        .with_optional_forced_context(gold_oracle_context)
         .with_trace_context(RecallTraceContext::new(
             row.question_id.clone(),
             row.question_id.clone(),
@@ -2672,6 +2790,101 @@ fn raw_embed_only_diagnostic() -> bool {
         .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
 }
 
+/// Gold-oracle mode (`--oracle-gold` / `SYMEM_ORACLE_GOLD=1`). When on, the answerer is fed ONLY the
+/// gold-session raw turns for each question (zero retrieval, zero noise) instead of the recall→rerank
+/// output, isolating the reader so we can tell whether multi-session answers fail from noise/dilution
+/// or because the reader genuinely cannot compile them even with perfect evidence.
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn oracle_gold_enabled() -> bool {
+    std::env::var("SYMEM_ORACLE_GOLD")
+        .ok()
+        .is_some_and(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES"))
+}
+
+/// Assemble the gold-oracle context: the raw turns of every gold session, in the order the dataset
+/// lists them, formatted to mirror the recall `source_turn` context style so the answer prompt treats
+/// them exactly as it would real retrieved turns. Each gold session id in `answer_session_ids` is
+/// resolved to its slot in `haystack_session_ids`, and that session's turns are emitted one context
+/// string per turn. `captured_at` is the session's haystack date (when the conversation was held);
+/// `score` is fixed at 1.000 (these are gold, not ranked). Always returns `Some` — an EMPTY list for
+/// abstention questions (no `has_answer` turns), which correctly forces the answerer to abstain instead
+/// of falling back to noisy recall.
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn build_gold_oracle_context(row: &LongMemEvalRecord) -> Option<Vec<String>> {
+    // EXACT-evidence oracle: feed the answerer ONLY the dataset's `has_answer:true` turns — the
+    // ground-truth marked evidence (typically 2-6 turns of ~480). NOT whole gold sessions: a gold
+    // session is a long conversation dominated by assistant lectures / chit-chat / adjacent topics
+    // that are noise. Scan all sessions and keep only the marked turns, so the answerer sees the
+    // minimal exact list and nothing else.
+    // Two env-gated context-shaping levers (both default OFF = original behavior):
+    //   SYMEM_ORACLE_SORT_BY_DATE=1 → emit turns in chronological captured_at order (across sessions),
+    //                                 not haystack-session order — a clean timeline to count along.
+    //   SYMEM_ORACLE_DROP_SCORE=1   → omit the fixed "score: 1.000" tag, which is pure noise on gold.
+    let sort_by_date = std::env::var("SYMEM_ORACLE_SORT_BY_DATE")
+        .map(|v| matches!(v.trim(), "1" | "on" | "true" | "yes"))
+        .unwrap_or(false);
+    let drop_score = std::env::var("SYMEM_ORACLE_DROP_SCORE")
+        .map(|v| matches!(v.trim(), "1" | "on" | "true" | "yes"))
+        .unwrap_or(false);
+    // (captured_at, original_seq, rendered_line) — captured_at is rfc3339 so it sorts chronologically;
+    // "unknown" sorts last; original_seq is a stable tiebreaker so same-date turns keep their order.
+    let mut items: Vec<(String, usize, String)> = Vec::new();
+    let mut seq = 0usize;
+    for (idx, session) in row.haystack_sessions.iter().enumerate() {
+        let session_id = row
+            .haystack_session_ids
+            .get(idx)
+            .map(|s| s.as_str())
+            .unwrap_or("unknown");
+        let captured_at = row
+            .haystack_dates
+            .get(idx)
+            .and_then(|date| parse_longmemeval_datetime(date))
+            .map(|t| t.to_rfc3339())
+            .unwrap_or_else(|| "unknown".to_string());
+        for (msg_idx, msg) in session.iter().enumerate() {
+            if !msg.has_answer {
+                continue;
+            }
+            let line = if drop_score {
+                format!(
+                    "[type: source_turn | source_id: {} | turn_id: {}:{} | ordinal: {} | speaker: {} | captured_at: {}] {}",
+                    row.question_id,
+                    session_id,
+                    msg_idx,
+                    msg_idx,
+                    msg.role,
+                    captured_at,
+                    msg.content,
+                )
+            } else {
+                format!(
+                    "[type: source_turn | source_id: {} | turn_id: {}:{} | ordinal: {} | speaker: {} | captured_at: {} | score: {:.3}] {}",
+                    row.question_id,
+                    session_id,
+                    msg_idx,
+                    msg_idx,
+                    msg.role,
+                    captured_at,
+                    1.0_f32,
+                    msg.content,
+                )
+            };
+            items.push((captured_at.clone(), seq, line));
+            seq += 1;
+        }
+    }
+    if sort_by_date {
+        items.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    }
+    let context: Vec<String> = items.into_iter().map(|(_, _, line)| line).collect();
+    // Always force the oracle context — even when empty. An empty list is the CORRECT oracle input for
+    // abstention questions (no `has_answer` turns): the answerer sees no evidence and abstains, which is
+    // the right answer. Returning None instead fell back to normal noisy recall (briefs + ranked facts),
+    // contaminating the abstention subset and triggering false answers. (The "briefs on abstention Qs" bug.)
+    Some(context)
+}
+
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn workflow_max_attempts() -> u32 {
     std::env::var("SYMEM_WORKFLOW_MAX_ATTEMPTS")
@@ -3088,7 +3301,7 @@ mod tests {
         assert_eq!(source.turns.len(), 2);
         assert_eq!(source.turns[0].turn_id, "s1:0");
         assert_eq!(
-            source.turns[0].event_time.unwrap().to_rfc3339(),
+            source.turns[0].captured_at.unwrap().to_rfc3339(),
             "2023-01-01T00:00:00+00:00"
         );
     }
@@ -3357,11 +3570,12 @@ mod tests {
                         &receipt.receipt_id,
                         &turn.turn_id,
                     )
-                    .with_captured_at(turn.event_time),
+                    .with_captured_at(turn.captured_at),
                 ],
             );
-            fact.event_time = turn.event_time;
-            fact.valid_from = turn.event_time;
+            fact.captured_at = turn.captured_at;
+            fact.event_time = turn.captured_at;
+            fact.valid_from = turn.captured_at;
             self.active.fetch_sub(1, Ordering::SeqCst);
             Ok(vec![fact])
         }
@@ -3508,11 +3722,12 @@ mod tests {
                         &receipt.receipt_id,
                         &turn.turn_id,
                     )
-                    .with_captured_at(turn.event_time),
+                    .with_captured_at(turn.captured_at),
                 ],
             );
-            fact.event_time = turn.event_time;
-            fact.valid_from = turn.event_time;
+            fact.captured_at = turn.captured_at;
+            fact.event_time = turn.captured_at;
+            fact.valid_from = turn.captured_at;
             Ok(vec![fact])
         }
     }

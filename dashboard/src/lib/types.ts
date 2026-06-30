@@ -29,6 +29,8 @@ export interface RunSummary {
   dataset_fingerprint: string | null;
   judge_model: string | null;
   judge_prompt_mode: string | null;
+  /** Oracle-gold run: gold evidence fed straight to the answerer (reader-ceiling method). */
+  oracle_gold: boolean;
   created_at: string | null;
   modified_ms: number | null;
   per_question_type: Record<string, QTypeScore> | null;
@@ -88,6 +90,8 @@ export interface QuestionRow {
   label: boolean | null;
   is_abstention: boolean | null;
   judge_raw: string | null;
+  judge_system_prompt: string | null;
+  judge_user_prompt: string | null;
   judge_model: string | null;
   router_pick: string | null;
   initial_pick: string | null;
@@ -228,7 +232,7 @@ export interface RunDetail {
     dataset_fingerprint: string | null;
     judge_model: string | null;
     judge_prompt_mode: string | null;
-    models: { answer?: string; distill?: string; embed?: string; judge?: string };
+    models: { answer?: string; distill?: string; embed?: string; rerank?: string; judge?: string };
     role_stats: ModelStat[];
     config_signature: string;
     cost_micro_usd: number | null;
@@ -501,6 +505,8 @@ export interface PendingRun {
   age_secs: number | null;
   hypotheses: number;
   ingested: number;
+  /** Oracle-gold run: gold evidence fed straight to the answerer (reader-ceiling method). */
+  oracle_gold: boolean;
 }
 
 export interface QueuePressure {
@@ -628,3 +634,72 @@ export const QTYPES = [
   "temporal-reasoning",
   "knowledge-update",
 ] as const;
+
+// `gold-eval.json` — gold-evidence coverage per run (membench gold-eval).
+export type GoldClass = "correct" | "reader_fail" | "retrieval_gap";
+
+export interface GoldEvalQuestion {
+  qid: string;
+  type: string | null;
+  answer: unknown;
+  n_gold_pieces: number;
+  covered_pieces: number;
+  missing_pieces: string[];
+  covered_by_fact: number;
+  covered_by_raw: number;
+  gold_top_rank: number | null;
+  gold_deepest_rank: number | null;
+  // Deepest (worst) gold turn's rank among the RAW-TURN candidates, re-ranked
+  // among themselves by embedding score (embed) and by rerank score (rerank).
+  // Null when no gold turn appears in the candidate set. Comparable across runs.
+  gold_embed_rank: number | null;
+  gold_rerank_rank: number | null;
+  gold_turns_in_set: number;
+  gold_turns_total: number;
+  correct: boolean;
+  abstained: boolean;
+  class: GoldClass;
+}
+
+// Top-N recall of the deepest gold turn, after embedding vs after rerank.
+export interface GoldRankDistribution {
+  n: number;
+  within_10: number;
+  within_20: number;
+  within_50: number;
+  within_100: number;
+  mean: number;
+}
+
+export interface GoldRankSummary {
+  embed: GoldRankDistribution;
+  rerank: GoldRankDistribution;
+  gold_turns_in_set: number;
+  gold_turns_total: number;
+  gold_turn_in_set_pct: number;
+}
+
+export interface GoldEvalSummary {
+  total: number;
+  correct: number;
+  wrong: number;
+  abstained: number;
+  single_piece: number;
+  multi_piece: number;
+  gold_pieces_needed: number;
+  gold_pieces_covered: number;
+  piece_coverage: number;
+  class_counts: Record<GoldClass, number>;
+  coverage_by_source: { fact: number; raw: number; both: number; none: number };
+  // Present on artifacts regenerated after the embed-vs-rerank feature landed;
+  // optional so older gold-eval.json still type-checks.
+  gold_rank?: GoldRankSummary;
+}
+
+export interface GoldEvalResponse {
+  schema_version: number;
+  run_name: string;
+  dataset_path: string;
+  summary: GoldEvalSummary;
+  questions: GoldEvalQuestion[];
+}

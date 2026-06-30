@@ -174,7 +174,7 @@
         <span class="dot"></span>{statusLabel(p.status)}
       </span>
       <span class="ltitle">
-        <span class="lname">{p.run_name}</span>
+        <span class="lname">{p.run_name}{#if p.oracle_gold}<span class="chip gold lgold" title="Oracle-gold run: gold evidence fed straight to the answerer (reader-ceiling method)">G</span>{/if}</span>
         <span class="lmeta">{p.limit}Q · {p.config_label}{#if p.settings_label} · {p.settings_label}{/if}</span>
       </span>
       <span class="lage">updated {fmtAge(p.age_secs)} ago{#if err} · <span class="down">poll err</span>{/if}</span>
@@ -410,6 +410,11 @@
   .lname {
     font-weight: 700;
     color: var(--text);
+  }
+  .lname .lgold {
+    margin-left: 0px;
+    padding: 0 2px;
+    vertical-align: middle;
   }
   .ltitle {
     min-width: 0;

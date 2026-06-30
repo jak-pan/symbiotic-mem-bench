@@ -36,6 +36,11 @@
   <div class="ov fade-in">
     <div class="ov-top">
       <Panel title="Score" tag={s.run_kind}>
+        {#snippet actions()}
+          {#if s.oracle_gold}
+            <span class="gold-badge" title="Oracle-gold run: gold evidence fed straight to the answerer (reader-ceiling method) — not real recall">G</span>
+          {/if}
+        {/snippet}
         <div class="score-row">
           <RingGauge value={s.accuracy} label="overall" color="var(--amber)" />
           <div class="tiles">
@@ -55,10 +60,15 @@
 
       <Panel title="Cohort & Models">
         <dl class="kv">
+          {#if s.oracle_gold}
+            <dt>EVIDENCE</dt><dd class="gold">GOLD · oracle (recall bypassed)</dd>
+          {/if}
           <dt>JUDGE</dt><dd class="amber">{c.judge_model ?? "—"}</dd>
+          <dt>JUDGE·MODE</dt><dd class:amber={c.judge_prompt_mode === "official"}>{c.judge_prompt_mode ?? "legacy"}</dd>
           <dt>ANSWER</dt><dd>{c.models?.answer ?? "—"}</dd>
           <dt>DISTILL</dt><dd>{c.models?.distill ?? "—"}</dd>
           <dt>EMBED</dt><dd>{c.models?.embed ?? "—"}</dd>
+          <dt>RERANK</dt><dd class:dim={!c.models?.rerank}>{c.models?.rerank ?? "none"}</dd>
           <dt>QSET·FP</dt><dd class="mono-num">{shortHash(c.dataset_fingerprint, 16)}</dd>
           <dt>CFG·SIG</dt><dd class="mono-num">{shortHash(c.config_signature, 16)}</dd>
           <dt>COHORT</dt><dd class="mono-num">{shortHash(s.cohort_id, 16)}</dd>
@@ -372,5 +382,18 @@
   }
   .dim {
     color: var(--text-dim);
+  }
+  .gold {
+    color: var(--gold);
+  }
+  .gold-badge {
+    border: 1px solid var(--gold);
+    background: rgba(232, 195, 74, 0.12);
+    color: var(--gold);
+    font-family: var(--sans);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    padding: 2px 7px;
   }
 </style>

@@ -6,6 +6,9 @@
 !/.env.example
 !/.env.test.local.example
 
+# Run artifacts (large; excluded from the repo share)
+/records
+
 # Dashboard build artifacts (the Svelte source under dashboard/src is tracked)
 /dashboard/node_modules
 /dashboard/dist

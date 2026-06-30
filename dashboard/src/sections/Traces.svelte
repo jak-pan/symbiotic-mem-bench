@@ -23,6 +23,12 @@
   const data = $derived(ad.data);
   const loading = $derived(ad.loading);
 
+  // Provider queue summary is opt-in — it only earns the real estate when a user
+  // explicitly wants per-queue percentiles (the bottleneck overview already
+  // surfaces the slow ones). Collapsed by default + a name filter.
+  let showQueueSummary = $state(false);
+  let queueFilter = $state("");
+
   // Aggregated per-queue timing. Sort each sample once and index for all four
   // percentiles (previously every percentile re-sorted a fresh copy).
   const queueSummaries = $derived.by<QueueSummaryRow[]>(() => {
@@ -58,6 +64,12 @@
         };
       })
       .sort((a, b) => num(b.total_p98) - num(a.total_p98));
+  });
+
+  const filteredQueueSummaries = $derived.by<QueueSummaryRow[]>(() => {
+    const needle = queueFilter.trim().toLowerCase();
+    if (!needle) return queueSummaries;
+    return queueSummaries.filter((row) => row.name.toLowerCase().includes(needle));
   });
 
   function percentileSorted(values: number[], p: number): number | null {
@@ -260,29 +272,28 @@
     {/if}
 
     {#if queueSummaries.length}
-      <Panel title="Provider Queue Summary" tag="{queueSummaries.length} queues" flush scroll>
-        <QueueSummaryTable rows={queueSummaries} />
-      </Panel>
-    {/if}
-
-    {#if data.queue_timing && data.queue_timing.length}
-      <Panel title="Provider Queue Timing" tag="{data.queue_timing.length} items" flush scroll>
-        <table class="grid">
-          <thead><tr><th>Queue</th><th>Op</th><th class="num">Attempts</th><th class="num">Wait</th><th class="num">Run</th><th class="num">Total</th><th>Status</th></tr></thead>
-          <tbody>
-            {#each data.queue_timing.slice(0, 300) as q (q.queue_id + q.item_id)}
-              <tr>
-                <td class="mono-num dim">{q.queue_id}</td>
-                <td>{q.operation}</td>
-                <td class="num mono-num">{q.attempts}</td>
-                <td class="num mono-num dim">{ms(q.wait_ms)}</td>
-                <td class="num mono-num dim">{ms(q.run_ms)}</td>
-                <td class="num mono-num">{ms(q.total_ms)}</td>
-                <td><span class:up={q.final_status === "succeeded"} class:down={q.final_status === "failed" || q.final_status === "dead"}>{q.final_status ?? "—"}</span></td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
+      <Panel title="Provider Queue Summary" tag="{queueSummaries.length} queues" flush scroll={showQueueSummary}>
+        {#snippet actions()}
+          {#if showQueueSummary}
+            <input
+              class="qfilter"
+              bind:value={queueFilter}
+              placeholder="filter queue…"
+              spellcheck="false"
+              aria-label="Filter provider queues"
+            />
+          {/if}
+          <button class="qtoggle" onclick={() => (showQueueSummary = !showQueueSummary)} aria-expanded={showQueueSummary}>
+            {showQueueSummary ? "hide" : "show"}
+          </button>
+        {/snippet}
+        {#if showQueueSummary}
+          {#if filteredQueueSummaries.length}
+            <QueueSummaryTable rows={filteredQueueSummaries} />
+          {:else}
+            <div class="qempty">No queues match “{queueFilter}”.</div>
+          {/if}
+        {/if}
       </Panel>
     {/if}
 
@@ -504,5 +515,35 @@
   }
   .faint {
     color: var(--text-faint);
+  }
+  .qtoggle {
+    background: var(--bg-panel);
+    border: 1px solid var(--border-bright);
+    color: var(--text-dim);
+    font: inherit;
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 2px 8px;
+    cursor: pointer;
+  }
+  .qtoggle:hover {
+    color: var(--text);
+    border-color: var(--amber);
+  }
+  .qfilter {
+    background: var(--bg-panel);
+    border: 1px solid var(--border-bright);
+    color: var(--text);
+    font: inherit;
+    font-size: 10px;
+    min-height: 22px;
+    padding: 2px 7px;
+    width: 160px;
+  }
+  .qempty {
+    padding: 10px;
+    color: var(--text-faint);
+    font-size: 11px;
   }
 </style>

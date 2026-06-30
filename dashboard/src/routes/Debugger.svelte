@@ -8,6 +8,7 @@
   import Questions from "../sections/Questions.svelte";
   import Compare from "../sections/Compare.svelte";
   import Traces from "../sections/Traces.svelte";
+  import GoldCoverage from "../sections/GoldCoverage.svelte";
   import Tuner from "../sections/Tuner.svelte";
   import Live from "../sections/Live.svelte";
 
@@ -22,6 +23,7 @@
       ["questions", "QUESTIONS"],
       ["compare", "COMPARE"],
       ["traces", "TRACES"],
+      ["gold-coverage", "GOLD COVERAGE"],
     ] as const;
     const live = hasNativeState ? ([["live", "LIVE"]] as const) : [];
     return [...base, ...live, ["tuner", "TUNER"] as const];
@@ -46,6 +48,7 @@
           <span class="rid">{selectedId}</span>
         {:else if selected}
           <span class="rk {runKindChipClass(selected.run_kind)} chip">{runKindLabel(selected.run_kind)}</span>
+          {#if selected.oracle_gold}<span class="rk chip gold" title="Oracle-gold run: gold evidence fed straight to the answerer (reader-ceiling method)">G</span>{/if}
           {#if selected.is_trial_run}<span class="rk chip amber">{trialBadge(selected)}</span>{/if}
           <span class="rid">{selected.run_id}</span>
         {:else}
@@ -76,6 +79,8 @@
         <Compare id={selectedId} {selected} />
       {:else if activeTab === "traces"}
         <Traces id={selectedId} />
+      {:else if activeTab === "gold-coverage"}
+        <GoldCoverage id={selectedId} />
       {:else if activeTab === "live" && hasNativeState}
         <Live id={selectedId} />
       {:else if activeTab === "tuner"}

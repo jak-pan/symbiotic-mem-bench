@@ -204,6 +204,13 @@ a {
   border-color: var(--cyan-dim);
   background: rgba(70, 169, 255, 0.07);
 }
+.chip.gold {
+  color: var(--gold);
+  border-color: var(--gold-dim);
+  background: rgba(232, 195, 74, 0.1);
+  margin-left: 0px;
+  padding: 0 2px;
+}
 
 /* Kind chip used across the trace panels (memory / provider lanes, etc.). */
 .bkind {

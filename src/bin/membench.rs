@@ -99,6 +99,19 @@ struct Cli {
     no_routed: bool,
     #[arg(long)]
     answer_only: bool,
+    /// Re-judge an existing run's stored hypotheses with the current judge (default: the official
+    /// per-question-type LongMemEval grader) WITHOUT re-answering. Reuses the run root named by
+    /// --run-name, reads its hypotheses.jsonl, rewrites verdicts/score-summary/report. Cheap (judge
+    /// calls only); swap graders via SYMEM_JUDGE_PROMPT_MODE.
+    #[arg(long)]
+    rejudge: bool,
+    /// Gold-oracle answer mode: feed the answerer ONLY the gold-session raw turns (zero retrieval,
+    /// zero noise) instead of the recall→rerank output, isolating the reader from retrieval. Recall
+    /// still runs (the question-debug profile stays populated) but its evidence never reaches the
+    /// answerer. Same answerer/judge/scoring path as a normal run — the only variable is clean-gold
+    /// vs retrieved-noisy context. Also honored via `SYMEM_ORACLE_GOLD=1`.
+    #[arg(long)]
+    oracle_gold: bool,
     /// Re-embed an existing vault's facts+turns (from --source-vault-root) with the current
     /// embedder/enrichment and rebuild the index — reuses distill, no LLM re-distill.
     #[arg(long)]
@@ -264,6 +277,14 @@ enum Command {
     Trials {
         #[command(subcommand)]
         command: TrialsCommand,
+    },
+    /// Join a run's kept facts + verdicts with the dataset's gold annotation and
+    /// classify each question: correct / reader_fail (gold present, reader missed)
+    /// / retrieval_gap (a gold piece missing). Writes `artifacts/gold-eval.json`.
+    GoldEval {
+        /// Run dir name under `runs/.../<limit>/<name>`, or an explicit path.
+        #[arg(long)]
+        run: String,
     },
 }
 
@@ -435,6 +456,7 @@ fn main() -> anyhow::Result<()> {
                     force,
                 }),
             },
+            Command::GoldEval { run } => gold_eval(&run),
         };
     }
 
@@ -1329,6 +1351,15 @@ fn run_selected_benchmark(cli: Cli) -> anyhow::Result<()> {
         "--benchmark or --long-mem-eval",
     )?;
 
+    // Gold-oracle mode is consumed per-question inside the in-process adapter via SYMEM_ORACLE_GOLD;
+    // the `--oracle-gold` flag just exports it here. Safe to set_var now: this runs single-threaded,
+    // before any tokio runtime/worker threads spawn (the runtime is built inside the run fn below).
+    if cli.oracle_gold {
+        unsafe {
+            std::env::set_var("SYMEM_ORACLE_GOLD", "1");
+        }
+    }
+
     match (system.as_str(), benchmark.as_str()) {
         ("symbiotic-memory", "long-mem-eval") => {
             if cli.import_report {
@@ -1442,7 +1473,7 @@ fn run_selected_benchmark(cli: Cli) -> anyhow::Result<()> {
                         )
                     }
                 });
-            let fresh = effective_fresh(cli.resume, cli.answer_only, cli.fresh)?;
+            let fresh = effective_fresh(cli.resume, cli.answer_only, cli.rejudge, cli.fresh)?;
             let dataset = resolve_longmemeval_dataset(cli.dataset)?;
             run_symbiotic_memory_longmemeval(SymbioticMemoryCliRun {
                 dataset,
@@ -1461,6 +1492,7 @@ fn run_selected_benchmark(cli: Cli) -> anyhow::Result<()> {
                 answerer,
                 routed,
                 answer_only: cli.answer_only,
+                rejudge: cli.rejudge,
                 re_embed: cli.re_embed,
                 consolidate_briefs,
                 stop_after_raw_embed: cli.stop_after_raw_embed,
@@ -1528,16 +1560,21 @@ fn selected_value(
     }
 }
 
-fn effective_fresh(resume: bool, answer_only: bool, explicit_fresh: bool) -> anyhow::Result<bool> {
+fn effective_fresh(
+    resume: bool,
+    answer_only: bool,
+    rejudge: bool,
+    explicit_fresh: bool,
+) -> anyhow::Result<bool> {
     if resume && explicit_fresh {
         anyhow::bail!("choose either --resume or --fresh, not both");
     }
-    if answer_only && explicit_fresh {
+    if (answer_only || rejudge) && explicit_fresh {
         anyhow::bail!(
-            "--answer-only reuses an existing run root and cannot be combined with --fresh"
+            "--answer-only/--rejudge reuse an existing run root and cannot be combined with --fresh"
         );
     }
-    Ok(!resume && !answer_only)
+    Ok(!resume && !answer_only && !rejudge)
 }
 
 fn repo_root() -> PathBuf {
@@ -1811,6 +1848,7 @@ fn enrich_report_with_cohort(
     report["metrics"]["cache"] = json!({
         "cached_input_tokens": fields.cached_input_tokens,
         "uncached_input_tokens": fields.uncached_input_tokens,
+        "output_tokens": fields.output_tokens,
         "response_cache_hits": fields.response_cache_hits,
         "prompt_cache_hits": fields.prompt_cache_hits,
         "prompt_cache_partial_hits": fields.prompt_cache_partial_hits,
@@ -2525,6 +2563,519 @@ fn resolve_source_vault_root(value: &Path) -> PathBuf {
     resolve_source_vault_root_with_store(value, vault_store_dir_opt().as_deref())
 }
 
+/// The gold-evidence piece a turn belongs to. Turn ids look like
+/// `answer_<hash>[_<N>]:<turn_index>`; the piece is everything before the first
+/// `:`. NB: split on `:` only — never strip the trailing `_N`, which would
+/// collapse `answer_X_1..answer_X_4` into one piece (a verified prior bug).
+fn gold_piece_of_turn(turn_id: &str) -> &str {
+    turn_id.split(':').next().unwrap_or(turn_id)
+}
+
+/// True when an answerer evidence id is a raw conversation turn (a turn id like
+/// `<hash>_<N>:<M>`) rather than a distilled `mem-` fact or a `brief-` summary.
+fn evidence_id_is_raw_turn(id: &str) -> bool {
+    id.contains(':') && !id.starts_with("mem-") && !id.starts_with("brief-")
+}
+
+/// The turn-level gold set for one record: every `<session_id>:<turn_index>`
+/// whose message carries `has_answer == true`. This is finer-grained than the
+/// session-level `answer_session_ids`, and is what the rerank trace ranks (its
+/// raw candidates are turn ids). `haystack_session_ids[sk]` names session `sk`
+/// and `haystack_sessions[sk][ti]` is its `ti`-th turn.
+fn gold_turn_ids(
+    record: &symbiotic_mem_bench::symbiotic_memory_adapter::LongMemEvalRecord,
+) -> BTreeSet<String> {
+    let mut gold = BTreeSet::new();
+    for (sk, session) in record.haystack_sessions.iter().enumerate() {
+        let Some(session_id) = record.haystack_session_ids.get(sk) else {
+            continue;
+        };
+        for (ti, message) in session.iter().enumerate() {
+            if message.has_answer {
+                gold.insert(format!("{session_id}:{ti}"));
+            }
+        }
+    }
+    gold
+}
+
+/// One raw-turn rerank candidate, normalized away from the merged-vs-separate
+/// trace artifact: an id stripped of any `raw:` prefix plus its two scores.
+struct RawCand {
+    id: String,
+    embedding_score: f64,
+    rerank_score: f64,
+}
+
+/// Pull the raw-turn candidates out of a `rerank_trace`, regardless of trace
+/// shape, so embed/rerank ranks compare fairly across runs:
+///   - **merged** trace (`candidate_type:"merged"`): keep only ids beginning
+///     `raw:`, strip that prefix. (Their global `embedding_rank` is polluted by
+///     interleaved facts, so we ignore it and re-rank by score below.)
+///   - **separate** trace (`candidate_type:"raw_turn"`): the candidate list is
+///     already raw-only with bare ids.
+/// Missing scores fall back to `-inf` (embedding) / `final_rank` is folded in by
+/// the caller; a candidate with neither a rerank score nor a final rank sorts
+/// last. Returns the de-duplicated raw candidates (first occurrence wins).
+fn raw_turn_candidates(traces: &[Value]) -> Vec<RawCand> {
+    let mut out: Vec<RawCand> = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for trace in traces {
+        let ctype = trace
+            .get("candidate_type")
+            .and_then(|t| t.as_str())
+            .unwrap_or("");
+        let merged = ctype == "merged";
+        if !merged && ctype != "raw_turn" {
+            continue;
+        }
+        let Some(candidates) = trace.get("candidates").and_then(|list| list.as_array()) else {
+            continue;
+        };
+        for candidate in candidates {
+            let Some(raw_id) = candidate.get("candidate_id").and_then(|c| c.as_str()) else {
+                continue;
+            };
+            // In a merged trace, only `raw:`-prefixed candidates are raw turns;
+            // facts/briefs are excluded. In a separate raw_turn trace, ids are
+            // already bare turn ids (tolerate a stray `raw:` prefix anyway).
+            if merged && !raw_id.starts_with("raw:") {
+                continue;
+            }
+            let id = raw_id.strip_prefix("raw:").unwrap_or(raw_id).to_string();
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            let embedding_score = candidate
+                .get("embedding_score")
+                .and_then(|s| s.as_f64())
+                .unwrap_or(f64::NEG_INFINITY);
+            // Prefer the rerank score; fall back to a synthetic score derived
+            // from `final_rank` (lower rank => higher score) so the rerank order
+            // is preserved even when only ranks were recorded.
+            let rerank_score = candidate
+                .get("rerank_score")
+                .and_then(|s| s.as_f64())
+                .or_else(|| {
+                    candidate
+                        .get("final_rank")
+                        .and_then(|r| r.as_f64())
+                        .map(|rank| -rank)
+                })
+                .unwrap_or(f64::NEG_INFINITY);
+            out.push(RawCand {
+                id,
+                embedding_score,
+                rerank_score,
+            });
+        }
+    }
+    out
+}
+
+/// 1-based rank of the **deepest** (worst-ranked) gold turn among the raw-turn
+/// candidates, after re-ranking them *among themselves* by the given key (embed
+/// score or rerank score, both descending). `None` when no gold turn appears in
+/// the candidate set. Ties keep input order, which is stable across the two
+/// passes so a gold turn never floats above an equal-scored neighbor in one pass
+/// and below it in the other.
+fn deepest_gold_rank(
+    cands: &[RawCand],
+    gold: &BTreeSet<String>,
+    key: impl Fn(&RawCand) -> f64,
+) -> Option<usize> {
+    let mut order: Vec<usize> = (0..cands.len()).collect();
+    order.sort_by(|&a, &b| {
+        key(&cands[b])
+            .partial_cmp(&key(&cands[a]))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut deepest = None;
+    for (rank0, &idx) in order.iter().enumerate() {
+        if gold.contains(&cands[idx].id) {
+            deepest = Some(rank0 + 1);
+        }
+    }
+    deepest
+}
+
+/// `gold-eval`: ground every question in LongMemEval's own `answer_session_ids`
+/// annotation. For each question we join the dataset gold pieces with the run's
+/// kept distilled facts and verdict, then classify:
+///   - `correct`        : the judge marked the answer correct.
+///   - `retrieval_gap`  : wrong/abstained AND some gold piece is missing from the
+///                        kept distilled facts (the distillery never captured it).
+///   - `reader_fail`    : wrong/abstained AND every gold piece is present (the
+///                        evidence was there; the reader still failed).
+/// A second, descriptive axis reports per gold piece HOW it is covered —
+/// distilled `fact`, `raw` turn, `both`, or `none` — without feeding the class.
+fn gold_eval(run: &str) -> anyhow::Result<()> {
+    let run_root = resolve_run_for_vault_save(run)?;
+    let run_name = run_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(run)
+        .to_string();
+
+    // Dataset path from run-params.json (repo-relative or absolute).
+    let params = read_json(&run_root.join("run-params.json"))
+        .with_context(|| format!("reading run-params.json under {}", portable_path(&run_root)))?;
+    let dataset_field = params
+        .get("dataset")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| anyhow::anyhow!("run-params.json has no string `dataset` field"))?;
+    let dataset_path = resolve_repo_path(Path::new(dataset_field));
+    let records =
+        symbiotic_mem_bench::symbiotic_memory_adapter::load_longmemeval(&dataset_path, None)
+            .with_context(|| format!("loading dataset {}", portable_path(&dataset_path)))?;
+
+    // Verdicts keyed by question id; correctness from the autoeval boolean (the
+    // `label` string "incorrect" contains "correct" — never substring it).
+    let mut correct_by_qid: BTreeMap<String, bool> = BTreeMap::new();
+    let mut abstain_by_qid: BTreeMap<String, bool> = BTreeMap::new();
+    for verdict in symbiotic_mem_bench::artifacts::read_verdicts(&run_root) {
+        let correct = verdict
+            .autoeval_label
+            .as_ref()
+            .and_then(|auto| auto.label)
+            .or(verdict.label)
+            .unwrap_or(false);
+        correct_by_qid.insert(verdict.question_id.clone(), correct);
+        abstain_by_qid.insert(verdict.question_id, verdict.is_abstention.unwrap_or(false));
+    }
+
+    let mut questions = Vec::new();
+    // ALL-question tallies.
+    let (mut total, mut correct, mut wrong, mut abstained) = (0usize, 0usize, 0usize, 0usize);
+    let (mut single_piece, mut multi_piece) = (0usize, 0usize);
+    let (mut cls_correct, mut cls_reader, mut cls_gap) = (0usize, 0usize, 0usize);
+    let (mut src_fact, mut src_raw, mut src_both, mut src_none) = (0usize, 0usize, 0usize, 0usize);
+    // Multi-piece piece-coverage (single-piece questions trivially cover; the
+    // validated reference reports the multi-piece scope).
+    let (mut multi_gold_needed, mut multi_gold_covered) = (0usize, 0usize);
+    // Gold-turn retrieval-rank distributions (deepest gold turn, raw-only,
+    // ranked among raw candidates by embed score then by rerank score). The
+    // denominator is questions whose deepest gold turn appears in the raw
+    // candidate set at all (`*_in_set`); ranks for absent gold are `None`.
+    let mut embed_ranks: Vec<usize> = Vec::new();
+    let mut rerank_ranks: Vec<usize> = Vec::new();
+    let (mut gold_turns_in_set_total, mut gold_turns_total_total) = (0usize, 0usize);
+
+    for record in &records {
+        let qid = &record.question_id;
+        let gold: Vec<String> = record.answer_session_ids.clone();
+        let n_gold = gold.len();
+        let is_correct = correct_by_qid.get(qid).copied().unwrap_or(false);
+        let is_abstained = abstain_by_qid.get(qid).copied().unwrap_or(false);
+
+        // Per-question kept facts + raw evidence from the debug artifact.
+        let debug_path = run_root
+            .join("vaults")
+            .join(qid)
+            .join("debug")
+            .join("question-debug.json");
+        let debug = read_json(&debug_path).ok();
+
+        // Distilled-fact coverage: a gold piece is fact-covered when a kept fact's
+        // source_refs include a turn from it. Facts carry a `.score` for ranking.
+        let mut fact_pieces: BTreeSet<String> = BTreeSet::new();
+        let mut scored_pieces: Vec<(f64, BTreeSet<String>)> = Vec::new();
+        // Raw-turn coverage (descriptive only): kept raw evidence + raw_turn
+        // rerank candidates. candidate ids here are bare turn ids; tolerate a
+        // legacy `raw:` prefix too.
+        let mut raw_pieces: BTreeSet<String> = BTreeSet::new();
+        if let Some(debug) = &debug {
+            let recall = debug.get("recall");
+            if let Some(facts) = recall
+                .and_then(|recall| recall.get("initial_profile"))
+                .and_then(|profile| profile.get("facts"))
+                .and_then(|facts| facts.as_array())
+            {
+                for entry in facts {
+                    let score = entry.get("score").and_then(|score| score.as_f64());
+                    let mut pieces = BTreeSet::new();
+                    if let Some(refs) = entry
+                        .get("fact")
+                        .and_then(|fact| fact.get("source_refs"))
+                        .and_then(|refs| refs.as_array())
+                    {
+                        for source in refs {
+                            if let Some(turn) = source.get("turn_id").and_then(|t| t.as_str()) {
+                                let piece = gold_piece_of_turn(turn).to_string();
+                                fact_pieces.insert(piece.clone());
+                                pieces.insert(piece);
+                            }
+                        }
+                    }
+                    scored_pieces.push((score.unwrap_or(f64::NEG_INFINITY), pieces));
+                }
+            }
+            if let Some(evidence) = recall
+                .and_then(|recall| recall.get("final_answer"))
+                .and_then(|answer| answer.get("evidence_ids"))
+                .and_then(|ids| ids.as_array())
+            {
+                for id in evidence {
+                    if let Some(id) = id.as_str() {
+                        if evidence_id_is_raw_turn(id) {
+                            raw_pieces.insert(gold_piece_of_turn(id).to_string());
+                        }
+                    }
+                }
+            }
+            if let Some(traces) = recall
+                .and_then(|recall| recall.get("rerank_trace"))
+                .and_then(|trace| trace.as_array())
+            {
+                for trace in traces {
+                    if trace.get("candidate_type").and_then(|t| t.as_str()) != Some("raw_turn") {
+                        continue;
+                    }
+                    if let Some(candidates) =
+                        trace.get("candidates").and_then(|list| list.as_array())
+                    {
+                        for candidate in candidates {
+                            if let Some(id) = candidate.get("candidate_id").and_then(|c| c.as_str())
+                            {
+                                let id = id.strip_prefix("raw:").unwrap_or(id);
+                                raw_pieces.insert(gold_piece_of_turn(id).to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Gold-turn retrieval rank after embedding vs after rerank. Turn-level
+        // gold (`has_answer` turns) is matched against the RAW-TURN candidates
+        // re-ranked among themselves — embed score for the embed rank, rerank
+        // score (final_rank fallback) for the rerank rank — so merged and
+        // separate traces yield comparable ranks. We report the deepest (worst)
+        // gold turn's rank, which is the bar the reader must clear to see *all*
+        // gold for the question.
+        let gold_turns = gold_turn_ids(record);
+        let gold_turns_total = gold_turns.len();
+        let raw_cands = debug
+            .as_ref()
+            .and_then(|debug| debug.get("recall"))
+            .and_then(|recall| recall.get("rerank_trace"))
+            .and_then(|trace| trace.as_array())
+            .map(|traces| raw_turn_candidates(traces))
+            .unwrap_or_default();
+        let gold_embed_rank = deepest_gold_rank(&raw_cands, &gold_turns, |c| c.embedding_score);
+        let gold_rerank_rank = deepest_gold_rank(&raw_cands, &gold_turns, |c| c.rerank_score);
+        // A gold turn is "in set" when it appears among the raw candidates; the
+        // embed pass and rerank pass rank the same set, so either rank's
+        // presence is the same signal — use the embed pass.
+        let gold_turns_in_set = gold_turns
+            .iter()
+            .filter(|turn| raw_cands.iter().any(|c| &&c.id == turn))
+            .count();
+        gold_turns_in_set_total += gold_turns_in_set;
+        gold_turns_total_total += gold_turns_total;
+        if let Some(rank) = gold_embed_rank {
+            embed_ranks.push(rank);
+        }
+        if let Some(rank) = gold_rerank_rank {
+            rerank_ranks.push(rank);
+        }
+
+        // 1-based ranks of the first / deepest gold-piece fact (facts by score desc).
+        scored_pieces.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        let gold_set: BTreeSet<&String> = gold.iter().collect();
+        let (mut gold_top_rank, mut gold_deepest_rank): (Option<usize>, Option<usize>) =
+            (None, None);
+        for (idx, (_, pieces)) in scored_pieces.iter().enumerate() {
+            if pieces.iter().any(|piece| gold_set.contains(piece)) {
+                let rank = idx + 1;
+                gold_top_rank.get_or_insert(rank);
+                gold_deepest_rank = Some(rank);
+            }
+        }
+
+        // Per gold piece: classification coverage is distill-only; the
+        // fact/raw/both/none axis is reported alongside.
+        let mut covered_pieces = 0usize;
+        let mut missing_pieces: Vec<String> = Vec::new();
+        let (mut covered_by_fact, mut covered_by_raw) = (0usize, 0usize);
+        for piece in &gold {
+            let by_fact = fact_pieces.contains(piece);
+            let by_raw = raw_pieces.contains(piece);
+            if by_fact {
+                covered_by_fact += 1;
+            }
+            if by_raw {
+                covered_by_raw += 1;
+            }
+            match (by_fact, by_raw) {
+                (true, true) => src_both += 1,
+                (true, false) => src_fact += 1,
+                (false, true) => src_raw += 1,
+                (false, false) => src_none += 1,
+            }
+            // Coverage that drives the class is distilled-fact coverage.
+            if by_fact {
+                covered_pieces += 1;
+            } else {
+                missing_pieces.push(piece.clone());
+            }
+        }
+
+        let class = if is_correct {
+            cls_correct += 1;
+            "correct"
+        } else if covered_pieces < n_gold {
+            cls_gap += 1;
+            "retrieval_gap"
+        } else {
+            cls_reader += 1;
+            "reader_fail"
+        };
+
+        total += 1;
+        if is_correct {
+            correct += 1;
+        } else {
+            wrong += 1;
+        }
+        if is_abstained {
+            abstained += 1;
+        }
+        if n_gold > 1 {
+            multi_piece += 1;
+            multi_gold_needed += n_gold;
+            multi_gold_covered += covered_pieces;
+        } else {
+            single_piece += 1;
+        }
+
+        questions.push(json!({
+            "qid": qid,
+            "type": record.question_type,
+            "answer": record.answer,
+            "n_gold_pieces": n_gold,
+            "covered_pieces": covered_pieces,
+            "missing_pieces": missing_pieces,
+            "covered_by_fact": covered_by_fact,
+            "covered_by_raw": covered_by_raw,
+            "gold_top_rank": gold_top_rank,
+            "gold_deepest_rank": gold_deepest_rank,
+            "gold_embed_rank": gold_embed_rank,
+            "gold_rerank_rank": gold_rerank_rank,
+            "gold_turns_in_set": gold_turns_in_set,
+            "gold_turns_total": gold_turns_total,
+            "correct": is_correct,
+            "abstained": is_abstained,
+            "class": class,
+        }));
+    }
+
+    let piece_coverage = if multi_gold_needed == 0 {
+        0.0
+    } else {
+        (multi_gold_covered as f64 / multi_gold_needed as f64 * 1000.0).round() / 1000.0
+    };
+
+    // Gold-turn rank distribution over the questions whose deepest gold turn
+    // landed in the raw candidate set. `within(N)` is the fraction at rank <= N
+    // (top-N recall of the deepest gold turn); `mean` is the average rank. Both
+    // rounded to 3 decimals; `n` is the in-set question count (the denominator).
+    let rank_distribution = |ranks: &[usize]| {
+        let n = ranks.len();
+        let round3 = |value: f64| (value * 1000.0).round() / 1000.0;
+        let within = |limit: usize| {
+            if n == 0 {
+                0.0
+            } else {
+                round3(ranks.iter().filter(|&&r| r <= limit).count() as f64 / n as f64)
+            }
+        };
+        let mean = if n == 0 {
+            0.0
+        } else {
+            round3(ranks.iter().sum::<usize>() as f64 / n as f64)
+        };
+        json!({
+            "n": n,
+            "within_10": within(10),
+            "within_20": within(20),
+            "within_50": within(50),
+            "within_100": within(100),
+            "mean": mean,
+        })
+    };
+    let gold_turn_in_set_pct = if gold_turns_total_total == 0 {
+        0.0
+    } else {
+        (gold_turns_in_set_total as f64 / gold_turns_total_total as f64 * 1000.0).round() / 1000.0
+    };
+    let gold_rank_summary = json!({
+        "embed": rank_distribution(&embed_ranks),
+        "rerank": rank_distribution(&rerank_ranks),
+        "gold_turns_in_set": gold_turns_in_set_total,
+        "gold_turns_total": gold_turns_total_total,
+        "gold_turn_in_set_pct": gold_turn_in_set_pct,
+    });
+
+    let report = json!({
+        "schema_version": 1,
+        "run_name": run_name,
+        "dataset_path": portable_path(&dataset_path),
+        "summary": {
+            "total": total,
+            "correct": correct,
+            "wrong": wrong,
+            "abstained": abstained,
+            "single_piece": single_piece,
+            "multi_piece": multi_piece,
+            "gold_pieces_needed": multi_gold_needed,
+            "gold_pieces_covered": multi_gold_covered,
+            "piece_coverage": piece_coverage,
+            "class_counts": {
+                "correct": cls_correct,
+                "reader_fail": cls_reader,
+                "retrieval_gap": cls_gap,
+            },
+            "coverage_by_source": {
+                "fact": src_fact,
+                "raw": src_raw,
+                "both": src_both,
+                "none": src_none,
+            },
+            "gold_rank": gold_rank_summary,
+        },
+        "questions": questions,
+    });
+
+    let out_dir = run_root.join("artifacts");
+    std::fs::create_dir_all(&out_dir)?;
+    let out_path = out_dir.join("gold-eval.json");
+    let partial = out_path.with_extension("json.partial");
+    std::fs::write(&partial, serde_json::to_vec_pretty(&report)?)?;
+    std::fs::rename(&partial, &out_path)?;
+
+    let fmt_within = |dist: &Value| {
+        let g = |key: &str| dist.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0);
+        format!(
+            "top10={:.3} top20={:.3} top50={:.3} top100={:.3} mean={:.1} n={}",
+            g("within_10"),
+            g("within_20"),
+            g("within_50"),
+            g("within_100"),
+            g("mean"),
+            dist.get("n").and_then(|v| v.as_u64()).unwrap_or(0),
+        )
+    };
+    println!(
+        "gold-eval: {} -> {}\n  total={total} correct={correct} wrong={wrong} abstained={abstained} (single={single_piece} multi={multi_piece})\n  classes: correct={cls_correct} reader_fail={cls_reader} retrieval_gap={cls_gap}\n  multi-piece gold coverage: {multi_gold_covered}/{multi_gold_needed} ({piece_coverage:.3})\n  coverage_by_source: fact={src_fact} raw={src_raw} both={src_both} none={src_none}\n  gold-turn in set: {gold_turns_in_set_total}/{gold_turns_total_total} ({gold_turn_in_set_pct:.3})\n  deepest gold rank | embed:  {}\n                    | rerank: {}",
+        run_name,
+        portable_path(&out_path),
+        fmt_within(&gold_rank_summary["embed"]),
+        fmt_within(&gold_rank_summary["rerank"]),
+    );
+    Ok(())
+}
+
 /// Resolve a `vault save --run` value to a run root: an existing path (absolute
 /// or repo-relative) wins; otherwise treat it as a run dir name and search under
 /// `runs/symbiotic-memory/long-mem-eval/<limit>/<name>`.
@@ -3034,6 +3585,7 @@ struct SymbioticMemoryCliRun {
     answerer: bool,
     routed: bool,
     answer_only: bool,
+    rejudge: bool,
     re_embed: bool,
     consolidate_briefs: bool,
     stop_after_raw_embed: bool,
@@ -3133,6 +3685,37 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
     let provider_runtime = ProviderRuntime::new(&run, &config)?;
     let rows = symbiotic_mem_bench::symbiotic_memory_adapter::load_longmemeval(&run.dataset, None)?;
     let rows = select_longmemeval_rows(rows, run.limit, &run.sample)?;
+    // --rejudge: re-grade an existing run's stored hypotheses with the current judge, NO re-answer.
+    // Reuses this run root's hypotheses.jsonl (fresh=false keeps it intact); score_prepared rewrites
+    // verdicts/scored/summary, then we rewrite the report. Skips all ingest/recall/answer machinery.
+    if run.rejudge {
+        let hypotheses_path = native_hypotheses_path(&run.run_root);
+        if !hypotheses_path.exists() {
+            anyhow::bail!(
+                "--rejudge: no hypotheses at {} — point --run-name at an existing answered run",
+                hypotheses_path.display()
+            );
+        }
+        eprintln!(
+            "[longmemeval] --rejudge: re-grading {} stored answers (no re-answer)",
+            rows.len()
+        );
+        let runtime = tokio::runtime::Runtime::new()?;
+        let judge_factory = provider_runtime.judge_factory(&run)?;
+        runtime.block_on(score_longmemeval_native(
+            &run,
+            &rows,
+            &hypotheses_path,
+            judge_factory,
+        ))?;
+        write_native_benchmark_report(&run)?;
+        // --rejudge rewrote verdicts/score-summary, so refresh gold-eval too.
+        // Defensive: a failure only logs and never fails the run.
+        if let Err(e) = gold_eval(&run.run_name) {
+            eprintln!("[gold-eval] auto-run skipped: {e}");
+        }
+        return Ok(());
+    }
     // Redo stage: --re-embed is redo=embed; SYMEM_REDO=reweave|distill|index selects the others.
     let redo_stage = if run.re_embed {
         Some("embed".to_string())
@@ -3299,6 +3882,14 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
         eprintln!("[longmemeval] dropped {dropped_memory_traces} memory trace events");
     }
     write_native_benchmark_report(&run)?;
+    // Keep artifacts/gold-eval.json fresh after every scored run, so nobody has to
+    // run `membench gold-eval --run <name>` by hand. Defensive: a failure (e.g. a
+    // run with no answer_session_ids, which gold_eval bails on) only logs.
+    if run.score {
+        if let Err(e) = gold_eval(&run.run_name) {
+            eprintln!("[gold-eval] auto-run skipped: {e}");
+        }
+    }
     if run.ephemeral_smoke_run {
         let root = run.run_root.clone();
         std::fs::remove_dir_all(&root)?;
@@ -4076,7 +4667,7 @@ impl ProviderRuntime {
     fn reranker(
         &self,
         run: &SymbioticMemoryCliRun,
-    ) -> anyhow::Result<Option<Arc<dyn symbiotic_memory::Reranker>>> {
+    ) -> anyhow::Result<symbiotic_mem_bench::symbiotic_memory_adapter::RerankCascade> {
         let enabled = run_env_value(run, "SYMEM_RERANK")
             .map(|value| {
                 matches!(
@@ -4086,16 +4677,76 @@ impl ProviderRuntime {
             })
             .unwrap_or(false);
         if !enabled {
-            return Ok(None);
+            return Ok(Default::default());
         }
-        let api_key = required_operator_api_key(run, "openrouter")?;
+        // Main (stage-2) reranker. SYMEM_RERANK_BASE_URL overrides the base url (e.g. point at the
+        // local Nemotron /serve server at http://localhost:8088).
         let base_url = run_env_value(run, "SYMEM_RERANK_BASE_URL")
             .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
         let model = run_env_value(run, "SYMEM_RERANK_MODEL")
             .unwrap_or_else(|| "cohere/rerank-4-fast".to_string());
-        Ok(Some(Arc::new(symbiotic_memory::OpenRouterReranker::new(
-            base_url, api_key, model,
-        ))))
+        let main = Some(self.build_reranker(run, &base_url, &model)?);
+
+        // Optional cheap stage-1 prefilter reranker. Enabled iff SYMEM_RERANK_STAGE1_MODEL is set.
+        // Its base url defaults to the OpenRouter base (so a Cohere prefilter works out of the box);
+        // set SYMEM_RERANK_STAGE1_BASE_URL to route stage-1 elsewhere (e.g. the local Nemotron).
+        let (stage1, stage1_top_x) = match run_env_value(run, "SYMEM_RERANK_STAGE1_MODEL") {
+            Some(stage1_model) if !stage1_model.trim().is_empty() => {
+                let stage1_base_url = run_env_value(run, "SYMEM_RERANK_STAGE1_BASE_URL")
+                    .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
+                let stage1 = self.build_reranker(run, &stage1_base_url, stage1_model.trim())?;
+                let top_x = run_env_value(run, "SYMEM_RERANK_STAGE1_TOP_X")
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or(20);
+                (Some(stage1), top_x)
+            }
+            _ => (None, 20),
+        };
+
+        Ok(
+            symbiotic_mem_bench::symbiotic_memory_adapter::RerankCascade {
+                main,
+                stage1,
+                stage1_top_x,
+            },
+        )
+    }
+
+    /// Builds a single queued `OpenRouterReranker` (Cohere-compatible `POST {base}/rerank`). The
+    /// `base_url` may point at OpenRouter or a local Cohere-compatible server (e.g. the Nemotron
+    /// /serve server at http://localhost:8088, which appends `/rerank` -> `http://localhost:8088/rerank`).
+    fn build_reranker(
+        &self,
+        run: &SymbioticMemoryCliRun,
+        base_url: &str,
+        model: &str,
+    ) -> anyhow::Result<Arc<dyn symbiotic_memory::Reranker>> {
+        // Local single-GPU MLX rerank servers (localhost) must serialize so concurrent recalls don't
+        // thrash the GPU: the operator drives the queue concurrency cap ("local" -> max_in_flight=1
+        // via the foundation default; otherwise the openrouter fallback at 1000). Override with
+        // SYMEM_RERANK_OPERATOR.
+        let is_local = base_url.contains("localhost")
+            || base_url.contains("127.0.0.1")
+            || base_url.contains("[::1]");
+        let operator = run_env_value(run, "SYMEM_RERANK_OPERATOR")
+            .unwrap_or_else(|| if is_local { "local" } else { "openrouter" }.to_string());
+        // The local server ignores api_key + model; a dummy key is fine for localhost.
+        let api_key = if is_local {
+            "local".to_string()
+        } else {
+            required_operator_api_key(run, "openrouter")?
+        };
+        let adapter =
+            symbiotic_memory::ProviderAdapterConfig::new("rerank", operator, model.to_string());
+        let queue = self.provider_queue(&adapter)?;
+        let inner = symbiotic_memory::OpenRouterReranker::new(
+            base_url.to_string(),
+            api_key,
+            model.to_string(),
+        );
+        Ok(Arc::new(symbiotic_memory::providers::QueuedReranker::new(
+            inner, queue,
+        )))
     }
 
     fn query_planner_factory(
@@ -4403,6 +5054,16 @@ struct NativeVerdict {
     answer: String,
     hypothesis: String,
     judge_raw: String,
+    /// The exact judge SYSTEM prompt that was sent for this question (the per-question-type grader
+    /// under the official mode). Lets a verdict PROVE which prompt graded it, not just infer it from
+    /// the mode flag. Backward-compatible: absent on runs scored before this field existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    judge_system_prompt: Option<String>,
+    /// The exact judge USER message that was sent (question + reference answer / rubric + the model's
+    /// response, fully rendered). With judge_system_prompt this is the COMPLETE judge input — the full
+    /// thing that went to the grader, mirroring the answerer call trace.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    judge_user_prompt: Option<String>,
     autoeval_label: NativeAutoEvalLabel,
     label: bool,
     is_abstention: bool,
@@ -4515,8 +5176,8 @@ async fn score_prepared_longmemeval_native(
 
     let judge = resolved_judge_params(run);
     let judge_model = judge.model;
-    let judge_prompt_mode = run_env_value(run, "SYMEM_JUDGE_PROMPT_MODE")
-        .unwrap_or_else(|| "semantic-shared-compact".to_string());
+    let judge_prompt_mode =
+        run_env_value(run, "SYMEM_JUDGE_PROMPT_MODE").unwrap_or_else(|| "official".to_string());
     let partial_file = Arc::new(std::sync::Mutex::new(
         std::fs::OpenOptions::new()
             .create(true)
@@ -4664,7 +5325,13 @@ async fn judge_one_longmemeval(
 ) -> anyhow::Result<NativeVerdict> {
     let answer = gold_answer_to_string(item.gold_answer.as_ref());
     let is_abstention = is_abstention(&item.hypothesis);
-    let (system, user) = judge_prompt(prompt_mode, &item.question, &answer, &item.hypothesis);
+    let (system, user) = judge_prompt(
+        prompt_mode,
+        item.question_type.as_deref(),
+        &item.question,
+        &answer,
+        &item.hypothesis,
+    );
     let response = judge.chat(&system, &user).await?;
     let label = parse_judge_label(&response.text)
         .ok_or_else(|| anyhow::anyhow!("judge returned unparsable label: {}", response.text))?;
@@ -4675,6 +5342,8 @@ async fn judge_one_longmemeval(
         answer,
         hypothesis: item.hypothesis,
         judge_raw: response.text,
+        judge_system_prompt: Some(system),
+        judge_user_prompt: Some(user),
         autoeval_label: NativeAutoEvalLabel {
             model: judge_model.to_string(),
             label,
@@ -4688,18 +5357,45 @@ async fn judge_one_longmemeval(
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn judge_prompt(
     prompt_mode: &str,
+    question_type: Option<&str>,
     question: &str,
     answer: &str,
     hypothesis: &str,
 ) -> (String, String) {
-    let system = match prompt_mode {
-        "official" => {
-            "You are an evaluator for LongMemEval. Decide whether the candidate answer correctly answers the question according to the reference answer. Return exactly YES or NO."
-        }
-        _ => {
-            "You are an evaluator for LongMemEval. Return exactly YES or NO. Mark YES when the candidate answer is semantically equivalent to the reference, is a directly inferable phrasing, or contains the required value with harmless extra words. Mark NO when it contradicts the reference, omits the requested value, substitutes a different value, or says unavailable when the reference contains the answer."
-        }
-    };
+    // DEFAULT → the EXACT per-question-type grader from the LongMemEval paper (Wu et al.,
+    // arXiv:2410.10813). Each type carries its own leniency: off-by-one for temporal, old+new for
+    // knowledge-update, rubric-satisfaction for preference. The old generic semantic grader stays
+    // available behind SYMEM_JUDGE_PROMPT_MODE=semantic (aka legacy / semantic-shared-compact).
+    if !matches!(
+        prompt_mode,
+        "semantic" | "semantic-shared-compact" | "legacy" | "generic"
+    ) {
+        let qtype = question_type.unwrap_or("");
+        let system = match qtype {
+            "temporal-reasoning" => {
+                "I will give you a question, a correct answer, and a response from a model. Please answer yes if the response contains the correct answer. Otherwise, answer no. If the response is equivalent to the correct answer or contains all the intermediate steps to get the correct answer, you should also answer yes. If the response only contains a subset of the information required by the answer, answer no. In addition, do not penalize off-by-one errors for the number of days. If the question asks for the number of days/weeks/months, etc., and the model makes off-by-one errors (e.g., predicting 19 days when the answer is 18), the model's response is still correct."
+            }
+            "knowledge-update" => {
+                "I will give you a question, a correct answer, and a response from a model. Please answer yes if the response contains the correct answer. Otherwise, answer no. If the response contains some previous information along with an updated answer, the response should be considered as correct as long as the updated answer is the required answer."
+            }
+            "single-session-preference" => {
+                "I will give you a question, a rubric for desired personalized response, and a response from a model. Please answer yes if the response satisfies the desired response. Otherwise, answer no. The model does not need to reflect all the points in the rubric. The response is correct as long as it recalls and utilizes the user's personal information correctly."
+            }
+            _ => {
+                "I will give you a question, a correct answer, and a response from a model. Please answer yes if the response contains the correct answer. Otherwise, answer no. If the response is equivalent to the correct answer or contains all the intermediate steps to get the correct answer, you should also answer yes. If the response only contains a subset of the information required by the answer, answer no."
+            }
+        };
+        let ref_label = if qtype == "single-session-preference" {
+            "Rubric for desired personalized response"
+        } else {
+            "Correct answer"
+        };
+        let user = format!(
+            "Question:\n{question}\n\n{ref_label}:\n{answer}\n\nResponse from the model:\n{hypothesis}\n\nAnswer yes or no."
+        );
+        return (system.to_string(), user);
+    }
+    let system = "You are an evaluator for LongMemEval. Return exactly YES or NO. Mark YES when the candidate answer is semantically equivalent to the reference, is a directly inferable phrasing, or contains the required value with harmless extra words. Mark NO when it contradicts the reference, omits the requested value, substitutes a different value, or says unavailable when the reference contains the answer.";
     let user = format!(
         "Question:\n{question}\n\nReference answer:\n{answer}\n\nCandidate answer:\n{hypothesis}\n\nCorrect? Return exactly YES or NO."
     );
@@ -4954,7 +5650,7 @@ fn artifact_manifest<'a>(
 }
 
 const DEFAULT_WORKFLOW_MAX_IN_FLIGHT: usize = 50;
-const ANSWER_ONLY_WORKFLOW_MAX_IN_FLIGHT: usize = 500;
+const ANSWER_ONLY_WORKFLOW_MAX_IN_FLIGHT: usize = 64;
 
 #[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
 #[cfg(test)]
@@ -4976,14 +5672,18 @@ fn effective_workflow_max_in_flight_for_run(
     run: &SymbioticMemoryCliRun,
     configured: Option<usize>,
 ) -> usize {
-    if run.answer_only {
+    // answer-only reuses a stored vault (no ingest) so it can run wide. 64 is a validated default
+    // (122Q at 732 q/min, zero rerank throttle after the rpm-bucket fix); 500 still stresses the
+    // SQLite workflow queue's claim/reclaim, so cap here. Overridable via SYMEM_WORKFLOW_MAX_IN_FLIGHT.
+    let base_default = if run.answer_only {
         ANSWER_ONLY_WORKFLOW_MAX_IN_FLIGHT
     } else {
-        workflow_max_in_flight_env_override(run)
-            .or(configured)
-            .unwrap_or(DEFAULT_WORKFLOW_MAX_IN_FLIGHT)
-            .max(1)
-    }
+        DEFAULT_WORKFLOW_MAX_IN_FLIGHT
+    };
+    workflow_max_in_flight_env_override(run)
+        .or(if run.answer_only { None } else { configured })
+        .unwrap_or(base_default)
+        .max(1)
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
@@ -5040,6 +5740,11 @@ fn symbiotic_memory_run_params(run: &SymbioticMemoryCliRun) -> serde_json::Value
     let query_planner_thinking = role_thinking_label(run, "QUERY_PLANNER");
     let answer_thinking = role_thinking_label(run, "ANSWER");
     let judge_thinking = role_thinking_label(run, "JUDGE");
+    // Oracle-gold mode: the answerer is fed ONLY gold-session raw turns (the "reader ceiling"
+    // method), bypassing recall. Set by `--oracle-gold` (which exports SYMEM_ORACLE_GOLD=1) or the
+    // env var directly — read the env so both paths land in the run record.
+    let oracle_gold = run_env_bool(run, "SYMEM_ORACLE_GOLD", false);
+    let rerank = resolved_rerank_params(run);
     let mut params = json!({
         "schema": "membench.run_params.v1",
         "system": "symbiotic-memory",
@@ -5076,6 +5781,7 @@ fn symbiotic_memory_run_params(run: &SymbioticMemoryCliRun) -> serde_json::Value
         "score_output": run.score,
         "score": run.score,
         "oracle": run.oracle.as_deref().map(portable_path),
+        "oracle_gold": oracle_gold,
         "judge_workers": run.judge_workers,
         "prewarm_judge_cache": run.prewarm_judge_cache,
         "prewarm_pause_secs": run.prewarm_pause_secs,
@@ -5144,7 +5850,15 @@ fn symbiotic_memory_run_params(run: &SymbioticMemoryCliRun) -> serde_json::Value
     let object = params
         .as_object_mut()
         .expect("run params JSON must be an object");
+    // Fold the resolved rerank binding into configured_models so the shared
+    // `configured_model(params, "rerank")` lookup (registry/dashboard) finds it
+    // next to answer/distill/embed.
+    let mut configured_models = configured_models;
+    if let Some(configured_obj) = configured_models.as_object_mut() {
+        configured_obj.insert("rerank".to_string(), rerank.clone());
+    }
     object.insert("configured_models".to_string(), configured_models);
+    object.insert("rerank".to_string(), rerank);
     object.insert("runtime_models".to_string(), runtime_models);
     object.insert("role_settings".to_string(), role_settings);
     object.insert(
@@ -5661,6 +6375,44 @@ fn effective_stop_after_raw_embed(run: &SymbioticMemoryCliRun) -> bool {
     run.stop_after_raw_embed || run_env_bool(run, "SYMEM_INGEST_STOP_AFTER_RAW_EMBED", false)
 }
 
+/// Resolve the reranker binding (model/operator/base url + optional stage-1 prefilter) from the
+/// `SYMEM_RERANK*` env knobs WITHOUT building the actual reranker. Mirrors `reranker()` /
+/// `build_reranker()` so the run record reports the same model the recall engine actually used.
+/// Returns `{ "enabled": false }` when rerank is off.
+fn resolved_rerank_params(run: &SymbioticMemoryCliRun) -> serde_json::Value {
+    let enabled = run_env_value(run, "SYMEM_RERANK")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "on"
+            )
+        })
+        .unwrap_or(false);
+    if !enabled {
+        return json!({ "enabled": false });
+    }
+    let base_url = run_env_value(run, "SYMEM_RERANK_BASE_URL")
+        .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
+    let model = run_env_value(run, "SYMEM_RERANK_MODEL")
+        .unwrap_or_else(|| "cohere/rerank-4-fast".to_string());
+    let is_local = base_url.contains("localhost")
+        || base_url.contains("127.0.0.1")
+        || base_url.contains("[::1]");
+    let operator = run_env_value(run, "SYMEM_RERANK_OPERATOR")
+        .unwrap_or_else(|| if is_local { "local" } else { "openrouter" }.to_string());
+    let stage1_model =
+        run_env_value(run, "SYMEM_RERANK_STAGE1_MODEL").filter(|value| !value.trim().is_empty());
+    json!({
+        "enabled": true,
+        "operation": "rerank",
+        "operator": operator,
+        "model": model,
+        "base_url": base_url,
+        "queue_id": format!("rerank:{operator}:{model}"),
+        "stage1_model": stage1_model,
+    })
+}
+
 fn effective_ingest_diagnostic(run: &SymbioticMemoryCliRun) -> Option<String> {
     if effective_stop_after_raw_embed(run) {
         return Some("raw-embed".to_string());
@@ -5963,10 +6715,135 @@ mod tests {
     }
 
     #[test]
-    fn answer_only_uses_wide_workflow_window_by_default() {
-        assert_eq!(effective_workflow_max_in_flight(true, Some(25)), 500);
+    fn answer_only_uses_sane_workflow_window_by_default() {
+        assert_eq!(effective_workflow_max_in_flight(true, Some(25)), 64);
         assert_eq!(effective_workflow_max_in_flight(false, Some(25)), 25);
         assert_eq!(effective_workflow_max_in_flight(false, None), 50);
+    }
+
+    #[test]
+    fn gold_turn_ids_uses_session_id_and_turn_index_of_answer_turns() {
+        use symbiotic_mem_bench::symbiotic_memory_adapter::{
+            LongMemEvalMessage, LongMemEvalRecord,
+        };
+        let msg = |has_answer: bool| LongMemEvalMessage {
+            role: "user".to_string(),
+            content: String::new(),
+            has_answer,
+        };
+        let record = LongMemEvalRecord {
+            question_id: "q".to_string(),
+            question_type: None,
+            question: String::new(),
+            question_date: None,
+            answer: None,
+            answer_session_ids: vec!["answer_530960c1".to_string()],
+            haystack_dates: Vec::new(),
+            haystack_session_ids: vec!["sess_a".to_string(), "answer_530960c1".to_string()],
+            haystack_sessions: vec![
+                // sess_a: no answer turns -> contributes nothing.
+                vec![msg(false), msg(false)],
+                // answer_530960c1: turn index 1 carries the answer.
+                vec![msg(false), msg(true), msg(false)],
+            ],
+        };
+        let gold = gold_turn_ids(&record);
+        // The gold turn id is `<session_id>:<turn_index>`, turn-level, not the
+        // session id alone.
+        assert_eq!(
+            gold.into_iter().collect::<Vec<_>>(),
+            vec!["answer_530960c1:1".to_string()]
+        );
+    }
+
+    #[test]
+    fn raw_only_ranks_normalize_merged_and_separate_traces_identically() {
+        // The same three raw turns + the same fact, expressed as a MERGED trace
+        // (raw:-prefixed raw turns interleaved with a fact, polluted global
+        // embedding_rank) and as a SEPARATE raw_turn trace (bare ids, raw-only).
+        // After re-ranking raw candidates among themselves, the deepest gold
+        // rank must match — that is the merged-vs-separate normalization.
+        let gold: BTreeSet<String> = ["s:1".to_string()].into_iter().collect();
+
+        let merged = json!([{
+            "candidate_type": "merged",
+            "candidates": [
+                // A fact sits at the top of the merged list (rank 0) but must be
+                // ignored when ranking raw turns.
+                {"candidate_id": "fact:mem-x", "embedding_score": 0.99, "rerank_score": 0.99},
+                {"candidate_id": "raw:s:0", "embedding_score": 0.8, "rerank_score": 0.2},
+                {"candidate_id": "raw:s:1", "embedding_score": 0.5, "rerank_score": 0.9},
+                {"candidate_id": "raw:s:2", "embedding_score": 0.3, "rerank_score": 0.1},
+            ],
+        }]);
+        let separate = json!([
+            {"candidate_type": "fact", "candidates": [
+                {"candidate_id": "mem-x", "embedding_score": 0.99, "rerank_score": 0.99},
+            ]},
+            {"candidate_type": "raw_turn", "candidates": [
+                {"candidate_id": "s:0", "embedding_score": 0.8, "rerank_score": 0.2},
+                {"candidate_id": "s:1", "embedding_score": 0.5, "rerank_score": 0.9},
+                {"candidate_id": "s:2", "embedding_score": 0.3, "rerank_score": 0.1},
+            ]},
+        ]);
+
+        for trace in [&merged, &separate] {
+            let cands = raw_turn_candidates(trace.as_array().unwrap());
+            // The fact is excluded; only the three raw turns remain.
+            assert_eq!(cands.len(), 3, "raw-only candidate set");
+            // By embed score desc: s:0(0.8), s:1(0.5), s:2(0.3) -> gold s:1 is #2.
+            assert_eq!(
+                deepest_gold_rank(&cands, &gold, |c| c.embedding_score),
+                Some(2)
+            );
+            // By rerank score desc: s:1(0.9), s:0(0.2), s:2(0.1) -> gold s:1 is #1.
+            assert_eq!(
+                deepest_gold_rank(&cands, &gold, |c| c.rerank_score),
+                Some(1)
+            );
+        }
+    }
+
+    #[test]
+    fn deepest_gold_rank_reports_worst_of_multiple_gold_turns_and_none_when_absent() {
+        let cands = raw_turn_candidates(
+            json!([{
+                "candidate_type": "raw_turn",
+                "candidates": [
+                    {"candidate_id": "s:0", "embedding_score": 0.9, "rerank_score": 0.9},
+                    {"candidate_id": "s:1", "embedding_score": 0.5, "rerank_score": 0.5},
+                    {"candidate_id": "s:2", "embedding_score": 0.1, "rerank_score": 0.1},
+                ],
+            }])
+            .as_array()
+            .unwrap(),
+        );
+        // Two gold turns (s:0 best, s:2 worst) -> deepest is the worst = rank 3.
+        let two: BTreeSet<String> = ["s:0".to_string(), "s:2".to_string()].into_iter().collect();
+        assert_eq!(deepest_gold_rank(&cands, &two, |c| c.embedding_score), Some(3));
+        // A gold turn that never appears in the candidate set -> None (not in set).
+        let absent: BTreeSet<String> = ["s:99".to_string()].into_iter().collect();
+        assert_eq!(deepest_gold_rank(&cands, &absent, |c| c.embedding_score), None);
+    }
+
+    #[test]
+    fn raw_turn_candidates_fall_back_to_final_rank_when_no_rerank_score() {
+        // When a candidate has only `final_rank` (no rerank_score), the rerank
+        // order is reconstructed as -final_rank (rank 0 = highest score).
+        let cands = raw_turn_candidates(
+            json!([{
+                "candidate_type": "raw_turn",
+                "candidates": [
+                    {"candidate_id": "s:0", "embedding_score": 0.1, "final_rank": 2},
+                    {"candidate_id": "s:1", "embedding_score": 0.9, "final_rank": 0},
+                ],
+            }])
+            .as_array()
+            .unwrap(),
+        );
+        let gold: BTreeSet<String> = ["s:0".to_string()].into_iter().collect();
+        // final_rank: s:1 (rank 0) then s:0 (rank 2) -> gold s:0 is rerank #2.
+        assert_eq!(deepest_gold_rank(&cands, &gold, |c| c.rerank_score), Some(2));
     }
 
     #[cfg(feature = "symbiotic-memory-adapter")]
@@ -6963,9 +7840,54 @@ mod tests {
             params["runtime_models"]["answer"],
             serde_json::json!("queued:configured-chat")
         );
-        assert_eq!(params["workflow_max_in_flight"], serde_json::json!(500));
+        assert_eq!(params["workflow_max_in_flight"], serde_json::json!(64));
         assert_eq!(params["provider_queue_available"], serde_json::json!(true));
         assert_eq!(params["workflow_queue_available"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn native_run_params_record_oracle_and_rerank_off_by_default() {
+        // Empty env file isolates the assertion from any repo-root .env.test.local.
+        let dir = tempfile::tempdir().unwrap();
+        let env_file = dir.path().join(".env.test.local");
+        std::fs::write(&env_file, "").unwrap();
+        let mut run = sample_run(None);
+        run.env_file = Some(env_file);
+
+        let params = symbiotic_memory_run_params(&run);
+        assert_eq!(params["oracle_gold"], serde_json::json!(false));
+        assert_eq!(params["rerank"]["enabled"], serde_json::json!(false));
+        assert!(params["configured_models"]["rerank"]["model"].is_null());
+    }
+
+    #[test]
+    fn native_run_params_record_rerank_model_and_oracle_gold() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_file = dir.path().join(".env.test.local");
+        std::fs::write(
+            &env_file,
+            "SYMEM_ORACLE_GOLD=1\nSYMEM_RERANK=1\nSYMEM_RERANK_MODEL=cohere/rerank-4-fast\n",
+        )
+        .unwrap();
+        let mut run = sample_run(None);
+        run.env_file = Some(env_file);
+
+        let params = symbiotic_memory_run_params(&run);
+        assert_eq!(params["oracle_gold"], serde_json::json!(true));
+        assert_eq!(params["rerank"]["enabled"], serde_json::json!(true));
+        assert_eq!(
+            params["rerank"]["model"],
+            serde_json::json!("cohere/rerank-4-fast")
+        );
+        assert_eq!(
+            params["rerank"]["operator"],
+            serde_json::json!("openrouter")
+        );
+        // Folded into configured_models so the shared rerank lookup finds it.
+        assert_eq!(
+            params["configured_models"]["rerank"]["model"],
+            serde_json::json!("cohere/rerank-4-fast")
+        );
     }
 
     #[test]

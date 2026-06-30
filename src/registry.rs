@@ -60,6 +60,9 @@ pub struct RunSummary {
     pub dataset_fingerprint: Option<String>,
     pub judge_model: Option<String>,
     pub judge_prompt_mode: Option<String>,
+    /// Oracle-gold run: gold evidence fed straight to the answerer (reader-ceiling method).
+    /// Read from `run-params.json` (`oracle_gold: bool`); absent → false.
+    pub oracle_gold: bool,
     pub created_at: Option<String>,
     pub modified_ms: Option<i64>,
     pub per_question_type: Option<Value>,
@@ -110,6 +113,7 @@ pub struct CohortFields {
     pub latency_ms_p95: Option<f64>,
     pub cached_input_tokens: Option<u64>,
     pub uncached_input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
     pub response_cache_hits: Option<u64>,
     pub prompt_cache_hits: Option<u64>,
     pub prompt_cache_partial_hits: Option<u64>,
@@ -422,6 +426,30 @@ pub fn summarize_with_trials(
     .to_string();
     let display_name = display_name(&run_name, params, tuning_shape.as_deref());
 
+    // Union the report's static artifact manifest with what is actually on disk
+    // so post-hoc artifacts (notably `gold_eval`, written after the report was
+    // sealed) are surfaced in the registry without a report re-write.
+    let manifest_available = string_list("available");
+    let disk_available = artifacts::discover_artifacts_on_disk(&record.run_root);
+    let mut artifacts_available = Vec::<String>::new();
+    for kind in artifacts::KNOWN_ARTIFACT_KINDS {
+        if manifest_available.iter().any(|x| x == *kind)
+            || disk_available.iter().any(|x| x == *kind)
+        {
+            artifacts_available.push((*kind).to_string());
+        }
+    }
+    for kind in &manifest_available {
+        if !artifacts_available.contains(kind) {
+            artifacts_available.push(kind.clone());
+        }
+    }
+    // A post-hoc artifact present on disk can no longer be "missing" — drop it.
+    let artifacts_missing = string_list("missing")
+        .into_iter()
+        .filter(|kind| !artifacts_available.contains(kind))
+        .collect::<Vec<_>>();
+
     RunSummary {
         run_id: record.run_id.clone(),
         origin: record.origin.clone(),
@@ -450,11 +478,12 @@ pub fn summarize_with_trials(
         dataset_fingerprint,
         judge_model,
         judge_prompt_mode,
+        oracle_gold: nested_bool(params, &["oracle_gold"]).unwrap_or(false),
         created_at: nested_string(report, &["created_at"]),
         modified_ms: record.modified_ms,
         per_question_type,
-        artifacts_available: string_list("available"),
-        artifacts_missing: string_list("missing"),
+        artifacts_available,
+        artifacts_missing,
         native_state_available: nested_bool(
             report,
             &["artifact_manifest", "native_state_available"],
@@ -675,6 +704,7 @@ pub fn compute_cohort_fields_with_rollup(
         latency_ms_p95: rollup.and_then(|rollup| rollup.latency_ms_p95),
         cached_input_tokens: rollup.map(|rollup| rollup.cached_input_tokens),
         uncached_input_tokens: rollup.map(|rollup| rollup.uncached_input_tokens),
+        output_tokens: rollup.map(|rollup| rollup.output_tokens),
         response_cache_hits: rollup.map(|rollup| rollup.response_cache_hits),
         prompt_cache_hits: rollup.map(|rollup| rollup.prompt_cache_hits),
         prompt_cache_partial_hits: rollup.map(|rollup| rollup.prompt_cache_partial_hits),
@@ -698,6 +728,9 @@ fn models_with_param_fallback(
     if models.embed.is_none() {
         models.embed = configured_model(params, "embed").or_else(|| runtime_model(params, "embed"));
     }
+    if models.rerank.is_none() {
+        models.rerank = configured_rerank_model(params);
+    }
     if models.judge.is_none() {
         models.judge = configured_model(params, "judge")
             .or_else(|| runtime_model(params, "judge"))
@@ -711,11 +744,45 @@ fn configured_model(params: &Value, role: &str) -> Option<String> {
         .or_else(|| nested_string(params, &[&format!("{role}_model")]))
 }
 
+/// Resolve the reranker model recorded in `run-params.json`. membench writes the
+/// resolved rerank binding both under `configured_models.rerank` and at the
+/// top-level `rerank` key, shaped `{ enabled, model, .. }`. When rerank is off
+/// the binding is `{ "enabled": false }` with a null/absent model, so honour the
+/// `enabled` flag and require a concrete model before reporting one. This is the
+/// only role not surfaced via the model-trace rollup, so without this fallback
+/// the Overview shows the rerank model as "none" even when it was configured.
+fn configured_rerank_model(params: &Value) -> Option<String> {
+    for base in [
+        params.get("configured_models").and_then(|m| m.get("rerank")),
+        params.get("rerank"),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        // Skip explicitly-disabled rerank bindings.
+        if base.get("enabled") == Some(&Value::Bool(false)) {
+            continue;
+        }
+        if let Some(model) = base
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+        {
+            return Some(model.to_string());
+        }
+    }
+    None
+}
+
 fn runtime_model(params: &Value, role: &str) -> Option<String> {
     let raw = nested_string(params, &["runtime_models", role])?;
+    // Queue keys are `status:operator:model`, and `model` may itself contain ':'
+    // (e.g. an OpenRouter `:free` suffix) — take everything after the 2nd colon, not the
+    // last segment. `rsplit(':').next()` would wrongly yield "free" for `.../model:free`.
     Some(
-        raw.rsplit(':')
-            .next()
+        raw.splitn(3, ':')
+            .nth(2)
             .filter(|part| !part.is_empty())
             .unwrap_or(&raw)
             .to_string(),
@@ -748,6 +815,8 @@ pub struct PendingRun {
     pub hypotheses: u64,
     /// Question vaults built so far (ingest progress).
     pub ingested: u64,
+    /// Oracle-gold run: gold evidence fed straight to the answerer (reader-ceiling method).
+    pub oracle_gold: bool,
 }
 
 /// Idle thresholds for a run's liveness. Under `RUNNING` it's actively writing;
@@ -942,6 +1011,7 @@ pub fn scan_pending(roots: &[PathBuf], repo_root: &Path) -> Vec<PendingRun> {
                 age_secs: updated_ms.map(|ms| (now - ms) / 1000),
                 hypotheses: count_nonempty_lines(&dir.join("raw/hypotheses.jsonl")),
                 ingested: count_dir_entries(&dir.join("vaults")),
+                oracle_gold: nested_bool(&params, &["oracle_gold"]).unwrap_or(false),
                 run_id,
             })
         })
@@ -1292,5 +1362,44 @@ mod tests {
         assert_eq!(fields.models.distill.as_deref(), Some("deepseek-v4-flash"));
         assert_eq!(fields.models.embed.as_deref(), Some("gemini-embedding-2"));
         assert_eq!(fields.models.judge.as_deref(), Some("deepseek-v4-flash"));
+    }
+
+    #[test]
+    fn rerank_model_falls_back_to_run_params_configured_models() {
+        // The rerank role is not surfaced by the model-trace rollup, so the
+        // registry must read it from the recorded run params (configured_models
+        // .rerank.model, mirrored at top-level rerank). Mirrors the shape
+        // membench writes for an enabled cohere reranker.
+        let params = json!({
+            "configured_models": {
+                "rerank": {
+                    "enabled": true,
+                    "model": "cohere/rerank-4-fast",
+                    "operator": "openrouter",
+                },
+            },
+            "rerank": {
+                "enabled": true,
+                "model": "cohere/rerank-4-fast",
+                "operator": "openrouter",
+            },
+        });
+        let models = models_with_param_fallback(Models::default(), &params, None);
+        assert_eq!(models.rerank.as_deref(), Some("cohere/rerank-4-fast"));
+    }
+
+    #[test]
+    fn rerank_model_none_when_disabled_or_absent() {
+        // Disabled binding ({ enabled: false }) must not report a model, even if
+        // a stale model string lingers in the object.
+        let disabled = json!({
+            "configured_models": { "rerank": { "enabled": false, "model": null } },
+            "rerank": { "enabled": false },
+        });
+        assert!(models_with_param_fallback(Models::default(), &disabled, None).rerank.is_none());
+
+        // Older runs recorded no rerank field at all → still None.
+        let absent = json!({ "configured_models": { "answer": {"model": "deepseek-v4-flash"} } });
+        assert!(models_with_param_fallback(Models::default(), &absent, None).rerank.is_none());
     }
 }
