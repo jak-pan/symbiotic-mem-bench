@@ -28,6 +28,12 @@ pub struct Verdict {
     pub hypothesis: Option<String>,
     #[serde(default)]
     pub judge_raw: Option<String>,
+    /// Exact judge SYSTEM prompt sent for this question (per-type grader). Absent on older runs.
+    #[serde(default)]
+    pub judge_system_prompt: Option<String>,
+    /// Exact judge USER message sent (question + gold/rubric + model response). Absent on older runs.
+    #[serde(default)]
+    pub judge_user_prompt: Option<String>,
     #[serde(default)]
     pub autoeval_label: Option<AutoEvalLabel>,
     #[serde(default)]
@@ -84,6 +90,8 @@ pub struct QuestionRow {
     pub label: Option<bool>,
     pub is_abstention: Option<bool>,
     pub judge_raw: Option<String>,
+    pub judge_system_prompt: Option<String>,
+    pub judge_user_prompt: Option<String>,
     pub judge_model: Option<String>,
     pub router_pick: Option<String>,
     pub initial_pick: Option<String>,
@@ -94,6 +102,58 @@ pub struct QuestionRow {
 
 fn artifact_path(run_root: &Path, name: &str) -> std::path::PathBuf {
     run_root.join("artifacts").join(name)
+}
+
+/// Single source of truth for the (kind, filename, is_jsonl) mapping of artifacts
+/// served from a run's `artifacts/` directory. Mirrored by the API layer in
+/// `membench-server.rs` so the registry scanner can detect post-hoc artifacts
+/// (e.g. `gold-eval.json` written after the original `benchmark-report.json`
+/// was sealed) without a report re-write.
+///
+/// Keep this in sync with `membench_server::artifact_file` (which delegates here).
+pub fn artifact_file(kind: &str) -> Option<(&'static str, bool)> {
+    Some(match kind {
+        "hypotheses" => ("hypotheses.jsonl", true),
+        "verdicts" => ("verdicts.jsonl", true),
+        "partial_verdicts" => ("partial-verdicts.jsonl", true),
+        "provenance" => ("provenance.jsonl", true),
+        "memory_traces" => ("memory-traces.jsonl", true),
+        "model_traces" => ("model-traces.jsonl", true),
+        "step_analytics" => ("step-analytics.json", false),
+        "scored" => ("scored.json", false),
+        "score_summary" => ("score-summary.json", false),
+        "gold_eval" => ("gold-eval.json", false),
+        _ => return None,
+    })
+}
+
+/// All known artifact kinds, in display order.
+pub const KNOWN_ARTIFACT_KINDS: &[&str] = &[
+    "hypotheses",
+    "verdicts",
+    "partial_verdicts",
+    "provenance",
+    "memory_traces",
+    "model_traces",
+    "step_analytics",
+    "scored",
+    "score_summary",
+    "gold_eval",
+];
+
+/// Walk every known artifact kind and return those present on disk for `run_root`.
+/// Used to surface post-hoc artifacts (notably `gold_eval`) in the registry when
+/// the original `benchmark-report.json`'s `artifact_manifest` is stale.
+pub fn discover_artifacts_on_disk(run_root: &Path) -> Vec<String> {
+    KNOWN_ARTIFACT_KINDS
+        .iter()
+        .filter(|kind| {
+            artifact_file(kind)
+                .map(|(name, _)| artifact_path(run_root, name).exists())
+                .unwrap_or(false)
+        })
+        .map(|kind| kind.to_string())
+        .collect()
 }
 
 /// Read a JSONL artifact, skipping blank and unparseable lines.
@@ -193,6 +253,8 @@ pub fn question_rows(run_root: &Path) -> Vec<QuestionRow> {
         row.label = verdict.label;
         row.is_abstention = verdict.is_abstention;
         row.judge_raw = verdict.judge_raw;
+        row.judge_system_prompt = verdict.judge_system_prompt;
+        row.judge_user_prompt = verdict.judge_user_prompt;
         row.judge_model = verdict.autoeval_label.and_then(|label| label.model);
         row.error = verdict.error;
     }

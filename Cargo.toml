@@ -29,15 +29,15 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 clap = { version = "4", features = ["derive"] }
-symbiotic-memory = { path = "../symbiotic-memory", default-features = false, features = ["sqlite", "http", "cli", "zvec"], optional = true }
+symbiotic-memory = { git = "https://github.com/jak-pan/symbiotic-memory", branch = "rerank-provider-queue", default-features = false, features = ["sqlite", "http", "cli", "zvec"], optional = true }
 async-trait = { version = "0.1", optional = true }
 futures = { version = "0.3", optional = true }
 hex = { version = "0.4", optional = true }
 reqwest = { version = "0.13.4", features = ["json"], optional = true }
 regex = { version = "1", optional = true }
 rusqlite = { version = "0.32", features = ["bundled", "chrono"], optional = true }
-symbiotic-core = { path = "../symbiotic-foundation/crates/symbiotic-core", optional = true }
-symbiotic-queue = { path = "../symbiotic-foundation/crates/symbiotic-queue", optional = true }
+symbiotic-core = { git = "https://github.com/symbiotic-sh/symbiotic-foundation", branch = "master", optional = true }
+symbiotic-queue = { git = "https://github.com/symbiotic-sh/symbiotic-foundation", branch = "master", optional = true }
 axum = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"], optional = true }
 tower-http = { version = "0.6", features = ["fs", "cors"], optional = true }

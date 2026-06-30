@@ -1,6 +1,7 @@
 import type {
   Cohort,
   CompareResponse,
+  GoldEvalResponse,
   LiveResponse,
   PendingRun,
   QuestionDebug,
@@ -66,6 +67,11 @@ export const api = {
   artifact: (id: string, kind: string, offset = 0, limit = 200) =>
     get<any>(`/run/artifact?id=${enc(id)}&kind=${kind}&offset=${offset}&limit=${limit}`),
   traces: (id: string) => get<TracesResponse>(`/run/traces?id=${enc(id)}`),
+  goldEval: (id: string) =>
+    // Non-jsonl artifacts are served as `{ kind, json }` — unwrap to the payload.
+    get<{ kind: string; json: GoldEvalResponse }>(
+      `/run/artifact?id=${enc(id)}&kind=gold_eval`,
+    ).then((r) => r.json),
   compare: (base: string, cand: string) =>
     get<CompareResponse>(`/compare?base=${enc(base)}&cand=${enc(cand)}`),
   runnerSchema: () => get<RunnerSchema>("/runner/schema"),

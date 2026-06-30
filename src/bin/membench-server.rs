@@ -434,6 +434,7 @@ async fn run_live(
                 })
                 .unwrap_or_default(),
                 ingested: count_dir_entries(&record.run_root.join("vaults")).unwrap_or_default(),
+                oracle_gold: summary.oracle_gold,
             }
         };
         let detail = state
@@ -622,6 +623,7 @@ fn artifact_file(kind: &str) -> Option<(&'static str, bool)> {
         "step_analytics" => ("step-analytics.json", false),
         "scored" => ("scored.json", false),
         "score_summary" => ("score-summary.json", false),
+        "gold_eval" => ("gold-eval.json", false),
         _ => return None,
     })
 }

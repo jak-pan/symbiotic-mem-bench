@@ -27,6 +27,8 @@ pub struct Models {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub embed: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub rerank: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub judge: Option<String>,
 }
 
@@ -43,6 +45,7 @@ impl Models {
             answer: pick("answer"),
             distill: pick("distill"),
             embed: pick("embed"),
+            rerank: pick("rerank"),
             judge: pick("judge"),
         }
     }
@@ -51,6 +54,7 @@ impl Models {
         self.answer.is_none()
             && self.distill.is_none()
             && self.embed.is_none()
+            && self.rerank.is_none()
             && self.judge.is_none()
     }
 }

@@ -202,6 +202,58 @@ struct Pricing {
     source: &'static str,
 }
 
+const PRICING_CATALOG_SOURCE: &str =
+    "OpenRouter /models catalog (config/pricing/openrouter-pricing.json)";
+
+/// Lazily-loaded OpenRouter pricing catalog: model id -> (input_per_M_usd, output_per_M_usd).
+/// Sourced from `config/pricing/openrouter-pricing.json`, a snapshot of OpenRouter's `/models`
+/// pricing refreshed by `scripts/refresh-pricing.sh`. Path overridable via `SYMEM_PRICING_CACHE`.
+/// Missing/unparsable file -> empty catalog (callers fall back to the static table).
+fn openrouter_pricing_catalog() -> &'static std::collections::HashMap<String, (f64, f64)> {
+    static CATALOG: std::sync::OnceLock<std::collections::HashMap<String, (f64, f64)>> =
+        std::sync::OnceLock::new();
+    CATALOG.get_or_init(|| load_pricing_catalog().unwrap_or_default())
+}
+
+fn pricing_catalog_path() -> std::path::PathBuf {
+    match std::env::var("SYMEM_PRICING_CACHE") {
+        Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
+        _ => std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/config/pricing/openrouter-pricing.json"
+        )),
+    }
+}
+
+fn load_pricing_catalog() -> Option<std::collections::HashMap<String, (f64, f64)>> {
+    #[derive(serde::Deserialize)]
+    struct CatalogEntry {
+        input_per_million_usd: Option<f64>,
+        output_per_million_usd: Option<f64>,
+    }
+    #[derive(serde::Deserialize)]
+    struct CatalogFile {
+        models: std::collections::HashMap<String, CatalogEntry>,
+    }
+    let raw = std::fs::read_to_string(pricing_catalog_path()).ok()?;
+    let parsed: CatalogFile = serde_json::from_str(&raw).ok()?;
+    Some(
+        parsed
+            .models
+            .into_iter()
+            .map(|(id, e)| {
+                (
+                    id,
+                    (
+                        e.input_per_million_usd.unwrap_or(0.0),
+                        e.output_per_million_usd.unwrap_or(0.0),
+                    ),
+                )
+            })
+            .collect(),
+    )
+}
+
 fn percentile(sorted: &[i64], pct: f64) -> Option<f64> {
     if sorted.is_empty() {
         return None;
@@ -220,7 +272,9 @@ fn pricing_for(operator: &str, operation: &str, model: &str) -> Option<Pricing> 
     let operator = operator.trim();
     let operation = operation.trim();
     let model = model.trim();
-    match (operator, operation, model) {
+    // Static table: native-API pricing (DeepSeek/Gemini) + explicit overrides, version-controlled
+    // here. OpenRouter-routed models fall through to the cached `/models` catalog below.
+    let static_hit = match (operator, operation, model) {
         ("deepseek", "chat", "deepseek-v4-flash") => Some(Pricing {
             input_per_million_usd: Some(0.14),
             cached_input_per_million_usd: Some(0.0028),
@@ -257,8 +311,31 @@ fn pricing_for(operator: &str, operation: &str, model: &str) -> Option<Pricing> 
             output_per_million_usd: None,
             source: "OpenRouter model pricing: https://openrouter.ai/qwen/qwen3-embedding-4b",
         }),
+        // Embeddings are not listed in OpenRouter's /models catalog, so they are priced here.
+        ("openrouter", "embedding", "openai/text-embedding-3-small") => Some(Pricing {
+            input_per_million_usd: Some(0.02),
+            cached_input_per_million_usd: None,
+            output_per_million_usd: None,
+            source: "OpenAI embedding pricing: https://platform.openai.com/docs/pricing",
+        }),
         _ => None,
+    };
+    if static_hit.is_some() {
+        return static_hit;
     }
+    // OpenRouter-routed models: price from the cached OpenRouter /models catalog
+    // (config/pricing/openrouter-pricing.json, refreshed by `scripts/refresh-pricing.sh`).
+    if operator == "openrouter" {
+        if let Some(&(input, output)) = openrouter_pricing_catalog().get(model) {
+            return Some(Pricing {
+                input_per_million_usd: Some(input),
+                cached_input_per_million_usd: None,
+                output_per_million_usd: Some(output),
+                source: PRICING_CATALOG_SOURCE,
+            });
+        }
+    }
+    None
 }
 
 /// Per-search price for a rerank operation, in micro-USD. OpenRouter rerankers are billed per

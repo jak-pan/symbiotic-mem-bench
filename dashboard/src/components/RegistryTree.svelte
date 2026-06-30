@@ -178,6 +178,7 @@
             <span class="dot" class:native={r.run_kind === "native"} class:trial={r.is_trial_run} class:tuning={r.registry_section === "tuning"}></span>
             <span class="nname" title={`${r.run_name} · ${r.run_id}`}>
               {r.display_name || r.run_name}
+              {#if r.oracle_gold}<span class="gold-pill" title="Oracle-gold run: gold evidence fed straight to the answerer (reader-ceiling method)">G</span>{/if}
               {#if r.is_trial_run}<span class="trial-pill">{trialBadge(r)}</span>{/if}
               <span class="origin-pill" class:meta={r.is_meta_record}>{sourceBadge(r)}</span>
             </span>
@@ -410,6 +411,16 @@
     padding: 0 4px;
     border: 1px solid var(--amber-dim);
     color: var(--amber);
+    font-size: 7.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+  }
+  .gold-pill {
+    margin-left: 0px;
+    padding: 0 2px;
+    border: 1px solid var(--gold);
+    color: var(--gold);
+    background: rgba(212, 175, 55, 0.1);
     font-size: 7.5px;
     font-weight: 700;
     letter-spacing: 0.06em;
