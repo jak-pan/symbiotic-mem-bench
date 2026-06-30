@@ -1785,10 +1785,7 @@ where
                 .with_optional_trace_sink(memory_trace_sink.clone())
                 .with_diagnostic_mode(ingest_diagnostic_mode);
         if consolidate_briefs {
-            let extractive_config = extractive_brief_config_from_env();
-            if extractive_config.max_briefs > 0 {
-                ingest = ingest.with_extractive_briefs(extractive_config);
-            }
+            // Briefs (extractive-brief-v1) are deprecated/killed — never generate them.
             if let Some(consolidator_factory) = consolidator_factory {
                 ingest = ingest.with_consolidator(consolidator_factory());
             }
@@ -2792,26 +2789,6 @@ fn workflow_retry_delay_seconds(attempt: u32) -> u64 {
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
-fn extractive_brief_config_from_env() -> symbiotic_memory::ExtractiveBriefConfig {
-    let default = symbiotic_memory::ExtractiveBriefConfig::default();
-    symbiotic_memory::ExtractiveBriefConfig {
-        window_turns: env_usize("SYMEM_EXTRACTIVE_BRIEF_WINDOW_TURNS")
-            .unwrap_or(default.window_turns)
-            .max(1),
-        max_turn_chars: env_usize("SYMEM_EXTRACTIVE_BRIEF_MAX_TURN_CHARS")
-            .unwrap_or(default.max_turn_chars),
-        max_briefs: env_usize("SYMEM_EXTRACTIVE_BRIEF_MAX_BRIEFS").unwrap_or(default.max_briefs),
-    }
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn env_usize(name: &str) -> Option<usize> {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
 async fn run_workflow_row<F, T>(row_result: F, timeout: Option<Duration>) -> anyhow::Result<T>
 where
     F: std::future::Future<Output = anyhow::Result<T>>,
@@ -3748,7 +3725,7 @@ mod tests {
     #[tokio::test]
     async fn sqlite_benchmark_writes_archive_before_manifest_success() {
         use symbiotic_memory::config::RecallPolicy;
-        use symbiotic_memory::ingest::HeuristicDistiller;
+        use symbiotic_memory::ingest::PassthroughDistiller;
         use symbiotic_memory::providers::{DisabledChatProvider, HashEmbeddingProvider};
         use symbiotic_memory::storage::sqlite::SqliteStore;
 
@@ -3780,7 +3757,7 @@ mod tests {
             &[row],
             dir.path(),
             HashEmbeddingProvider::default,
-            || HeuristicDistiller,
+            || PassthroughDistiller,
             || DisabledChatProvider,
             policy,
             &out,
@@ -3835,7 +3812,7 @@ mod tests {
     #[tokio::test]
     async fn sqlite_answer_only_reuses_complete_vault_without_reingest() {
         use symbiotic_memory::config::RecallPolicy;
-        use symbiotic_memory::ingest::HeuristicDistiller;
+        use symbiotic_memory::ingest::PassthroughDistiller;
         use symbiotic_memory::providers::{DisabledChatProvider, HashEmbeddingProvider};
 
         let dir = tempfile::tempdir().unwrap();
@@ -3861,7 +3838,7 @@ mod tests {
             std::slice::from_ref(&row),
             dir.path(),
             HashEmbeddingProvider::default,
-            || HeuristicDistiller,
+            || PassthroughDistiller,
             || DisabledChatProvider,
             policy.clone(),
             &first_out,
@@ -3890,7 +3867,7 @@ mod tests {
             &[row],
             dir.path(),
             HashEmbeddingProvider::default,
-            || HeuristicDistiller,
+            || PassthroughDistiller,
             || DisabledChatProvider,
             policy,
             &answer_only_out,
@@ -3922,7 +3899,7 @@ mod tests {
     #[tokio::test]
     async fn sqlite_benchmark_can_consolidate_extractive_briefs() {
         use symbiotic_memory::config::RecallPolicy;
-        use symbiotic_memory::ingest::HeuristicDistiller;
+        use symbiotic_memory::ingest::PassthroughDistiller;
         use symbiotic_memory::providers::{DisabledChatProvider, HashEmbeddingProvider};
         use symbiotic_memory::storage::sqlite::SqliteStore;
 
@@ -3948,7 +3925,7 @@ mod tests {
             &[row],
             dir.path(),
             HashEmbeddingProvider::default,
-            || HeuristicDistiller,
+            || PassthroughDistiller,
             || DisabledChatProvider,
             policy,
             &out,

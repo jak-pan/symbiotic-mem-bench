@@ -3,8 +3,5 @@ recall:
   fact_top_k: 20
   raw_turn_top_k: 5
   query_planner: flash
-  always_include_raw_turns: true
-  raw_recall_primary: true
-  raw_recall_include_facts: true
   preference_grounding: true
   answerer_enabled: true

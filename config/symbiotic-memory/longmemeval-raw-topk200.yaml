@@ -3,9 +3,6 @@ recall:
   fact_top_k: 200
   raw_turn_top_k: 100
   query_planner: flash
-  always_include_raw_turns: true
-  raw_recall_primary: true
-  raw_recall_include_facts: true
   preference_grounding: true
   answerer_enabled: true
 queue:

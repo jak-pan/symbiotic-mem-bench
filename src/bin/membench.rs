@@ -4589,7 +4589,7 @@ impl ProviderRuntime {
     ) -> anyhow::Result<Arc<dyn Fn() -> DynDistiller + Send + Sync>> {
         match run.distiller.as_str() {
             "heuristic" => Ok(Arc::new(|| {
-                DynDistiller(Arc::new(symbiotic_memory::HeuristicDistiller))
+                DynDistiller(Arc::new(symbiotic_memory::PassthroughDistiller))
             })),
             "llm" => {
                 let prompt = load_memory_prompt(run, &run.distill_prompt)?;
@@ -6833,10 +6833,16 @@ mod tests {
         );
         // Two gold turns (s:0 best, s:2 worst) -> deepest is the worst = rank 3.
         let two: BTreeSet<String> = ["s:0".to_string(), "s:2".to_string()].into_iter().collect();
-        assert_eq!(deepest_gold_rank(&cands, &two, |c| c.embedding_score), Some(3));
+        assert_eq!(
+            deepest_gold_rank(&cands, &two, |c| c.embedding_score),
+            Some(3)
+        );
         // A gold turn that never appears in the candidate set -> None (not in set).
         let absent: BTreeSet<String> = ["s:99".to_string()].into_iter().collect();
-        assert_eq!(deepest_gold_rank(&cands, &absent, |c| c.embedding_score), None);
+        assert_eq!(
+            deepest_gold_rank(&cands, &absent, |c| c.embedding_score),
+            None
+        );
     }
 
     #[test]
@@ -6856,7 +6862,10 @@ mod tests {
         );
         let gold: BTreeSet<String> = ["s:0".to_string()].into_iter().collect();
         // final_rank: s:1 (rank 0) then s:0 (rank 2) -> gold s:0 is rerank #2.
-        assert_eq!(deepest_gold_rank(&cands, &gold, |c| c.rerank_score), Some(2));
+        assert_eq!(
+            deepest_gold_rank(&cands, &gold, |c| c.rerank_score),
+            Some(2)
+        );
     }
 
     #[cfg(feature = "symbiotic-memory-adapter")]
