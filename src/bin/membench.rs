@@ -4125,6 +4125,16 @@ fn prepare_re_embed_linked_vaults(
         if source_archive.exists() {
             link_path(&source_archive, &target_vault.join("archive"))?;
         }
+        // Facts-only re-embed (the default): carry the source vector index forward so the existing
+        // raw-turn vectors are preserved — only fact vectors get overwritten by upsert_facts, no turn
+        // re-embed. A full turn re-embed (SYMEM_REEMBED_TURNS=1) instead leaves zvec-hybrid absent so
+        // the index rebuilds from scratch at the (possibly new) embedding dimensions.
+        if !symbiotic_mem_bench::symbiotic_memory_adapter::reembed_turns() {
+            let source_zvec = source_vault.join("zvec-hybrid");
+            if source_zvec.is_dir() {
+                copy_dir_recursive(&source_zvec, &target_vault.join("zvec-hybrid"))?;
+            }
+        }
     }
     Ok(())
 }
@@ -4696,8 +4706,11 @@ impl ProviderRuntime {
         // local Nemotron /serve server at http://localhost:8088).
         let base_url = run_env_value(run, "SYMEM_RERANK_BASE_URL")
             .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
+        // Bench default reranker: the free Nemotron VL 1B (ties Cohere at ~92% on 50Q, costs $0).
+        // This is a benchmark-harness default only — the memory library imposes no reranker default.
+        // Override per-run with SYMEM_RERANK_MODEL (e.g. cohere/rerank-4-fast for a paid A/B).
         let model = run_env_value(run, "SYMEM_RERANK_MODEL")
-            .unwrap_or_else(|| "cohere/rerank-4-fast".to_string());
+            .unwrap_or_else(|| "nvidia/llama-nemotron-rerank-vl-1b-v2:free".to_string());
         let main = Some(self.build_reranker(run, &base_url, &model)?);
 
         // Optional cheap stage-1 prefilter reranker. Enabled iff SYMEM_RERANK_STAGE1_MODEL is set.
@@ -6407,7 +6420,7 @@ fn resolved_rerank_params(run: &SymbioticMemoryCliRun) -> serde_json::Value {
     let base_url = run_env_value(run, "SYMEM_RERANK_BASE_URL")
         .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
     let model = run_env_value(run, "SYMEM_RERANK_MODEL")
-        .unwrap_or_else(|| "cohere/rerank-4-fast".to_string());
+        .unwrap_or_else(|| "nvidia/llama-nemotron-rerank-vl-1b-v2:free".to_string());
     let is_local = base_url.contains("localhost")
         || base_url.contains("127.0.0.1")
         || base_url.contains("[::1]");

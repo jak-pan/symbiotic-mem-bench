@@ -9,7 +9,6 @@ recall:
   answerer_enabled: true
 
 queue:
-  workflow_max_in_flight: 10
   defaults:
     timeout_seconds: 600
     retry_attempts: 4

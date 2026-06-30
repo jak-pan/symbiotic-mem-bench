@@ -14,3 +14,4 @@
 /dashboard/dist
 
 .DS_Store
+/.cargo/

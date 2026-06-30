@@ -403,6 +403,19 @@ fn reembed_mode() -> bool {
     redo_stage() == Some("embed")
 }
 
+/// Whether `--re-embed` should also recompute raw-turn embeddings. Default FALSE: a re-embed only
+/// changes fact `search_text` (via the distill/enrich metadata logic) — raw-turn text is identical,
+/// so re-embedding turns re-calls the embedding API for every turn just to produce byte-identical
+/// vectors. That bulk turn re-embed is the dominant cost of a full re-embed. With this off, the prep
+/// COPIES the source `zvec-hybrid` index (preserving the existing turn vectors) and only facts are
+/// re-embedded + upserted. Set `SYMEM_REEMBED_TURNS=1` to force a full turn re-embed — required when
+/// the embedding model or dimensions change (the copied index would then be stale).
+pub fn reembed_turns() -> bool {
+    std::env::var("SYMEM_REEMBED_TURNS")
+        .ok()
+        .is_some_and(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES" | "on"))
+}
+
 /// Embed texts in bounded batches, firing batches CONCURRENTLY through the provider queue (which is
 /// sized for ~1000 in-flight) rather than awaiting one at a time. `buffered` preserves input order,
 /// so the returned vectors line up with `texts`. Chunk size bounds per-request size (e.g. Gemini
@@ -1723,8 +1736,12 @@ where
         );
         let reembedded_fact_count = facts.len();
         store.upsert_facts(facts, fact_embeddings).await?;
+        // Raw turns are only re-embedded when explicitly requested (dims/model change). By default
+        // the prep copied the source zvec index forward, so the existing turn vectors are already
+        // present — recomputing them would re-call the embedding API for identical vectors (the bulk
+        // cost of a re-embed). See `reembed_turns`.
         let mut reembedded_turn_count = 0usize;
-        if !existing_turns.is_empty() {
+        if reembed_turns() && !existing_turns.is_empty() {
             let turn_texts: Vec<String> = existing_turns
                 .iter()
                 .map(|turn| turn.text.clone())
