@@ -351,16 +351,18 @@ reranker moved the needle.** ALWAYS verify a lever FIRED (changed the prompt/evi
 ## CORE LOOP — answer-only A/B
 - Source vault: `runs/symbiotic-memory/long-mem-eval/500/factconsol-thinkon-500-20260624/vaults`
 - Rebuild after symem code change: `cargo build --release --features symbiotic-memory-adapter --bin membench`
-- Run (repo root; `.env.test.local` auto-loads keys):
-  `env SYMEM_DISTILL_THINKING=off SYMEM_ANSWER_THINKING=on SYMEM_EMBED_MODEL=qwen/qwen3-embedding-8b SYMEM_EMBED_DIMS=1024 SYMEM_EMBED_REQUEST_DIMS=1024 SYMEM_OPENROUTER_HTTP_HTTP1_ONLY=1 SYMEM_RERANK=on SYMEM_RERANK_MODEL=cohere/rerank-4-fast SYMEM_RERANK_CANDIDATES=100 <LEVER_ENV> ./target/release/membench --system symbiotic-memory --benchmark long-mem-eval --limit 500 --sample stratified --embedder openrouter --store zvec-hybrid --memory-config config/symbiotic-memory/longmemeval-raw-light.yaml --prompt-dir /tmp/prompts-v3 --answer-only --source-vault-root <SRC> --score --run-name <name>`
+- Run (repo root; `.env.test.local` auto-loads keys; var names post-SYMEM-removal — see docs/environment.md):
+  `env MEMBENCH_DISTILL_THINKING=off MEMBENCH_ANSWER_THINKING=on MEMBENCH_EMBED_MODEL=qwen/qwen3-embedding-8b MEMBENCH_EMBED_DIMS=1024 MEMBENCH_EMBED_REQUEST_DIMS=1024 SYMBIOTIC_MEMORY__TRANSPORT__HTTP1_ONLY=true MEMBENCH_RERANK=on MEMBENCH_RERANK_MODEL=cohere/rerank-4-fast SYMBIOTIC_MEMORY__RECALL__RERANK_CANDIDATES=100 <LEVER_ENV> ./target/release/membench --system symbiotic-memory --benchmark long-mem-eval --limit 500 --sample stratified --embedder openrouter --store zvec-hybrid --memory-config config/symbiotic-memory/longmemeval-raw-light.yaml --prompt-dir /tmp/prompts-v3 --answer-only --source-vault-root <SRC> --score --run-name <name>`
+  (rerank is ON by default; the harness default model is `nvidia/llama-nemotron-rerank-vl-1b-v2:free` — pin `MEMBENCH_RERANK_MODEL` explicitly for A/B comparability)
 - Score: `is_correct` in `runs/.../<name>/artifacts/verdicts.jsonl`. Prompt+reasoning: `runs/.../<name>/vaults/<qid>/debug/question-debug.json` → `recall.answerer_calls[0].{system_prompt,prompt,reasoning,response_text}`. Planner: `recall.query_plan` / `recall.query_planner_call`.
 - Fast single-question probe (no harness, ~10s): `/tmp/ask_one.py` replays a question's exact prompt to flash.
 - Paid runs serialize on `runs/.locks/paid-provider-run.lock` (one at a time). Sweep via a background script.
 
-## ENV KNOBS (gated in ../symbiotic-memory; all off by default)
-- Recall: `SYMEM_RERANK`(+`_MODEL`,`_CANDIDATES`,`_RESERVE`), `SYMEM_EXCLUDE_BRIEFS`, `SYMEM_MULTIHOP`, `SYMEM_TEMPORAL_FILTER`, `SYMEM_LEDGER_RETRIEVAL`.
-- Evidence cleaning (this push): `SYMEM_DEDUP_EVIDENCE`, `SYMEM_DROP_LOWCONF`(+`SYMEM_MIN_CONFIDENCE`), `SYMEM_DROP_CONFLICTING`, `SYMEM_RELEVANCE_CUTOFF`(frac 0–1).
-- Answer: `SYMEM_ANSWER_THINKING`(off/on/high/max), `SYMEM_ANSWER_OPERATOR`/`_MODEL`, `SYMEM_SPLIT_PROMPTS`, `SYMEM_DETERMINISTIC_COUNT`(shelved). k via the config yaml (`fact_top_k`/`raw_turn_top_k`).
+## ENV KNOBS (the SYMEM_* env API is dead — engine gates are typed `[experimental]`/`[recall]` config keys, harness levers are `MEMBENCH_*`; see docs/environment.md)
+- Rerank (harness-owned): `MEMBENCH_RERANK` (ON by default, `=0` disables), `MEMBENCH_RERANK_MODEL`, `MEMBENCH_RERANK_STAGE1_MODEL`(+`_TOP_X`); engine candidate width `SYMBIOTIC_MEMORY__RECALL__RERANK_CANDIDATES`.
+- Engine experiment gates (off by default): `SYMBIOTIC_MEMORY__EXPERIMENTAL__MULTIHOP`, `…__TEMPORAL_FILTER`, `…__DROP_LOWCONF`(+`…__MIN_CONFIDENCE`), `…__DROP_CONFLICTING`, `…__RELEVANCE_CUTOFF`(frac 0–1), `…__SPLIT_PROMPTS`.
+- Answer (harness roles): `MEMBENCH_ANSWER_THINKING`(off/on/high/max), `MEMBENCH_ANSWER_OPERATOR`/`_MODEL`. k via the config yaml (`fact_top_k`/`raw_turn_top_k`).
+- Removed in the config triage (do not set; re-add only as typed `[experimental]` fields with referee evidence): `SYMEM_EXCLUDE_BRIEFS`, `SYMEM_LEDGER_RETRIEVAL`, `SYMEM_DEDUP_EVIDENCE`, `SYMEM_DETERMINISTIC_COUNT` (shelved), `SYMEM_RERANK_RESERVE`.
 
 ## LEVER LEDGER (vs ~88.5 baseline; detail in PUSH-TO-95.md)
 - Within-noise-or-worse: short prompt 84, rerank-200 87.3, Chain-of-Note 87.8, surgical 87.8, condcon

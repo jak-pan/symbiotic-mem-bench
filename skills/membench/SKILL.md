@@ -131,8 +131,8 @@ alternate environment.
 - `workflow/longmemeval/queue.sqlite` is durable row workflow state. Provider/model queue logs live
   separately under `provider-queue/model-queue-traces.jsonl` and are present only for actual queued
   model calls.
-- LongMemEval scoring should default to `judge_prompt_mode=semantic-shared-compact` once the scorer
-  is used; use `SYMEM_JUDGE_PROMPT_MODE=official` only for original-prompt audit comparisons.
+- LongMemEval scoring defaults to `judge_prompt_mode=official` (the per-question-type paper grader,
+  see `JUDGE.md`); use `MEMBENCH_JUDGE_PROMPT_MODE=semantic` only for legacy-grader A/B comparisons.
 - Judge cache prewarm is wired but must remain opt-in: use `--prewarm-judge-cache 5
   --prewarm-pause-secs 10` for DeepSeek rejudge/score-heavy runs, not as a default ingest/answer
   behavior.
@@ -150,11 +150,12 @@ alternate environment.
   results. The dashboard `QUESTIONS` drawer reads this bundle lazily when a row is expanded.
 - The live dashboard labels the memory `embed_query` stage as `answer embed`, because that embedding
   call vectorizes the answer/retrieval query before fact/raw source search.
-- Embedding request sizing has two distinct axes. `SYMEM_EMBED_BATCH_SIZE` and
-  `SYMEM_EMBED_BATCH_MAX_CHARS` are request-packing controls with code-owned defaults. Larger request
-  char budgets reduce HTTP fanout but can take longer and retry more work when a request fails.
-  `SYMEM_EMBED_MAX_CHARS` is the per-input local text cap. Do not use the batch char budget as an
-  item truncation cap or provider concurrency control.
+- Embedding request sizing has two distinct axes. `SYMBIOTIC_MEMORY__EMBED__BATCH_SIZE` and
+  `SYMBIOTIC_MEMORY__EMBED__BATCH_MAX_CHARS` (the kit's `embed.batch_size` / `embed.batch_max_chars`)
+  are request-packing controls with code-owned defaults. Larger request char budgets reduce HTTP
+  fanout but can take longer and retry more work when a request fails. `MEMBENCH_EMBED_MAX_CHARS` is
+  the per-input local text cap. Do not use the batch char budget as an item truncation cap or
+  provider concurrency control.
 - Symbiotic Memory model/provider defaults belong in `../symbiotic-memory` code/config. Benchmark
   role bindings belong in `../symbiotic-memory`, while known model queue defaults belong in the
   foundation model catalog. Benchmark profiles should not repeat answer/distill/embed model defaults;

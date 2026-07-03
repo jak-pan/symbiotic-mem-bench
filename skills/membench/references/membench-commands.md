@@ -109,9 +109,10 @@ DeepSeek Flash query planner, and shared provider queue defaults.
 
 Embedding request sizing is split deliberately:
 
-- `SYMEM_EMBED_BATCH_SIZE` and `SYMEM_EMBED_BATCH_MAX_CHARS` pack embedding HTTP requests.
+- `SYMBIOTIC_MEMORY__EMBED__BATCH_SIZE` and `SYMBIOTIC_MEMORY__EMBED__BATCH_MAX_CHARS`
+  (the kit's `embed.batch_size` / `embed.batch_max_chars`) pack embedding HTTP requests.
   Defaults are code-owned in `symbiotic-memory`.
-- `SYMEM_EMBED_MAX_CHARS` is the per-input local text cap.
+- `MEMBENCH_EMBED_MAX_CHARS` is the per-input local text cap.
 
 The batch char budget must not truncate individual inputs, and none of these settings are provider
 concurrency caps. Provider concurrency is controlled by the shared model queue id.
@@ -152,11 +153,10 @@ CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run \
 
 ## Queued Scoring
 
-Scoring will default to the `semantic-shared-compact` LongMemEval judge prompt. It uses one reusable
-prefix for better prompt-cache behavior and accepts equivalent or inferable answers that the original
-verbose prompt can mark as false negatives. The selected mode is written to `scored.json` as
-`judge_prompt_mode`. For audit comparisons, run with `SYMEM_JUDGE_PROMPT_MODE=official`; for
-official-style cache experiments, use `SYMEM_JUDGE_PROMPT_MODE=category-prefix`.
+Scoring defaults to the `official` LongMemEval judge prompt mode: the per-question-type paper
+grader (see `JUDGE.md`). The selected mode is written to `scored.json` as `judge_prompt_mode`.
+The older generic semantic grader remains available for A/B comparisons via
+`MEMBENCH_JUDGE_PROMPT_MODE=semantic` (aliases: `semantic-shared-compact`, `legacy`, `generic`).
 
 DeepSeek judge cache prewarm should remain opt-in and mainly for rejudge/score-heavy runs:
 
@@ -289,8 +289,9 @@ Compare saved DeepSeek chat transport evidence runs:
 scripts/report-chat-transport-tuning.sh --profile deepseek-v4-flash-distill --markdown
 ```
 
-The chat transport shape is controlled by `SYMEM_CHAT_HTTP_CLIENT_POOL_SIZE`,
-`SYMEM_CHAT_HTTP_POOL_MAX_IDLE_PER_HOST`, and `SYMEM_CHAT_HTTP_HTTP1_ONLY`.
+The chat transport shape is controlled by `SYMBIOTIC_MEMORY__TRANSPORT__CHAT_CLIENT_POOL_SIZE`,
+`SYMBIOTIC_MEMORY__TRANSPORT__POOL_MAX_IDLE_PER_HOST`, and
+`SYMBIOTIC_MEMORY__TRANSPORT__HTTP1_ONLY` (the kit's `[transport]` config section).
 Those are below the provider queue: they do not replace the model catalog or
 workflow `max_in_flight`.
 

@@ -17,7 +17,7 @@ A run name resolves under `runs/symbiotic-memory/long-mem-eval/<limit>/<name>` (
 
 - **acc** — overall correct/total from `artifacts/verdicts.jsonl`.
 - **by-type** — accuracy per LongMemEval question type: `ms` (multi-session), `tr` (temporal), `ku` (knowledge-update), `ss-user` / `ss-asst` / `ss-pref` (single-session).
-- **reasoned** — how many answerer calls emitted a reasoning trace (`n/a` if the run has no per-question debug). Use this to confirm thinking actually fired — opt-in models (e.g. gemma-4) need `SYMEM_ANSWER_REASONING_EFFORT=high`, not just `THINKING=on`. See `MODEL-REASONING-DEFAULTS.md`.
+- **reasoned** — how many answerer calls emitted a reasoning trace (`n/a` if the run has no per-question debug). Use this to confirm thinking actually fired — opt-in models (e.g. gemma-4) need `MEMBENCH_ANSWER_REASONING_EFFORT=high`, not just `THINKING=on`. See `MODEL-REASONING-DEFAULTS.md`.
 - **cost** — total run cost from the report (the `cost.rs` rollup, priced from the OpenRouter `/models` catalog in `config/pricing/openrouter-pricing.json` + the native static table, with prompt-cache discount). Canonical for runs scored after the pricing-catalog change; re-score older runs to refresh. Per-model split is in the dashboard / `/api/run`. Refresh prices: `scripts/refresh-pricing.sh`.
 - **hard / control** — the tier2 (31) and control (30) split, shown only when the run covers those question sets (the 61-question baseline). Qids come from `runs/inputs/longmemeval-hard/{hard-tier2-cluster31,control-easy30}.json` — canonical, not `/tmp`.
 

@@ -28,7 +28,7 @@ information is unavailable" and a correct response abstains. In our code `questi
 per-type prompt; `is_abstention` is a **reporting-only** flag (the abstention-accuracy breakdown).
 LongMemEval-S = **500 questions, 30 abstention**.
 
-## Modes — `SYMEM_JUDGE_PROMPT_MODE`
+## Modes — `MEMBENCH_JUDGE_PROMPT_MODE`
 
 - unset / `official` / `paper` / `longmemeval` → the per-type paper grader (**default**).
 - `semantic` / `semantic-shared-compact` / `legacy` / `generic` → the old generic semantic grader
@@ -40,10 +40,10 @@ the field).
 
 ## Judge model
 
-- Default **`deepseek-v4-flash`** (override with `SYMEM_JUDGE_MODEL`).
+- Default **`deepseek-v4-flash`** (override with `MEMBENCH_JUDGE_MODEL`).
 - The paper used **GPT-4o** (reported 97% agreement with human experts). We run deepseek-flash with
   the *identical* prompts — same rubric, far cheaper, minor model-dependent disagreements possible.
-  For exact paper replication: `SYMEM_JUDGE_MODEL=openai/gpt-…` then `--rejudge`.
+  For exact paper replication: `MEMBENCH_JUDGE_MODEL=openai/gpt-…` then `--rejudge`.
 
 ## Re-judging without re-answering — `--rejudge`
 

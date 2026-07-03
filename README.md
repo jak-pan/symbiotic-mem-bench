@@ -42,10 +42,15 @@ When `--dataset` is omitted for LongMemEval, `membench` downloads the cleaned S 
 Small LongMemEval runs use `--sample stratified` by default so quick runs cover multiple question
 types. Use `--sample first` only when reproducing the dataset's original row order.
 
-Default launches are paid, provider-backed, scored, and must run in Cargo release mode. They use
-`llm` distill, `gemini` embeddings, unified answering, source-backed brief generation, DeepSeek Flash
-query planning, and judge scoring. The native adapter owns the run state, provider queues, response caches,
-hypotheses, verdicts, score summaries, and normalized run report.
+Default launches are paid, provider-backed, scored, and must run in Cargo release mode. The
+owner-default stack is: `llm` distill (DeepSeek Flash), OpenRouter `qwen/qwen3-embedding-8b`
+embeddings at 1024 dims (`--embedder openrouter` is the default; Gemini embeddings are NOT the
+default), cross-encoder reranking ON by default with the free
+`nvidia/llama-nemotron-rerank-vl-1b-v2:free` model (`MEMBENCH_RERANK=0` disables it), the
+`zvec-hybrid` store, unified answering, DeepSeek Flash query planning, and judge scoring. Reweave
+brief generation is opt-in (`MEMBENCH_CONSOLIDATOR=llm`), not a default. The native adapter owns
+the run state, provider queues, response caches, hypotheses, verdicts, score summaries, and
+normalized run report.
 
 Run a no-network smoke test explicitly:
 
@@ -255,7 +260,7 @@ Current adapter status:
 | Explicit `--smoke` run | wired | No network spend; maps internally to local deterministic providers and no scorer for adapter/run-shape smoke tests. |
 | Fresh/resume/answer-only semantics | wired | Normal native runs re-ingest, `--resume` continues interrupted roots, and `--answer-only` regenerates answers from existing vault state. `--source-vault-root` links immutable vault data into a fresh run root for cheap isolated reruns. |
 | Provider-backed LLM/Gemini ingestion | wired | Runs through `membench` native adapter and shared provider queues; benchmark subcommands stay out of `symem`. |
-| Default paid Symbiotic Memory launch | wired | The CLI and dashboard default to `llm + gemini + score`. |
+| Default paid Symbiotic Memory launch | wired | The CLI and dashboard default to `llm` distill + OpenRouter qwen3 embeddings + rerank + `score`. |
 | Queued LongMemEval scoring | wired | Uses the same queued provider, retry, trace, and response-cache stack as memory answerer calls. |
 | Explorer/import/save-record | wired | Reads normalized `benchmark-report.json` and `artifacts/`. |
 | Provider queue/model trace export | wired | New native runs export `provider-queue/model-queue-traces.jsonl` as `artifacts/model-traces.jsonl`; dashboard live/detail also read provider queue traces directly for older runs. |
@@ -274,12 +279,11 @@ timezone for normal memory use. LongMemEval maps each row's `question_date` into
 reference timestamp so temporal questions replay against the benchmark's pinned clock. Use
 `MEMBENCH_REFERENCE_DATETIME` only when intentionally overriding that clock for a named experiment.
 
-The default LongMemEval judge prompt mode is `semantic-shared-compact`: a stable shared prefix that
-keeps the LongMemEval yes/no rubric while accepting equivalent or inferable answers that the original
-verbose prompt repeatedly marked as false negatives in spot checks. Each run records
-`judge_prompt_mode` in `scored.json`. Use `MEMBENCH_JUDGE_PROMPT_MODE=official` only for original-prompt
-audit runs, or `MEMBENCH_JUDGE_PROMPT_MODE=category-prefix` for cache experiments with official-style
-per-category wording.
+The default LongMemEval judge prompt mode is `official`: the per-question-type paper grader (see
+`JUDGE.md`). The older generic semantic grader remains available as
+`MEMBENCH_JUDGE_PROMPT_MODE=semantic` (aliases: `semantic-shared-compact`, `legacy`, `generic`) for
+back-compat and A/B comparison. Each run records `judge_prompt_mode` in `scored.json` and the
+dashboard surfaces it, because verdicts across judge modes are not comparable.
 
 Judge cache prewarm is wired and opt-in: for DeepSeek rejudge or score-heavy runs,
 `--prewarm-judge-cache 5 --prewarm-pause-secs 10` scores five temporary hypotheses into

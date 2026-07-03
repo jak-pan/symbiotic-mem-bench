@@ -42,6 +42,6 @@ scripts/oracle-test.sh qwen/qwen3.6-35b-a3b /tmp/prompts-min
 - **Per-token cheap ≠ per-run cheap.** Thinking-on models emit very different output volumes
   (qwen3.6-35b ran 3.2× the tokens of qwen3.7-plus for the same input → pricier per run despite a
   lower rate). The per-run cost is the one that matters; this skill reports it.
-- **Default thinking is on** (`SYMEM_ANSWER_THINKING=on`); override via env. Override `VAULT`/`DS`
+- **Default thinking is on** (`MEMBENCH_ANSWER_THINKING=on`); override via env. Override `VAULT`/`DS`
   via env to point at a different oracle bed.
 - Reuses `score-run` for the by-type/cost readout, so the two stay consistent.

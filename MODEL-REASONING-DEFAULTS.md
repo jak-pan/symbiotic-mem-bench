@@ -2,22 +2,24 @@
 
 Reference for the **answerer (reader) models** we test and run, as of **June 2026**. Reasoning
 behavior varies by model *and* by platform (a provider's native API and OpenRouter often differ),
-and it changes what our `SYMEM_ANSWER_THINKING` / `SYMEM_ANSWER_REASONING_EFFORT` knobs actually do.
+and it changes what our `MEMBENCH_ANSWER_THINKING` / `MEMBENCH_ANSWER_REASONING_EFFORT` knobs
+actually do.
 Every claim below is from a cited primary source (OpenRouter model pages + provider docs); anything
 unverified is marked.
 
 ## How membench controls reasoning
 
-- **`SYMEM_ANSWER_THINKING=on|off`** — requests thinking for the answerer role (same pattern for
-  `SYMEM_DISTILL_THINKING`, `SYMEM_JUDGE_THINKING`).
-- **`SYMEM_ANSWER_REASONING_EFFORT=low|medium|high|max`** — sets effort, passed through as the
+- **`MEMBENCH_ANSWER_THINKING=on|off`** — requests thinking for the answerer role (same pattern for
+  `MEMBENCH_DISTILL_THINKING`, `MEMBENCH_JUDGE_THINKING`).
+- **`MEMBENCH_ANSWER_REASONING_EFFORT=low|medium|high|max`** — sets effort, passed through as the
   provider's `reasoning_effort` / OpenRouter `reasoning` parameter. If unset, `role_reasoning_effort`
   falls back to the `THINKING` value when it is `high`/`max` (`src/bin/membench.rs:4758`).
 - **Caveat:** these map cleanly onto *effort-controlled* reasoning models (DeepSeek, GPT-5.5, Gemini,
   Qwen). For **opt-in / token-toggle** models (e.g. Gemma-4's `<|think|>` token), a generic effort/on
   toggle may not trigger reasoning at all — so a low score can mean "reasoning never fired," not
   "weak model." Verify per model.
-- Our oracle / reader-sweep runs used `SYMEM_ANSWER_THINKING=on` throughout (GPT-5.5 additionally at
+- Our oracle / reader-sweep runs used `SYMEM_ANSWER_THINKING=on` throughout (the pre-rename
+  spelling of today's `MEMBENCH_ANSWER_THINKING`; GPT-5.5 additionally at
   `reasoning_effort=medium`). Accuracy/cost results: `blog/03-the-reader-ceiling.md`.
 
 ## Per-model table

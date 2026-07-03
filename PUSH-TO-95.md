@@ -1,5 +1,11 @@
 # Push to 95+ on LongMemEval-S (500Q), clean pipeline — plan + running log
 
+> **HISTORICAL LOG.** The `SYMEM_*` env vars named below are the pre-rename spellings from when
+> these sweeps ran; that prefix is dead. Harness levers are now `MEMBENCH_*`, engine gates are
+> typed `SYMBIOTIC_MEMORY__*` config keys (docs/environment.md), and several one-off levers
+> (`SYMEM_DEDUP_EVIDENCE`, `SYMEM_EXCLUDE_BRIEFS`, `SYMEM_LEDGER_RETRIEVAL`,
+> `SYMEM_DETERMINISTIC_COUNT`, `SYMEM_RERANK_RESERVE`) were removed in the config triage.
+
 **Goal:** 95%+ on LongMemEval-S 500Q, clean pipeline, NO LongMemEval-targeted hacks
 (no per-question special-casing, no gold-string matching). Two products ship on this.
 
