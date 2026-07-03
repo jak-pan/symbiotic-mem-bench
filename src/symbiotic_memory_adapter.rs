@@ -1412,6 +1412,25 @@ impl MemoryStore for BenchMemoryStore {
         }
     }
 
+    async fn active_briefs(
+        &self,
+    ) -> Result<Vec<MemoryFact>, symbiotic_memory::storage::StoreError> {
+        match self {
+            Self::Sqlite(store) => store.active_briefs().await,
+            Self::ZvecHybrid(store) => store.active_briefs().await,
+        }
+    }
+
+    async fn delete_briefs_by_memory_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<u64, symbiotic_memory::storage::StoreError> {
+        match self {
+            Self::Sqlite(store) => store.delete_briefs_by_memory_ids(ids).await,
+            Self::ZvecHybrid(store) => store.delete_briefs_by_memory_ids(ids).await,
+        }
+    }
+
     async fn turns(&self) -> Result<Vec<SourceTurn>, symbiotic_memory::storage::StoreError> {
         match self {
             Self::Sqlite(store) => store.turns().await,
