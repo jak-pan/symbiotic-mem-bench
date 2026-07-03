@@ -40,6 +40,40 @@ when comparing runs. Harness-side toggles (`SYMEM_CONSOLIDATOR`,
 `SYMEM_REDO`, `--memory-config` recall profiles) are recorded in run-params
 alongside.
 
+## Benchmarking derivation invalidation (staged-ingest protocol — NOT built yet)
+
+Supersession-triggered re-derivation (kit docs/DISTILL-PASSES.md,
+"Derivation invalidation") cannot be measured by one-shot ingest: reweave
+runs after every supersession has already settled, so a brief never sits on
+top of a fact that gets superseded LATER. The protocol needs the timeline
+staged manually:
+
+1. **Staged ingest mode** (new harness feature): split each question's
+   haystack sessions chronologically into N stages. Per stage: ingest →
+   reweave → continue. Facts distilled at stage k get superseded by stage
+   k+1 sessions; briefs derived at stage k are now stale — exactly the
+   production shape (periodic light passes + nightly dreaming over a living
+   store).
+2. **Flagged-fact assertions, not just accuracy**: the store already flags
+   everything needed — `status: Superseded`, `superseded_by` chains, and
+   facts-mode briefs cite fact memory_ids in their `source_refs`. After the
+   final stage, query memory.sqlite directly and assert per vault:
+   (a) *stale-brief exposure*: briefs whose cited facts are superseded and
+   which still appear in a question's recall trace / answer context;
+   (b) with invalidation ON: those briefs were stale-marked and re-derived
+   (fresh distillery_version timestamp, no superseded citations).
+   This is deterministic — no judge noise.
+3. **Probe questions**: knowledge-update (ku) questions are the natural
+   probes (gold value changes across sessions), but the 50q sample has only
+   8; use the full ku slice or the hard sets for power, and consider a small
+   synthetic update-probe set (controlled value-change session pairs) where
+   ground truth for "which fact must be superseded" is known by
+   construction.
+4. Arms: staged + invalidation OFF (stale briefs persist) vs staged +
+   invalidation ON vs one-shot control. The OFF arm quantifies the damage
+   the trigger machinery prevents; without it, an accuracy-only comparison
+   can't attribute gains.
+
 ## Reference sweep
 
 `scripts/run-windowing-sweep.sh` (vault matrix + answer arms) and
