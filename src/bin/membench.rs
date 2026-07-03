@@ -788,15 +788,24 @@ fn parse_probe_pack_scope(raw: &str) -> anyhow::Result<ProbePackScope> {
 fn raw_embedding_text_groups(
     rows: &[symbiotic_mem_bench::symbiotic_memory_adapter::LongMemEvalRecord],
 ) -> Vec<(String, Vec<(String, String)>)> {
-    let max_input_tokens = symbiotic_memory::ingest::token_limit_from_env(
-        "SYMEM_EMBED_MAX_INPUT_TOKENS",
-        symbiotic_memory::ingest::DEFAULT_EMBED_MAX_INPUT_TOKENS,
+    // Effective shape now comes from the kit's config crate defaults (the
+    // SYMEM_* env layer is gone); when the bench grows config-file plumbing
+    // these become the resolved config snapshot.
+    let distill = symbiotic_memory_config::DistillSection::default();
+    let max_input_tokens = symbiotic_memory_config::EmbedSection::default().max_input_tokens;
+    let raw_window = symbiotic_memory::ingest::RawWindowConfig::from_values(
+        distill.raw_window_size,
+        distill.raw_window_stride,
     );
     rows.iter()
         .map(|row| {
             let source = symbiotic_mem_bench::symbiotic_memory_adapter::longmemeval_to_source(row);
             let source_id = source.source_id.clone();
-            let texts = symbiotic_memory::ingest::source_turns_with_derived_units(&source)
+            let texts = symbiotic_memory::ingest::source_turns_with_derived_units(
+                &source,
+                raw_window,
+                distill.raw_unit_max_input_tokens,
+            )
                 .into_iter()
                 .flat_map(move |turn| {
                     let formatted = symbiotic_memory::ingest::format_turn_for_embedding(&turn);

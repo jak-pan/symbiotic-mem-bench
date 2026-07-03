@@ -23,7 +23,6 @@ use symbiotic_core::{QueueId, QueueItemId};
 #[cfg(feature = "symbiotic-memory-adapter")]
 use symbiotic_memory::ingest::{
     DEFAULT_DISTILL_WINDOW_MAX_INPUT_TOKENS, DEFAULT_EMBED_MAX_INPUT_TOKENS, raw_unit_fingerprint,
-    token_limit_from_env,
 };
 use symbiotic_memory::ingest::{Distiller, IngestDiagnosticMode, IngestPipeline};
 #[cfg(feature = "symbiotic-memory-adapter")]
@@ -2882,7 +2881,10 @@ fn workflow_input_hash(
             .as_bytes(),
     );
     hasher.update(b"\0");
-    hasher.update(raw_unit_fingerprint().as_bytes());
+    {
+        let (window, raw_unit_tokens, _, _) = effective_shape();
+        hasher.update(raw_unit_fingerprint(window, raw_unit_tokens).as_bytes());
+    }
     hasher.update(b"\0");
     for session in &row.haystack_sessions {
         for message in session {
@@ -2896,18 +2898,29 @@ fn workflow_input_hash(
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
+fn effective_shape() -> (Option<symbiotic_memory::ingest::RawWindowConfig>, usize, usize, usize) {
+    let distill = symbiotic_memory_config::DistillSection::default();
+    let embed = symbiotic_memory_config::EmbedSection::default();
+    let window = symbiotic_memory::ingest::RawWindowConfig::from_values(
+        distill.raw_window_size,
+        distill.raw_window_stride,
+    );
+    (
+        window,
+        distill.raw_unit_max_input_tokens,
+        distill.window_max_input_tokens,
+        embed.max_input_tokens,
+    )
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
 fn source_shape_hash(source: &SourceDocument) -> anyhow::Result<String> {
+    let (window, raw_unit_tokens, window_tokens, embed_tokens) = effective_shape();
     stable_hash_json(&serde_json::json!({
         "source": source,
-        "raw_unit_shape": raw_unit_fingerprint(),
-        "distill_window_max_input_tokens": token_limit_from_env(
-            "SYMEM_DISTILL_WINDOW_MAX_INPUT_TOKENS",
-            DEFAULT_DISTILL_WINDOW_MAX_INPUT_TOKENS,
-        ),
-        "embed_max_input_tokens": token_limit_from_env(
-            "SYMEM_EMBED_MAX_INPUT_TOKENS",
-            DEFAULT_EMBED_MAX_INPUT_TOKENS,
-        ),
+        "raw_unit_shape": raw_unit_fingerprint(window, raw_unit_tokens),
+        "distill_window_max_input_tokens": window_tokens,
+        "embed_max_input_tokens": embed_tokens,
     }))
 }
 
