@@ -4622,7 +4622,9 @@ impl ProviderRuntime {
                     self.chat_factory(run, "DISTILL", &self.config.providers.distill)?;
                 let turns_per_window = run_env_value(run, "SYMEM_DISTILL_TURNS_PER_WINDOW")
                     .and_then(|value| value.parse::<usize>().ok())
-                    .unwrap_or(16);
+                    .unwrap_or_else(|| {
+                        symbiotic_memory_config::DistillSection::default().turns_per_window
+                    });
                 Ok(Arc::new(move || {
                     let llm = symbiotic_memory::LlmDistiller::new(chat_factory(), prompt.clone());
                     DynDistiller(Arc::new(symbiotic_memory::WindowedDistiller::new(
