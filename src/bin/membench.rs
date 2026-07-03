@@ -4567,11 +4567,15 @@ impl ProviderRuntime {
                 let base_url = run_env_value(run, "SYMEM_EMBED_BASE_URL")
                     .or_else(|| run_env_value(run, "SYMEM_OPENROUTER_BASE_URL"))
                     .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
+                // Owner-default stack: qwen3-embedding-8b truncated to 1024 dims (the tuned
+                // arm), requesting the declared width so the response matches validation and
+                // the vector store schema. Mirrors the tuning scripts' profile defaults.
                 let dims = run_env_value(run, "SYMEM_EMBED_DIMS")
                     .and_then(|value| value.parse::<usize>().ok())
-                    .unwrap_or(0);
+                    .unwrap_or(1024);
                 let requested_dims = run_env_value(run, "SYMEM_EMBED_REQUEST_DIMS")
-                    .and_then(|value| value.parse::<usize>().ok());
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .or(Some(dims).filter(|dims| *dims > 0));
                 let max_chars = run_env_value(run, "SYMEM_EMBED_MAX_CHARS")
                     .and_then(|value| value.parse::<usize>().ok())
                     .unwrap_or(32_000);
