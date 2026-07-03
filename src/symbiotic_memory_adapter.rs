@@ -432,6 +432,22 @@ fn reembed_mode() -> bool {
     redo_stage() == Some("embed")
 }
 
+/// Supersession-detection post-pass gate (`MEMBENCH_SUPERSESSION_DETECTION`, resolved by the
+/// harness like the redo stage). For an answer-only run over linked source vaults, each vault's
+/// memory.sqlite + archive get the kit's deterministic [`symbiotic_memory::detect_and_apply_supersessions`]
+/// pass applied BEFORE answering. Detection MUTATES the store (status flips via `upsert_facts`),
+/// the recall index and the Archive Markdown, so the harness preps these arms with COPIED vaults
+/// (`prepare_supersession_detection_vaults`), never symlinks into the frozen source baseline.
+static SUPERSESSION_DETECTION: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+pub fn set_supersession_detection(enabled: bool) {
+    let _ = SUPERSESSION_DETECTION.set(enabled);
+}
+
+fn supersession_detection_enabled() -> bool {
+    SUPERSESSION_DETECTION.get().copied().unwrap_or(false)
+}
+
 /// Whether `--re-embed` should also recompute raw-turn embeddings. Default FALSE: a re-embed only
 /// changes fact `search_text` (via the distill/enrich metadata logic) — raw-turn text is identical,
 /// so re-embedding turns re-calls the embedding API for every turn just to produce byte-identical
@@ -1498,6 +1514,118 @@ fn spawn_workflow_heartbeat(
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
+/// Apply the kit's deterministic supersession-detection pass over an answer-only vault BEFORE
+/// answering: same-subject / same-attribute / different-value active base-fact pairs with strictly
+/// ordered dates get the older side stamped `Superseded`, exactly as slot-key supersession would
+/// have. Persists through the store (memory.sqlite + recall index via `upsert_facts`) AND the
+/// vault archive (canonical Markdown), so the arm's vaults must be real copies. Logs every flagged
+/// pair (with content snippets, for false-positive review) into the run log and records the
+/// per-vault counts as a `supersession_detection` adapter stage in the memory trace.
+async fn run_supersession_detection_pass(
+    question_id: &str,
+    vault_dir: &Path,
+    store: &BenchMemoryStore,
+    embedder: &(impl EmbeddingProvider + ?Sized),
+    memory_trace_sink: Option<&Arc<dyn MemoryTraceSink>>,
+    debug_run_id: &str,
+) -> anyhow::Result<()> {
+    let detection_started_at = Utc::now();
+    let detection_started = Instant::now();
+    let archive = symbiotic_memory::MemoryArchiveWriter::new(vault_dir);
+    let report =
+        symbiotic_memory::detect_and_apply_supersessions(store, embedder, Some(&archive)).await?;
+    eprintln!(
+        "[longmemeval] {question_id} supersession-detection: flagged {} pairs (compared {}, skipped-ambiguous {})",
+        report.flagged.len(),
+        report.pairs_compared,
+        report.skipped_ambiguous
+    );
+    // Fetch both sides of every flagged pair so the run log carries enough content to judge
+    // false positives without reopening the vault.
+    let mut contents = BTreeMap::<String, String>::new();
+    if !report.flagged.is_empty() {
+        let ids: Vec<String> = report
+            .flagged
+            .iter()
+            .flat_map(|pair| [pair.older_memory_id.clone(), pair.newer_memory_id.clone()])
+            .collect::<std::collections::BTreeSet<String>>()
+            .into_iter()
+            .collect();
+        for evidence in store.get_facts_by_memory_ids(&ids).await? {
+            contents.insert(
+                evidence.fact.memory_id.clone(),
+                log_snippet(&evidence.fact.content),
+            );
+        }
+    }
+    let mut flagged_json = Vec::with_capacity(report.flagged.len());
+    for pair in &report.flagged {
+        let older_snippet = contents
+            .get(&pair.older_memory_id)
+            .map(String::as_str)
+            .unwrap_or("");
+        let newer_snippet = contents
+            .get(&pair.newer_memory_id)
+            .map(String::as_str)
+            .unwrap_or("");
+        eprintln!(
+            "[longmemeval] {question_id} superseded pair entity={} sim={:.2} older={} {:?} newer={} {:?}",
+            pair.entity_key,
+            pair.similarity,
+            pair.older_memory_id,
+            older_snippet,
+            pair.newer_memory_id,
+            newer_snippet
+        );
+        flagged_json.push(serde_json::json!({
+            "older_memory_id": pair.older_memory_id,
+            "newer_memory_id": pair.newer_memory_id,
+            "entity_key": pair.entity_key,
+            "similarity": pair.similarity,
+            "older_content": older_snippet,
+            "newer_content": newer_snippet,
+        }));
+    }
+    record_adapter_stage(
+        memory_trace_sink,
+        debug_run_id,
+        question_id,
+        "supersession_detection",
+        detection_started_at,
+        detection_started.elapsed(),
+        BTreeMap::from([
+            (
+                "pairs_flagged".to_string(),
+                serde_json::json!(report.flagged.len()),
+            ),
+            (
+                "pairs_compared".to_string(),
+                serde_json::json!(report.pairs_compared),
+            ),
+            (
+                "pairs_skipped_ambiguous".to_string(),
+                serde_json::json!(report.skipped_ambiguous),
+            ),
+            ("flagged".to_string(), serde_json::json!(flagged_json)),
+        ]),
+    )
+    .await;
+    Ok(())
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+/// Single-line, bounded content excerpt for supersession-pair log lines.
+fn log_snippet(content: &str) -> String {
+    let single_line = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    if single_line.chars().count() <= 120 {
+        return single_line;
+    }
+    let mut snippet: String = single_line.chars().take(120).collect();
+    snippet.push('…');
+    snippet
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
 async fn process_sqlite_row<E, D, C>(
     row: &LongMemEvalRecord,
     run_root: &Path,
@@ -1822,6 +1950,17 @@ where
                 "answer-only run requires a complete ingested vault for {}",
                 row.question_id
             );
+        }
+        if supersession_detection_enabled() {
+            run_supersession_detection_pass(
+                &row.question_id,
+                &vault_dir,
+                &store,
+                &embedder_factory(),
+                memory_trace_sink.as_ref(),
+                debug_run_id,
+            )
+            .await?;
         }
     } else if !post_ingest_complete(&manifest, consolidate_briefs) {
         let mut ingest =

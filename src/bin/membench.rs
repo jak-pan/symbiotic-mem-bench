@@ -3759,6 +3759,26 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
     // never silently no-ops (which previously invalidated weeks of experiments).
     warn_inert_tuning_knobs(&run, redo_stage.as_deref());
     symbiotic_mem_bench::symbiotic_memory_adapter::set_redo_stage(redo_stage);
+    // Supersession-detection post-pass (MEMBENCH_SUPERSESSION_DETECTION): the kit's deterministic
+    // lifecycle-detection pass runs over each vault's active base facts BEFORE answering. It
+    // MUTATES memory.sqlite / the recall index / the archive, so it is only valid over vaults this
+    // run owns as real copies — require --answer-only + --source-vault-root and prep with
+    // `prepare_supersession_detection_vaults` below (never the symlinking answer-only prep).
+    let supersession_detection = run_env_bool(&run, "MEMBENCH_SUPERSESSION_DETECTION", false);
+    if supersession_detection {
+        if !run.answer_only || run.source_vault_root.is_none() {
+            anyhow::bail!(
+                "MEMBENCH_SUPERSESSION_DETECTION=1 requires --answer-only with --source-vault-root \
+                 (the detection pass mutates vault copies of an existing ingested baseline)"
+            );
+        }
+        eprintln!(
+            "[longmemeval] supersession-detection post-pass enabled (MEMBENCH_SUPERSESSION_DETECTION=1): vaults will be copied, not linked"
+        );
+    }
+    symbiotic_mem_bench::symbiotic_memory_adapter::set_supersession_detection(
+        supersession_detection,
+    );
     // Resolve the kit's typed config (SYMBIOTIC_MEMORY__* from env-file/process) and install it —
     // the adapter stamps its sections on every engine it constructs. Overridden keys are echoed so
     // an arm's config surface is visible in the run log.
@@ -3791,6 +3811,8 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
             // A redo stage COPIES memory.sqlite (re-running mutates it) and omits zvec-hybrid so the
             // index rebuilds fresh at the current embedding dimensions.
             prepare_re_embed_linked_vaults(&run.run_root, source_vault_root, &rows)?;
+        } else if supersession_detection {
+            prepare_supersession_detection_vaults(&run.run_root, source_vault_root, &rows)?;
         } else {
             prepare_answer_only_linked_vaults(&run.run_root, source_vault_root, &rows)?;
         }
@@ -4159,6 +4181,58 @@ fn prepare_re_embed_linked_vaults(
             if source_zvec.is_dir() {
                 copy_dir_recursive(&source_zvec, &target_vault.join("zvec-hybrid"))?;
             }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+/// Like `prepare_answer_only_linked_vaults`, but COPIES `memory.sqlite`, the `archive` directory
+/// AND the `zvec-hybrid` index: the supersession-detection post-pass mutates all three before
+/// answering (`detect_and_apply_supersessions` re-upserts the newer side of each flagged pair —
+/// sqlite rows + recall-index vectors — and rewrites both sides' canonical Archive Markdown), so a
+/// symlink into the frozen source baseline would corrupt it for every other arm. Copying the zvec
+/// index alongside the byte-identical sqlite also keeps the trusted-manifest fast path (no index
+/// rebuild before the pass runs).
+fn prepare_supersession_detection_vaults(
+    run_root: &Path,
+    source_vault_root: &Path,
+    rows: &[symbiotic_mem_bench::symbiotic_memory_adapter::LongMemEvalRecord],
+) -> anyhow::Result<()> {
+    let source_vault_root = resolve_source_vault_root(source_vault_root);
+    if !source_vault_root.is_dir() {
+        anyhow::bail!(
+            "source vault root does not exist: {}",
+            source_vault_root.display()
+        );
+    }
+    let target_vault_root = run_root.join("vaults");
+    std::fs::create_dir_all(&target_vault_root)?;
+    for row in rows {
+        let source_vault = source_vault_root.join(&row.question_id);
+        let target_vault = target_vault_root.join(&row.question_id);
+        let source_manifest = source_vault.join("manifest.json");
+        let source_memory = source_vault.join("memory.sqlite");
+        if !source_manifest.is_file() || !source_memory.is_file() {
+            anyhow::bail!(
+                "source vault {} is missing manifest.json or memory.sqlite",
+                source_vault.display()
+            );
+        }
+        std::fs::create_dir_all(&target_vault)?;
+        remove_path_if_exists(&target_vault.join("manifest.json"))?;
+        remove_path_if_exists(&target_vault.join("memory.sqlite"))?;
+        remove_path_if_exists(&target_vault.join("archive"))?;
+        remove_path_if_exists(&target_vault.join("zvec-hybrid"))?;
+        std::fs::copy(&source_manifest, target_vault.join("manifest.json"))?;
+        std::fs::copy(&source_memory, target_vault.join("memory.sqlite"))?;
+        let source_archive = source_vault.join("archive");
+        if source_archive.is_dir() {
+            copy_dir_recursive(&source_archive, &target_vault.join("archive"))?;
+        }
+        let source_zvec = source_vault.join("zvec-hybrid");
+        if source_zvec.is_dir() {
+            copy_dir_recursive(&source_zvec, &target_vault.join("zvec-hybrid"))?;
         }
     }
     Ok(())
@@ -5879,6 +5953,7 @@ fn symbiotic_memory_run_params(run: &SymbioticMemoryCliRun) -> serde_json::Value
         "answerer": run.answerer,
         "routed": run.routed,
         "answer_only": run.answer_only,
+        "supersession_detection": run_env_bool(run, "MEMBENCH_SUPERSESSION_DETECTION", false),
         "consolidate_briefs": run.consolidate_briefs,
         "stop_after_raw_embed": effective_stop_after_raw_embed(run),
         "ingest_diagnostic": effective_ingest_diagnostic(run),
