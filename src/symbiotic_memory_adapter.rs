@@ -281,6 +281,11 @@ pub fn longmemeval_to_source(record: &LongMemEvalRecord) -> SourceDocument {
                 turn_id: format!("{session_id}:{msg_idx}"),
                 source_id: record.question_id.clone(),
                 speaker: Some(msg.role.clone()),
+                // MUST stay None: actor is skip_serializing_if-None and ingest_source_hash covers
+                // the whole SourceDocument, so any value here would change every golden vault's
+                // source hash and trip the answer-only staleness gate. The LongMemEval role
+                // already lives in `speaker`.
+                actor: None,
                 // The LongMemEval haystack date is when the session was held — i.e. the capture
                 // timestamp. A raw turn is never a resolved event, so event_time is None and
                 // ingested_at is stamped at persist time.
@@ -289,6 +294,8 @@ pub fn longmemeval_to_source(record: &LongMemEvalRecord) -> SourceDocument {
                 ingested_at: None,
                 text: msg.content.clone(),
                 ordinal: turns.len(),
+                locator: None,
+                scope: Default::default(),
             });
         }
     }
@@ -298,6 +305,7 @@ pub fn longmemeval_to_source(record: &LongMemEvalRecord) -> SourceDocument {
         captured_at: first_event_time.unwrap_or_else(Utc::now),
         turns,
         raw_payload: None,
+        locator: None,
     }
 }
 
