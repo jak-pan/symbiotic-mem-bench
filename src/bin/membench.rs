@@ -4699,9 +4699,10 @@ impl ProviderRuntime {
         )?))
     }
 
-    /// Builds the cross-encoder reranker when SYMEM_RERANK is enabled. Recall retrieves a wide
-    /// embedding candidate set and the reranker re-orders it to the answer top-k, recovering
-    /// evidence (e.g. itemized count ledgers) that embeds far from the question.
+    /// Builds the cross-encoder reranker (ON by default — part of the owner-default stack;
+    /// disable per-run with SYMEM_RERANK=0). Recall retrieves a wide embedding candidate set
+    /// and the reranker re-orders it to the answer top-k, recovering evidence (e.g. itemized
+    /// count ledgers) that embeds far from the question.
     fn reranker(
         &self,
         run: &SymbioticMemoryCliRun,
@@ -4713,7 +4714,7 @@ impl ProviderRuntime {
                     "1" | "true" | "on"
                 )
             })
-            .unwrap_or(false);
+            .unwrap_or(true);
         if !enabled {
             return Ok(Default::default());
         }
@@ -6428,7 +6429,7 @@ fn resolved_rerank_params(run: &SymbioticMemoryCliRun) -> serde_json::Value {
                 "1" | "true" | "on"
             )
         })
-        .unwrap_or(false);
+        .unwrap_or(true);
     if !enabled {
         return json!({ "enabled": false });
     }
