@@ -1414,7 +1414,7 @@ impl MemoryStore for BenchMemoryStore {
 
     async fn active_briefs(
         &self,
-    ) -> Result<Vec<MemoryFact>, symbiotic_memory::storage::StoreError> {
+    ) -> Result<Vec<symbiotic_memory::MemoryFact>, symbiotic_memory::storage::StoreError> {
         match self {
             Self::Sqlite(store) => store.active_briefs().await,
             Self::ZvecHybrid(store) => store.active_briefs().await,
