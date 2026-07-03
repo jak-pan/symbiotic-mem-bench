@@ -45,9 +45,9 @@ for vault in "${RUNS[@]}"; do
     *) briefs_flag=(--no-consolidate-briefs) ;;
   esac
   env SYMBIOTIC_MEMORY__EXPERIMENTAL__RERANK_COLLAPSE=false \
-    "${BIN[@]}" --run-name "${vault}-keep" --answer-only "${briefs_flag[@]}" \
+    "${BIN[@]}" --run-name "${vault}-keep" --answer-only ${briefs_flag[@]+"${briefs_flag[@]}"} \
     --source-vault-root "$ROOT/$vault/vaults"
-  "${BIN[@]}" --run-name "${vault}-rawonly" --answer-only "${briefs_flag[@]}" \
+  "${BIN[@]}" --run-name "${vault}-rawonly" --answer-only ${briefs_flag[@]+"${briefs_flag[@]}"} \
     --source-vault-root "$ROOT/$vault/vaults" \
     --memory-config config/symbiotic-memory/longmemeval-raw-only.yaml
 done
