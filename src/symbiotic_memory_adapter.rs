@@ -361,9 +361,13 @@ where
         );
         let store = store_factory();
         let embedder = embedder_factory();
-        let ingest = IngestPipeline::new(store.clone(), embedder.clone(), distiller_factory());
+        let ingest = IngestPipeline::new(store.clone(), embedder.clone(), distiller_factory())
+            .with_distill_config(kit_config().distill.clone())
+            .with_embed_config(kit_config().embed.clone());
         ingest.ingest(longmemeval_to_source(row)).await?;
-        let engine = RecallEngine::new(store, embedder, chat_factory(), policy.clone());
+        let engine = RecallEngine::new(store, embedder, chat_factory(), policy.clone())
+            .with_recall_tuning(kit_config().recall.clone())
+            .with_experimental(kit_config().experimental.clone());
         let reference_date = longmemeval_answer_reference_datetime(row);
         let answer = engine
             .answer_with_reference_date(&row.question, Some(reference_date.as_str()))
@@ -404,6 +408,26 @@ pub fn set_redo_stage(stage: Option<String>) {
 
 fn redo_stage() -> Option<&'static str> {
     REDO_STAGE.get().map(String::as_str)
+}
+
+/// The resolved kit config for this run (set once by the harness before the
+/// run starts, from the SYMBIOTIC_MEMORY__* env-file/process layers). The
+/// adapter installs its sections on every engine it constructs — recall
+/// tuning, experimental gates, distill and embed knobs — so bench arms are
+/// plain config overrides instead of ad-hoc plumbing. Defaults when unset.
+static KIT_CONFIG: std::sync::OnceLock<symbiotic_memory_config::MemoryConfig> =
+    std::sync::OnceLock::new();
+
+pub fn set_kit_config(config: symbiotic_memory_config::MemoryConfig) {
+    let _ = KIT_CONFIG.set(config);
+}
+
+pub fn kit_config() -> &'static symbiotic_memory_config::MemoryConfig {
+    static DEFAULT: std::sync::OnceLock<symbiotic_memory_config::MemoryConfig> =
+        std::sync::OnceLock::new();
+    KIT_CONFIG
+        .get()
+        .unwrap_or_else(|| DEFAULT.get_or_init(symbiotic_memory_config::MemoryConfig::default))
 }
 
 fn reembed_mode() -> bool {
@@ -1804,6 +1828,8 @@ where
     } else if !post_ingest_complete(&manifest, consolidate_briefs) {
         let mut ingest =
             IngestPipeline::new(store.clone(), embedder_factory(), distiller_factory())
+                .with_distill_config(kit_config().distill.clone())
+                .with_embed_config(kit_config().embed.clone())
                 .with_archive_root(&vault_dir)
                 .with_manifest_path(&manifest_path, "longmemeval-v1")
                 .with_optional_trace_sink(memory_trace_sink.clone())
@@ -1990,6 +2016,8 @@ where
         None
     };
     let mut engine = RecallEngine::new(store, embedder_factory(), chat_factory(), policy)
+        .with_recall_tuning(kit_config().recall.clone())
+        .with_experimental(kit_config().experimental.clone())
         .with_optional_answer_retry_chat(answer_retry_chat)
         .with_optional_reranker(reranker_main)
         .with_optional_reranker_stage1(reranker_stage1.clone())
@@ -2222,17 +2250,23 @@ where
         if existing_turns.is_empty() {
             let ingest =
                 IngestPipeline::new(store.clone(), embedder_factory(), distiller_factory())
+                    .with_distill_config(kit_config().distill.clone())
+                    .with_embed_config(kit_config().embed.clone())
                     .with_archive_root(&vault_dir)
                     .with_manifest_path(vault_dir.join("manifest.json"), "longmemeval-v1");
             ingest.ingest(longmemeval_to_source(row)).await?;
         } else if existing_facts.is_empty() {
             let ingest =
                 IngestPipeline::new(store.clone(), embedder_factory(), distiller_factory())
+                    .with_distill_config(kit_config().distill.clone())
+                    .with_embed_config(kit_config().embed.clone())
                     .with_archive_root(&vault_dir)
                     .with_manifest_path(vault_dir.join("manifest.json"), "longmemeval-v1");
             ingest.ingest(longmemeval_to_source(row)).await?;
         }
-        let engine = RecallEngine::new(store, embedder_factory(), chat_factory(), policy.clone());
+        let engine = RecallEngine::new(store, embedder_factory(), chat_factory(), policy.clone())
+            .with_recall_tuning(kit_config().recall.clone())
+            .with_experimental(kit_config().experimental.clone());
         let reference_date = longmemeval_answer_reference_datetime(row);
         // One bad question (e.g. a transient empty/timed-out embedding that leaves recall with no
         // usable query vector) must cost at most this one question, never the whole run. Catch the

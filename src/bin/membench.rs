@@ -3758,6 +3758,19 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
     // never silently no-ops (which previously invalidated weeks of experiments).
     warn_inert_tuning_knobs(&run, redo_stage.as_deref());
     symbiotic_mem_bench::symbiotic_memory_adapter::set_redo_stage(redo_stage);
+    // Resolve the kit's typed config (SYMBIOTIC_MEMORY__* from env-file/process) and install it —
+    // the adapter stamps its sections on every engine it constructs. Overridden keys are echoed so
+    // an arm's config surface is visible in the run log.
+    let kit_config = resolve_kit_config(&run)?;
+    if !kit_config.provenance.is_empty() {
+        let overridden: Vec<&str> = kit_config.provenance.keys().map(String::as_str).collect();
+        eprintln!(
+            "[longmemeval] kit config overrides: {} (hash {})",
+            overridden.join(", "),
+            &kit_config.hash[..12]
+        );
+    }
+    symbiotic_mem_bench::symbiotic_memory_adapter::set_kit_config(kit_config.config.clone());
     if redo_active && run.answer_only {
         anyhow::bail!("a redo stage and --answer-only are mutually exclusive");
     }
@@ -4620,17 +4633,32 @@ impl ProviderRuntime {
                 let prompt = load_memory_prompt(run, &run.distill_prompt)?;
                 let chat_factory =
                     self.chat_factory(run, "DISTILL", &self.config.providers.distill)?;
-                let turns_per_window = run_env_value(run, "SYMEM_DISTILL_TURNS_PER_WINDOW")
-                    .and_then(|value| value.parse::<usize>().ok())
-                    .unwrap_or_else(|| {
-                        symbiotic_memory_config::DistillSection::default().turns_per_window
-                    });
+                let kit_distill =
+                    symbiotic_mem_bench::symbiotic_memory_adapter::kit_config().distill.clone();
+                // Env override still wins per run until the MEMBENCH_* sweep.
+                let turns_override = run_env_value(run, "SYMEM_DISTILL_TURNS_PER_WINDOW")
+                    .and_then(|value| value.parse::<usize>().ok());
+                // Semantic boundaries need an embedder; the caching layer plus the
+                // provider-queue response cache make these embeds free duplicates of
+                // the raw-embed stage.
+                let boundary_embedder_factory = if kit_distill.window_boundary == "semantic" {
+                    Some(self.embedding_factory(run)?)
+                } else {
+                    None
+                };
                 Ok(Arc::new(move || {
-                    let llm = symbiotic_memory::LlmDistiller::new(chat_factory(), prompt.clone());
-                    DynDistiller(Arc::new(symbiotic_memory::WindowedDistiller::new(
-                        llm,
-                        turns_per_window,
-                    )))
+                    let llm = symbiotic_memory::LlmDistiller::new(chat_factory(), prompt.clone())
+                        .with_distill_config(kit_distill.clone());
+                    let mut windowed =
+                        symbiotic_memory::WindowedDistiller::new(llm, kit_distill.turns_per_window)
+                            .with_distill_config(kit_distill.clone());
+                    if let Some(turns) = turns_override {
+                        windowed = windowed.with_turns_per_window(turns);
+                    }
+                    if let Some(embedder_factory) = &boundary_embedder_factory {
+                        windowed = windowed.with_boundary_embedder(embedder_factory());
+                    }
+                    DynDistiller(Arc::new(windowed))
                 }))
             }
             other => anyhow::bail!("unknown --distiller value: {other}; expected heuristic or llm"),
@@ -4659,15 +4687,22 @@ impl ProviderRuntime {
         }
         let prompt = load_memory_prompt(run, "reweave")?;
         let chat_factory = self.chat_factory(run, "CONSOLIDATE", &self.config.providers.distill)?;
+        let kit_distill =
+            symbiotic_mem_bench::symbiotic_memory_adapter::kit_config().distill.clone();
         let turns_per_window = run_env_value(run, "SYMEM_CONSOLIDATE_TURNS_PER_WINDOW")
             .and_then(|value| value.parse::<usize>().ok())
+            .or_else(|| Some(kit_distill.consolidate_turns_per_window).filter(|turns| *turns > 0))
             .unwrap_or(64);
         Ok(Some(Arc::new(move || {
-            let llm = symbiotic_memory::LlmDistiller::new(chat_factory(), prompt.clone());
-            Arc::new(symbiotic_memory::WindowedDistiller::new(
-                llm,
-                turns_per_window,
-            )) as Arc<dyn symbiotic_memory::Distiller>
+            let llm = symbiotic_memory::LlmDistiller::new(chat_factory(), prompt.clone())
+                .with_distill_config(kit_distill.clone());
+            // The reweave pass keeps its own window size — install the section
+            // first, then override the pass-specific turns.
+            Arc::new(
+                symbiotic_memory::WindowedDistiller::new(llm, turns_per_window)
+                    .with_distill_config(kit_distill.clone())
+                    .with_turns_per_window(turns_per_window),
+            ) as Arc<dyn symbiotic_memory::Distiller>
         })))
     }
 
@@ -5743,6 +5778,29 @@ fn configured_workflow_max_in_flight(_run: &SymbioticMemoryCliRun) -> Option<usi
     None
 }
 
+/// The resolved kit-config identity of this run: content hash + which dotted
+/// paths were overridden (and from where). Reproducibility receipt — two runs
+/// with equal hashes ran the exact same kit configuration.
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn kit_config_record(run: &SymbioticMemoryCliRun) -> serde_json::Value {
+    match resolve_kit_config(run) {
+        Ok(resolved) => json!({
+            "hash": resolved.hash,
+            "overrides": resolved
+                .provenance
+                .iter()
+                .map(|(path, source)| json!({ "path": path, "source": format!("{source:?}") }))
+                .collect::<Vec<_>>(),
+        }),
+        Err(err) => json!({ "error": err.to_string() }),
+    }
+}
+
+#[cfg(not(feature = "symbiotic-memory-adapter"))]
+fn kit_config_record(_run: &SymbioticMemoryCliRun) -> serde_json::Value {
+    serde_json::Value::Null
+}
+
 #[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
 fn symbiotic_memory_run_params(run: &SymbioticMemoryCliRun) -> serde_json::Value {
     let judge = resolved_judge_params(run);
@@ -5801,6 +5859,7 @@ fn symbiotic_memory_run_params(run: &SymbioticMemoryCliRun) -> serde_json::Value
         "sample": run.sample,
         "memory_manifest": portable_path(&run.memory_manifest),
         "memory_config": run.memory_config.as_deref().map(portable_path),
+        "kit_config": kit_config_record(run),
         "symem_bin": run.symem_bin.as_deref().map(portable_path),
         "distiller": run.distiller,
         "embedder": run.embedder,
@@ -6406,6 +6465,37 @@ fn run_env_value(run: &SymbioticMemoryCliRun, key: &str) -> Option<String> {
         .ok()?
         .into_iter()
         .find_map(|(env_key, value)| (env_key == key && !value.is_empty()).then_some(value))
+}
+
+/// Resolve the kit's typed config for this run: defaults overlaid with every
+/// `SYMBIOTIC_MEMORY__*` pair from the run env-file, then from the process
+/// environment (process wins — same precedence as `run_env_value`). This is
+/// the bench's config surface: arms are declared as config overrides, and the
+/// resolved hash goes into the run record so every run is attributable to
+/// exactly one configuration.
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn resolve_kit_config(
+    run: &SymbioticMemoryCliRun,
+) -> anyhow::Result<symbiotic_memory_config::Resolved> {
+    let mut env: Vec<(String, String)> = Vec::new();
+    if let Some(env_file) = run.env_file.clone().or_else(|| default_env_file(run)) {
+        if let Ok(pairs) = load_env_file(&env_file) {
+            env.extend(
+                pairs
+                    .into_iter()
+                    .filter(|(key, _)| key.starts_with("SYMBIOTIC_MEMORY__")),
+            );
+        }
+    }
+    // Process env after the file so equal keys resolve to the process value
+    // (later pairs win inside the resolver's env layer).
+    env.extend(symbiotic_memory_config::ConfigLayers::env_from_process());
+    symbiotic_memory_config::resolve(&symbiotic_memory_config::ConfigLayers {
+        file: None,
+        env,
+        flags: Vec::new(),
+    })
+    .map_err(|err| anyhow::anyhow!("kit config resolution failed: {err}"))
 }
 
 #[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
