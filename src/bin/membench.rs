@@ -104,14 +104,14 @@ struct Cli {
     /// Re-judge an existing run's stored hypotheses with the current judge (default: the official
     /// per-question-type LongMemEval grader) WITHOUT re-answering. Reuses the run root named by
     /// --run-name, reads its hypotheses.jsonl, rewrites verdicts/score-summary/report. Cheap (judge
-    /// calls only); swap graders via SYMEM_JUDGE_PROMPT_MODE.
+    /// calls only); swap graders via MEMBENCH_JUDGE_PROMPT_MODE.
     #[arg(long)]
     rejudge: bool,
     /// Gold-oracle answer mode: feed the answerer ONLY the gold-session raw turns (zero retrieval,
     /// zero noise) instead of the recall→rerank output, isolating the reader from retrieval. Recall
     /// still runs (the question-debug profile stays populated) but its evidence never reaches the
     /// answerer. Same answerer/judge/scoring path as a normal run — the only variable is clean-gold
-    /// vs retrieved-noisy context. Also honored via `SYMEM_ORACLE_GOLD=1`.
+    /// vs retrieved-noisy context. Also honored via `MEMBENCH_ORACLE_GOLD=1`.
     #[arg(long)]
     oracle_gold: bool,
     /// Re-embed an existing vault's facts+turns (from --source-vault-root) with the current
@@ -208,7 +208,7 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Manage the canonical vault store ($SYMEM_VAULT_STORE): back up per-run
+    /// Manage the canonical vault store ($MEMBENCH_VAULT_STORE): back up per-run
     /// vaults outside the disposable `runs/` tree and rediscover them by name.
     Vault {
         #[command(subcommand)]
@@ -298,7 +298,7 @@ enum VaultCommand {
         /// `runs/symbiotic-memory/long-mem-eval/<limit>/<name>`, or an explicit path.
         #[arg(long)]
         run: String,
-        /// Store key (subdir under $SYMEM_VAULT_STORE). Defaults to the run dir name.
+        /// Store key (subdir under $MEMBENCH_VAULT_STORE). Defaults to the run dir name.
         #[arg(long = "as")]
         key: Option<String>,
         /// Move instead of copy, then leave a symlink at the run's `vaults/`
@@ -308,7 +308,7 @@ enum VaultCommand {
     },
     /// List stored vaults: key, saved_at, vault_count, size, accuracy.
     List,
-    /// Print `$SYMEM_VAULT_STORE/<key>/vaults` (for `--source-vault-root`).
+    /// Print `$MEMBENCH_VAULT_STORE/<key>/vaults` (for `--source-vault-root`).
     Path { key: String },
 }
 
@@ -791,7 +791,7 @@ fn raw_embedding_text_groups(
     rows: &[symbiotic_mem_bench::symbiotic_memory_adapter::LongMemEvalRecord],
 ) -> Vec<(String, Vec<(String, String)>)> {
     // Effective shape now comes from the kit's config crate defaults (the
-    // SYMEM_* env layer is gone); when the bench grows config-file plumbing
+    // legacy env layer is gone); when the bench grows config-file plumbing
     // these become the resolved config snapshot.
     let distill = symbiotic_memory_config::DistillSection::default();
     let max_input_tokens = symbiotic_memory_config::EmbedSection::default().max_input_tokens;
@@ -1362,12 +1362,12 @@ fn run_selected_benchmark(cli: Cli) -> anyhow::Result<()> {
         "--benchmark or --long-mem-eval",
     )?;
 
-    // Gold-oracle mode is consumed per-question inside the in-process adapter via SYMEM_ORACLE_GOLD;
+    // Gold-oracle mode is consumed per-question inside the in-process adapter via MEMBENCH_ORACLE_GOLD;
     // the `--oracle-gold` flag just exports it here. Safe to set_var now: this runs single-threaded,
     // before any tokio runtime/worker threads spawn (the runtime is built inside the run fn below).
     if cli.oracle_gold {
         unsafe {
-            std::env::set_var("SYMEM_ORACLE_GOLD", "1");
+            std::env::set_var("MEMBENCH_ORACLE_GOLD", "1");
         }
     }
 
@@ -2545,13 +2545,13 @@ fn copy_dir_recursive(source: &std::path::Path, dest: &std::path::Path) -> anyho
 /// Environment variable naming the canonical vault store: an absolute path to a
 /// directory holding `<key>/vaults/` backups outside the disposable `runs/` tree.
 /// Unset ⇒ the store feature is inert and all current behavior is unchanged.
-const SYMEM_VAULT_STORE_ENV: &str = "SYMEM_VAULT_STORE";
+const MEMBENCH_VAULT_STORE_ENV: &str = "MEMBENCH_VAULT_STORE";
 
-/// Read `$SYMEM_VAULT_STORE` if set to a non-empty value. Inert when unset; used
+/// Read `$MEMBENCH_VAULT_STORE` if set to a non-empty value. Inert when unset; used
 /// by transparent by-name discovery, which must never fail just because the
 /// store is not configured.
 fn vault_store_dir_opt() -> Option<PathBuf> {
-    std::env::var_os(SYMEM_VAULT_STORE_ENV)
+    std::env::var_os(MEMBENCH_VAULT_STORE_ENV)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
 }
@@ -2561,13 +2561,13 @@ fn vault_store_dir_opt() -> Option<PathBuf> {
 fn require_vault_store_dir() -> anyhow::Result<PathBuf> {
     vault_store_dir_opt().ok_or_else(|| {
         anyhow::anyhow!(
-            "{SYMEM_VAULT_STORE_ENV} is not set; export it to an absolute store directory, e.g. {SYMEM_VAULT_STORE_ENV}=/Users/me/membench-vaults"
+            "{MEMBENCH_VAULT_STORE_ENV} is not set; export it to an absolute store directory, e.g. {MEMBENCH_VAULT_STORE_ENV}=/Users/me/membench-vaults"
         )
     })
 }
 
 /// Resolve a `--source-vault-root` value with transparent by-name discovery: an
-/// existing path always wins, but a bare key that names `$SYMEM_VAULT_STORE/<key>/vaults`
+/// existing path always wins, but a bare key that names `$MEMBENCH_VAULT_STORE/<key>/vaults`
 /// falls back to the store (logging one line). Never overrides an existing path.
 #[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
 fn resolve_source_vault_root(value: &Path) -> PathBuf {
@@ -3175,7 +3175,7 @@ fn dir_size_human(path: &Path) -> String {
 }
 
 /// `vault save`: copy (default) or move a run's `vaults/` into the canonical
-/// store at `$SYMEM_VAULT_STORE/<key>/vaults/`, then write `store-meta.json`.
+/// store at `$MEMBENCH_VAULT_STORE/<key>/vaults/`, then write `store-meta.json`.
 fn vault_save(run: &str, key: Option<&str>, move_vaults: bool) -> anyhow::Result<()> {
     let store = require_vault_store_dir()?;
     let run_root = resolve_run_for_vault_save(run)?;
@@ -3263,7 +3263,7 @@ fn vault_save_in(
     Ok(())
 }
 
-/// `vault list`: table of stored vaults by scanning `$SYMEM_VAULT_STORE/*/store-meta.json`.
+/// `vault list`: table of stored vaults by scanning `$MEMBENCH_VAULT_STORE/*/store-meta.json`.
 fn vault_list() -> anyhow::Result<()> {
     let store = require_vault_store_dir()?;
     vault_list_in(&store)
@@ -3315,7 +3315,7 @@ fn vault_list_in(store: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `vault path <key>`: print `$SYMEM_VAULT_STORE/<key>/vaults` for scripting.
+/// `vault path <key>`: print `$MEMBENCH_VAULT_STORE/<key>/vaults` for scripting.
 fn vault_path(key: &str) -> anyhow::Result<()> {
     let store = require_vault_store_dir()?;
     let vaults = store.join(sanitize_path_component(key)).join("vaults");
@@ -3338,7 +3338,7 @@ fn resolve_source_vault_root_with_store(value: &Path, store: Option<&Path>) -> P
         let candidate = store.join(value).join("vaults");
         if candidate.is_dir() {
             eprintln!(
-                "[vault] resolved '{}' from {SYMEM_VAULT_STORE_ENV}",
+                "[vault] resolved '{}' from {MEMBENCH_VAULT_STORE_ENV}",
                 value.display()
             );
             return candidate;
@@ -3650,13 +3650,13 @@ fn run_symbiotic_memory_longmemeval(run: SymbioticMemoryCliRun) -> anyhow::Resul
 
 fn validate_provider_role_selection(run: &SymbioticMemoryCliRun) -> anyhow::Result<()> {
     if run.embedder == "gemini" {
-        let operator = run_env_value(run, "SYMEM_EMBED_OPERATOR");
-        let model = run_env_value(run, "SYMEM_EMBED_MODEL");
+        let operator = run_env_value(run, "MEMBENCH_EMBED_OPERATOR");
+        let model = run_env_value(run, "MEMBENCH_EMBED_MODEL");
         if operator.as_deref() == Some("openrouter")
             || model.as_deref().is_some_and(|model| model.contains('/'))
         {
             anyhow::bail!(
-                "invalid embedding provider selection: --embedder gemini cannot use OpenRouter embedding settings (SYMEM_EMBED_OPERATOR={operator:?}, SYMEM_EMBED_MODEL={model:?}); pass --embedder openrouter for qwen embeddings"
+                "invalid embedding provider selection: --embedder gemini cannot use OpenRouter embedding settings (MEMBENCH_EMBED_OPERATOR={operator:?}, MEMBENCH_EMBED_MODEL={model:?}); pass --embedder openrouter for qwen embeddings"
             );
         }
     }
@@ -3692,16 +3692,17 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
         transport_label(
             run_env_bool(
                 &run,
-                "SYMEM_OPENROUTER_HTTP_HTTP1_ONLY",
+                "SYMBIOTIC_MEMORY__TRANSPORT__HTTP1_ONLY",
                 run.embedder == "openrouter"
             ),
-            run_env_value(&run, "SYMEM_OPENROUTER_HTTP_CLIENT_POOL_SIZE").as_deref(),
-            run_env_value(&run, "SYMEM_OPENROUTER_HTTP_POOL_MAX_IDLE_PER_HOST").as_deref(),
+            run_env_value(&run, "SYMBIOTIC_MEMORY__TRANSPORT__OPENROUTER_CLIENT_POOL_SIZE")
+                .as_deref(),
+            run_env_value(&run, "SYMBIOTIC_MEMORY__TRANSPORT__POOL_MAX_IDLE_PER_HOST").as_deref(),
         ),
         transport_label(
-            run_env_bool(&run, "SYMEM_CHAT_HTTP_HTTP1_ONLY", false),
-            run_env_value(&run, "SYMEM_CHAT_HTTP_CLIENT_POOL_SIZE").as_deref(),
-            run_env_value(&run, "SYMEM_CHAT_HTTP_POOL_MAX_IDLE_PER_HOST").as_deref(),
+            run_env_bool(&run, "SYMBIOTIC_MEMORY__TRANSPORT__HTTP1_ONLY", false),
+            run_env_value(&run, "SYMBIOTIC_MEMORY__TRANSPORT__CHAT_CLIENT_POOL_SIZE").as_deref(),
+            run_env_value(&run, "SYMBIOTIC_MEMORY__TRANSPORT__POOL_MAX_IDLE_PER_HOST").as_deref(),
         ),
         thinking_summary_label(&run),
     );
@@ -3740,16 +3741,16 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
         }
         return Ok(());
     }
-    // Redo stage: --re-embed is redo=embed; SYMEM_REDO=reweave|distill|index selects the others.
+    // Redo stage: --re-embed is redo=embed; MEMBENCH_REDO=reweave|distill|index selects the others.
     let redo_stage = if run.re_embed {
         Some("embed".to_string())
     } else {
-        run_env_value(&run, "SYMEM_REDO").map(|value| value.trim().to_ascii_lowercase())
+        run_env_value(&run, "MEMBENCH_REDO").map(|value| value.trim().to_ascii_lowercase())
     };
     if let Some(stage) = &redo_stage {
         if !matches!(stage.as_str(), "embed" | "reweave" | "distill" | "index") {
             anyhow::bail!(
-                "--redo/SYMEM_REDO must be one of: embed, reweave, distill, index (got {stage})"
+                "--redo/MEMBENCH_REDO must be one of: embed, reweave, distill, index (got {stage})"
             );
         }
     }
@@ -4151,7 +4152,7 @@ fn prepare_re_embed_linked_vaults(
         }
         // Facts-only re-embed (the default): carry the source vector index forward so the existing
         // raw-turn vectors are preserved — only fact vectors get overwritten by upsert_facts, no turn
-        // re-embed. A full turn re-embed (SYMEM_REEMBED_TURNS=1) instead leaves zvec-hybrid absent so
+        // re-embed. A full turn re-embed (MEMBENCH_REEMBED_TURNS=1) instead leaves zvec-hybrid absent so
         // the index rebuilds from scratch at the (possibly new) embedding dimensions.
         if !symbiotic_mem_bench::symbiotic_memory_adapter::reembed_turns() {
             let source_zvec = source_vault.join("zvec-hybrid");
@@ -4276,10 +4277,12 @@ impl ProviderRuntime {
             queue_trace_writer,
             provider_queue_dir: provider_queue_dir.clone(),
             queue_trace_path,
-            response_cache_root: run_env_value(run, "SYMEM_RESPONSE_CACHE_DIR")
+            response_cache_root: run_env_value(run, "MEMBENCH_RESPONSE_CACHE_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| provider_queue_dir.join("responses")),
-            request_debug: run_env_bool(run, "SYMEM_PROVIDER_QUEUE_DEBUG_REQUESTS", false),
+            // Engine-config knob (`queue.debug_requests`): read the config env key so the
+            // bench's provider queue honors the same override layer the kit resolves.
+            request_debug: run_env_bool(run, "SYMBIOTIC_MEMORY__QUEUE__DEBUG_REQUESTS", false),
         })
     }
 
@@ -4380,7 +4383,7 @@ impl ProviderRuntime {
         // Show the CONSOLIDATE (reweave) binding only when the consolidator is enabled, so the
         // dashboard surfaces that the post-distill consolidation pass is running and which model /
         // thinking / queue it uses (otherwise reweave is invisible behind the shared chat queue).
-        let consolidator_on = run_env_value(run, "SYMEM_CONSOLIDATOR")
+        let consolidator_on = run_env_value(run, "MEMBENCH_CONSOLIDATOR")
             .map(|value| {
                 matches!(
                     value.trim().to_ascii_lowercase().as_str(),
@@ -4429,7 +4432,7 @@ impl ProviderRuntime {
         let resolved = self.config.queue.resolve_provider_queue(&adapter);
         let thinking = thinking_mode(run, role).or_else(|| default_thinking_mode(role));
         let reasoning_effort = role_reasoning_effort(run, role);
-        let max_tokens = run_env_value(run, &format!("SYMEM_{role}_MAX_TOKENS"))
+        let max_tokens = run_env_value(run, &format!("MEMBENCH_{role}_MAX_TOKENS"))
             .and_then(|value| value.parse::<u32>().ok())
             .or_else(|| default_role_max_tokens(role));
         Some(BenchModelDebug {
@@ -4487,7 +4490,7 @@ impl ProviderRuntime {
                 thinking_mode(run, "JUDGE").or_else(|| default_thinking_mode("JUDGE")),
             ),
             reasoning_effort: role_reasoning_effort(run, "JUDGE"),
-            max_tokens: run_env_value(run, "SYMEM_JUDGE_MAX_TOKENS")
+            max_tokens: run_env_value(run, "MEMBENCH_JUDGE_MAX_TOKENS")
                 .and_then(|value| value.parse::<u32>().ok())
                 .or_else(|| default_role_max_tokens("JUDGE")),
         }
@@ -4512,10 +4515,10 @@ impl ProviderRuntime {
                 let queue = self.provider_queue(&adapter)?;
                 let api_key = required_env(run, "GEMINI_API_KEY")?;
                 let model = adapter.model.clone();
-                let dims = run_env_value(run, "SYMEM_EMBED_DIMS")
+                let dims = run_env_value(run, "MEMBENCH_EMBED_DIMS")
                     .and_then(|value| value.parse::<usize>().ok())
                     .unwrap_or(3072);
-                let max_chars = run_env_value(run, "SYMEM_EMBED_MAX_CHARS")
+                let max_chars = run_env_value(run, "MEMBENCH_EMBED_MAX_CHARS")
                     .and_then(|value| value.parse::<usize>().ok())
                     .unwrap_or(32_000);
                 let transport = gemini_transport_mode(run);
@@ -4544,13 +4547,13 @@ impl ProviderRuntime {
                 let adapter = effective_embedding_adapter(run, &self.config.providers.embedding);
                 let model = adapter.model.clone();
                 let queue = self.provider_queue(&adapter)?;
-                let base_url = run_env_value(run, "SYMEM_EMBED_BASE_URL")
-                    .or_else(|| run_env_value(run, "SYMEM_OLLAMA_BASE_URL"))
+                let base_url = run_env_value(run, "MEMBENCH_EMBED_BASE_URL")
+                    .or_else(|| run_env_value(run, "MEMBENCH_OLLAMA_BASE_URL"))
                     .unwrap_or_else(|| "http://127.0.0.1:11434".to_string());
-                let dims = run_env_value(run, "SYMEM_EMBED_DIMS")
+                let dims = run_env_value(run, "MEMBENCH_EMBED_DIMS")
                     .and_then(|value| value.parse::<usize>().ok())
                     .unwrap_or(768);
-                let max_chars = run_env_value(run, "SYMEM_EMBED_MAX_CHARS")
+                let max_chars = run_env_value(run, "MEMBENCH_EMBED_MAX_CHARS")
                     .and_then(|value| value.parse::<usize>().ok())
                     .unwrap_or(32_000);
                 let timeout = self
@@ -4577,19 +4580,19 @@ impl ProviderRuntime {
                 let model = adapter.model.clone();
                 let queue = self.provider_queue(&adapter)?;
                 let api_key = required_env(run, "OPENROUTER_API_KEY")?;
-                let base_url = run_env_value(run, "SYMEM_EMBED_BASE_URL")
-                    .or_else(|| run_env_value(run, "SYMEM_OPENROUTER_BASE_URL"))
+                let base_url = run_env_value(run, "MEMBENCH_EMBED_BASE_URL")
+                    .or_else(|| run_env_value(run, "MEMBENCH_OPENROUTER_BASE_URL"))
                     .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
                 // Owner-default stack: qwen3-embedding-8b truncated to 1024 dims (the tuned
                 // arm), requesting the declared width so the response matches validation and
                 // the vector store schema. Mirrors the tuning scripts' profile defaults.
-                let dims = run_env_value(run, "SYMEM_EMBED_DIMS")
+                let dims = run_env_value(run, "MEMBENCH_EMBED_DIMS")
                     .and_then(|value| value.parse::<usize>().ok())
                     .unwrap_or(1024);
-                let requested_dims = run_env_value(run, "SYMEM_EMBED_REQUEST_DIMS")
+                let requested_dims = run_env_value(run, "MEMBENCH_EMBED_REQUEST_DIMS")
                     .and_then(|value| value.parse::<usize>().ok())
                     .or(Some(dims).filter(|dims| *dims > 0));
-                let max_chars = run_env_value(run, "SYMEM_EMBED_MAX_CHARS")
+                let max_chars = run_env_value(run, "MEMBENCH_EMBED_MAX_CHARS")
                     .and_then(|value| value.parse::<usize>().ok())
                     .unwrap_or(32_000);
                 let timeout = self
@@ -4635,9 +4638,8 @@ impl ProviderRuntime {
                     self.chat_factory(run, "DISTILL", &self.config.providers.distill)?;
                 let kit_distill =
                     symbiotic_mem_bench::symbiotic_memory_adapter::kit_config().distill.clone();
-                // Env override still wins per run until the MEMBENCH_* sweep.
-                let turns_override = run_env_value(run, "SYMEM_DISTILL_TURNS_PER_WINDOW")
-                    .and_then(|value| value.parse::<usize>().ok());
+                // Window size comes from the resolved kit config (`distill.turns_per_window`,
+                // overridable per arm via SYMBIOTIC_MEMORY__DISTILL__TURNS_PER_WINDOW).
                 // Semantic boundaries need an embedder; the caching layer plus the
                 // provider-queue response cache make these embeds free duplicates of
                 // the raw-embed stage.
@@ -4652,9 +4654,6 @@ impl ProviderRuntime {
                     let mut windowed =
                         symbiotic_memory::WindowedDistiller::new(llm, kit_distill.turns_per_window)
                             .with_distill_config(kit_distill.clone());
-                    if let Some(turns) = turns_override {
-                        windowed = windowed.with_turns_per_window(turns);
-                    }
                     if let Some(embedder_factory) = &boundary_embedder_factory {
                         windowed = windowed.with_boundary_embedder(embedder_factory());
                     }
@@ -4667,14 +4666,14 @@ impl ProviderRuntime {
 
     /// Optional LLM consolidation ("reweave") pass that runs after distill+embed and synthesizes
     /// derived memory cards (itemized count/list ledgers, temporal anchors, current-state). Enabled
-    /// with `SYMEM_CONSOLIDATOR=llm`. Defaults to the distill chat binding; tune via the
-    /// `CONSOLIDATE` role env (e.g. `SYMEM_CONSOLIDATE_THINKING`, `SYMEM_CONSOLIDATE_MODEL`).
+    /// with `MEMBENCH_CONSOLIDATOR=llm`. Defaults to the distill chat binding; tune via the
+    /// `CONSOLIDATE` role env (e.g. `MEMBENCH_CONSOLIDATE_THINKING`, `MEMBENCH_CONSOLIDATE_MODEL`).
     fn consolidator_factory(
         &self,
         run: &SymbioticMemoryCliRun,
     ) -> anyhow::Result<Option<Arc<dyn Fn() -> Arc<dyn symbiotic_memory::Distiller> + Send + Sync>>>
     {
-        let enabled = run_env_value(run, "SYMEM_CONSOLIDATOR")
+        let enabled = run_env_value(run, "MEMBENCH_CONSOLIDATOR")
             .map(|value| {
                 matches!(
                     value.trim().to_ascii_lowercase().as_str(),
@@ -4689,9 +4688,10 @@ impl ProviderRuntime {
         let chat_factory = self.chat_factory(run, "CONSOLIDATE", &self.config.providers.distill)?;
         let kit_distill =
             symbiotic_mem_bench::symbiotic_memory_adapter::kit_config().distill.clone();
-        let turns_per_window = run_env_value(run, "SYMEM_CONSOLIDATE_TURNS_PER_WINDOW")
-            .and_then(|value| value.parse::<usize>().ok())
-            .or_else(|| Some(kit_distill.consolidate_turns_per_window).filter(|turns| *turns > 0))
+        // Reweave window size comes from the resolved kit config
+        // (`distill.consolidate_turns_per_window`; 0 = the bench default of 64).
+        let turns_per_window = Some(kit_distill.consolidate_turns_per_window)
+            .filter(|turns| *turns > 0)
             .unwrap_or(64);
         Ok(Some(Arc::new(move || {
             let llm = symbiotic_memory::LlmDistiller::new(chat_factory(), prompt.clone())
@@ -4737,14 +4737,14 @@ impl ProviderRuntime {
     }
 
     /// Builds the cross-encoder reranker (ON by default — part of the owner-default stack;
-    /// disable per-run with SYMEM_RERANK=0). Recall retrieves a wide embedding candidate set
+    /// disable per-run with MEMBENCH_RERANK=0). Recall retrieves a wide embedding candidate set
     /// and the reranker re-orders it to the answer top-k, recovering evidence (e.g. itemized
     /// count ledgers) that embeds far from the question.
     fn reranker(
         &self,
         run: &SymbioticMemoryCliRun,
     ) -> anyhow::Result<symbiotic_mem_bench::symbiotic_memory_adapter::RerankCascade> {
-        let enabled = run_env_value(run, "SYMEM_RERANK")
+        let enabled = run_env_value(run, "MEMBENCH_RERANK")
             .map(|value| {
                 matches!(
                     value.trim().to_ascii_lowercase().as_str(),
@@ -4755,26 +4755,26 @@ impl ProviderRuntime {
         if !enabled {
             return Ok(Default::default());
         }
-        // Main (stage-2) reranker. SYMEM_RERANK_BASE_URL overrides the base url (e.g. point at the
+        // Main (stage-2) reranker. MEMBENCH_RERANK_BASE_URL overrides the base url (e.g. point at the
         // local Nemotron /serve server at http://localhost:8088).
-        let base_url = run_env_value(run, "SYMEM_RERANK_BASE_URL")
+        let base_url = run_env_value(run, "MEMBENCH_RERANK_BASE_URL")
             .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
         // Bench default reranker: the free Nemotron VL 1B (ties Cohere at ~92% on 50Q, costs $0).
         // This is a benchmark-harness default only — the memory library imposes no reranker default.
-        // Override per-run with SYMEM_RERANK_MODEL (e.g. cohere/rerank-4-fast for a paid A/B).
-        let model = run_env_value(run, "SYMEM_RERANK_MODEL")
+        // Override per-run with MEMBENCH_RERANK_MODEL (e.g. cohere/rerank-4-fast for a paid A/B).
+        let model = run_env_value(run, "MEMBENCH_RERANK_MODEL")
             .unwrap_or_else(|| "nvidia/llama-nemotron-rerank-vl-1b-v2:free".to_string());
         let main = Some(self.build_reranker(run, &base_url, &model)?);
 
-        // Optional cheap stage-1 prefilter reranker. Enabled iff SYMEM_RERANK_STAGE1_MODEL is set.
+        // Optional cheap stage-1 prefilter reranker. Enabled iff MEMBENCH_RERANK_STAGE1_MODEL is set.
         // Its base url defaults to the OpenRouter base (so a Cohere prefilter works out of the box);
-        // set SYMEM_RERANK_STAGE1_BASE_URL to route stage-1 elsewhere (e.g. the local Nemotron).
-        let (stage1, stage1_top_x) = match run_env_value(run, "SYMEM_RERANK_STAGE1_MODEL") {
+        // set MEMBENCH_RERANK_STAGE1_BASE_URL to route stage-1 elsewhere (e.g. the local Nemotron).
+        let (stage1, stage1_top_x) = match run_env_value(run, "MEMBENCH_RERANK_STAGE1_MODEL") {
             Some(stage1_model) if !stage1_model.trim().is_empty() => {
-                let stage1_base_url = run_env_value(run, "SYMEM_RERANK_STAGE1_BASE_URL")
+                let stage1_base_url = run_env_value(run, "MEMBENCH_RERANK_STAGE1_BASE_URL")
                     .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
                 let stage1 = self.build_reranker(run, &stage1_base_url, stage1_model.trim())?;
-                let top_x = run_env_value(run, "SYMEM_RERANK_STAGE1_TOP_X")
+                let top_x = run_env_value(run, "MEMBENCH_RERANK_STAGE1_TOP_X")
                     .and_then(|value| value.trim().parse::<usize>().ok())
                     .unwrap_or(20);
                 (Some(stage1), top_x)
@@ -4803,11 +4803,11 @@ impl ProviderRuntime {
         // Local single-GPU MLX rerank servers (localhost) must serialize so concurrent recalls don't
         // thrash the GPU: the operator drives the queue concurrency cap ("local" -> max_in_flight=1
         // via the foundation default; otherwise the openrouter fallback at 1000). Override with
-        // SYMEM_RERANK_OPERATOR.
+        // MEMBENCH_RERANK_OPERATOR.
         let is_local = base_url.contains("localhost")
             || base_url.contains("127.0.0.1")
             || base_url.contains("[::1]");
-        let operator = run_env_value(run, "SYMEM_RERANK_OPERATOR")
+        let operator = run_env_value(run, "MEMBENCH_RERANK_OPERATOR")
             .unwrap_or_else(|| if is_local { "local" } else { "openrouter" }.to_string());
         // The local server ignores api_key + model; a dummy key is fine for localhost.
         let api_key = if is_local {
@@ -4868,8 +4868,8 @@ impl ProviderRuntime {
         let queue = self.provider_queue(&adapter)?;
         let operator = adapter.operator.clone();
         let model = adapter.model.clone();
-        let base_url = run_env_value(run, &format!("SYMEM_{role}_BASE_URL"))
-            .or_else(|| run_env_value(run, "SYMEM_CHAT_BASE_URL"))
+        let base_url = run_env_value(run, &format!("MEMBENCH_{role}_BASE_URL"))
+            .or_else(|| run_env_value(run, "MEMBENCH_CHAT_BASE_URL"))
             .unwrap_or_else(|| match operator.as_str() {
                 "deepseek" => "https://api.deepseek.com".to_string(),
                 "openrouter" => "https://openrouter.ai/api/v1".to_string(),
@@ -4878,7 +4878,7 @@ impl ProviderRuntime {
         let api_key = required_operator_api_key(run, &operator)?;
         let thinking = thinking_mode(run, role).or_else(|| default_thinking_mode(role));
         let reasoning_effort = role_reasoning_effort(run, role);
-        let max_tokens = run_env_value(run, &format!("SYMEM_{role}_MAX_TOKENS"))
+        let max_tokens = run_env_value(run, &format!("MEMBENCH_{role}_MAX_TOKENS"))
             .and_then(|value| value.parse::<u32>().ok())
             .or_else(|| default_role_max_tokens(role));
         let timeout = self
@@ -4912,13 +4912,13 @@ impl ProviderRuntime {
         base: &symbiotic_memory::ProviderAdapterConfig,
     ) -> symbiotic_memory::ProviderAdapterConfig {
         let mut adapter = base.clone();
-        if let Some(operator) = run_env_value(run, &format!("SYMEM_{role}_OPERATOR")) {
+        if let Some(operator) = run_env_value(run, &format!("MEMBENCH_{role}_OPERATOR")) {
             adapter.operator = operator;
         }
-        if let Some(model) = run_env_value(run, &format!("SYMEM_{role}_MODEL")) {
+        if let Some(model) = run_env_value(run, &format!("MEMBENCH_{role}_MODEL")) {
             adapter.model = model;
         }
-        if let Some(queue_id) = run_env_value(run, &format!("SYMEM_{role}_QUEUE_ID")) {
+        if let Some(queue_id) = run_env_value(run, &format!("MEMBENCH_{role}_QUEUE_ID")) {
             adapter.queue_id = Some(queue_id);
         }
         adapter
@@ -5028,8 +5028,9 @@ fn required_operator_api_key(
 fn gemini_transport_mode(
     run: &SymbioticMemoryCliRun,
 ) -> symbiotic_memory::providers::GeminiEmbeddingTransportMode {
-    let value = run_env_value(run, "SYMEM_GEMINI_EMBED_MODE")
-        .or_else(|| run_env_value(run, "SYMEM_GEMINI_EMBED_TRANSPORT"))
+    // Engine-config knob (`embed.gemini_transport`): read the config env key so the
+    // bench-built Gemini provider honors the same override layer the kit resolves.
+    let value = run_env_value(run, "SYMBIOTIC_MEMORY__EMBED__GEMINI_TRANSPORT")
         .unwrap_or_else(|| "multi-input".to_string())
         .to_ascii_lowercase();
     match value.as_str() {
@@ -5045,8 +5046,8 @@ fn thinking_mode(
     run: &SymbioticMemoryCliRun,
     role: &str,
 ) -> Option<symbiotic_memory::providers::ThinkingMode> {
-    let value = run_env_value(run, &format!("SYMEM_{role}_THINKING"))
-        .or_else(|| run_env_value(run, &format!("SYMEM_{role}_REASONING")))
+    let value = run_env_value(run, &format!("MEMBENCH_{role}_THINKING"))
+        .or_else(|| run_env_value(run, &format!("MEMBENCH_{role}_REASONING")))
         .unwrap_or_default()
         .to_ascii_lowercase();
     match value.as_str() {
@@ -5085,7 +5086,7 @@ fn role_has_override(run: &SymbioticMemoryCliRun, role: &str) -> bool {
         "MAX_TOKENS",
     ]
     .iter()
-    .any(|suffix| run_env_value(run, &format!("SYMEM_{role}_{suffix}")).is_some())
+    .any(|suffix| run_env_value(run, &format!("MEMBENCH_{role}_{suffix}")).is_some())
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
@@ -5107,8 +5108,8 @@ fn default_role_max_tokens(role: &str) -> Option<u32> {
 
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn role_reasoning_effort(run: &SymbioticMemoryCliRun, role: &str) -> Option<String> {
-    run_env_value(run, &format!("SYMEM_{role}_REASONING_EFFORT")).or_else(|| {
-        let value = run_env_value(run, &format!("SYMEM_{role}_THINKING"))?.to_ascii_lowercase();
+    run_env_value(run, &format!("MEMBENCH_{role}_REASONING_EFFORT")).or_else(|| {
+        let value = run_env_value(run, &format!("MEMBENCH_{role}_THINKING"))?.to_ascii_lowercase();
         matches!(value.as_str(), "high" | "max").then_some(value)
     })
 }
@@ -5256,7 +5257,7 @@ async fn score_prepared_longmemeval_native(
     let judge = resolved_judge_params(run);
     let judge_model = judge.model;
     let judge_prompt_mode =
-        run_env_value(run, "SYMEM_JUDGE_PROMPT_MODE").unwrap_or_else(|| "official".to_string());
+        run_env_value(run, "MEMBENCH_JUDGE_PROMPT_MODE").unwrap_or_else(|| "official".to_string());
     let partial_file = Arc::new(std::sync::Mutex::new(
         std::fs::OpenOptions::new()
             .create(true)
@@ -5444,7 +5445,7 @@ fn judge_prompt(
     // DEFAULT → the EXACT per-question-type grader from the LongMemEval paper (Wu et al.,
     // arXiv:2410.10813). Each type carries its own leniency: off-by-one for temporal, old+new for
     // knowledge-update, rubric-satisfaction for preference. The old generic semantic grader stays
-    // available behind SYMEM_JUDGE_PROMPT_MODE=semantic (aka legacy / semantic-shared-compact).
+    // available behind MEMBENCH_JUDGE_PROMPT_MODE=semantic (aka legacy / semantic-shared-compact).
     if !matches!(
         prompt_mode,
         "semantic" | "semantic-shared-compact" | "legacy" | "generic"
@@ -5743,7 +5744,7 @@ fn effective_workflow_max_in_flight(answer_only: bool, configured: Option<usize>
 
 #[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
 fn workflow_max_in_flight_env_override(run: &SymbioticMemoryCliRun) -> Option<usize> {
-    run_env_value(run, "SYMEM_WORKFLOW_MAX_IN_FLIGHT").and_then(|value| value.parse().ok())
+    run_env_value(run, "MEMBENCH_WORKFLOW_MAX_IN_FLIGHT").and_then(|value| value.parse().ok())
 }
 
 #[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
@@ -5753,7 +5754,7 @@ fn effective_workflow_max_in_flight_for_run(
 ) -> usize {
     // answer-only reuses a stored vault (no ingest) so it can run wide. 64 is a validated default
     // (122Q at 732 q/min, zero rerank throttle after the rpm-bucket fix); 500 still stresses the
-    // SQLite workflow queue's claim/reclaim, so cap here. Overridable via SYMEM_WORKFLOW_MAX_IN_FLIGHT.
+    // SQLite workflow queue's claim/reclaim, so cap here. Overridable via MEMBENCH_WORKFLOW_MAX_IN_FLIGHT.
     let base_default = if run.answer_only {
         ANSWER_ONLY_WORKFLOW_MAX_IN_FLIGHT
     } else {
@@ -5811,41 +5812,48 @@ fn symbiotic_memory_run_params(run: &SymbioticMemoryCliRun) -> serde_json::Value
     let workflow_max_in_flight =
         effective_workflow_max_in_flight_for_run(run, configured_workflow_max_in_flight);
     let workflow_max_in_flight_env_override = workflow_max_in_flight_env_override(run);
+    // Transport + embed knobs are engine config (`[transport]` / `[embed]` sections);
+    // the run record reports the SYMBIOTIC_MEMORY__* override layer this run resolved.
     let openrouter_http1_only = run_env_bool(
         run,
-        "SYMEM_OPENROUTER_HTTP_HTTP1_ONLY",
+        "SYMBIOTIC_MEMORY__TRANSPORT__HTTP1_ONLY",
         run.embedder == "openrouter",
     );
     let openrouter_http_client_pool_size =
-        run_env_value(run, "SYMEM_OPENROUTER_HTTP_CLIENT_POOL_SIZE");
+        run_env_value(run, "SYMBIOTIC_MEMORY__TRANSPORT__OPENROUTER_CLIENT_POOL_SIZE");
     let openrouter_http_pool_max_idle_per_host =
-        run_env_value(run, "SYMEM_OPENROUTER_HTTP_POOL_MAX_IDLE_PER_HOST");
+        run_env_value(run, "SYMBIOTIC_MEMORY__TRANSPORT__POOL_MAX_IDLE_PER_HOST");
     let openrouter_http_connect_timeout_secs =
-        run_env_value(run, "SYMEM_OPENROUTER_HTTP_CONNECT_TIMEOUT_SECS");
+        run_env_value(run, "SYMBIOTIC_MEMORY__TRANSPORT__CONNECT_TIMEOUT_SECS");
     let openrouter_http_tcp_keepalive_secs =
-        run_env_value(run, "SYMEM_OPENROUTER_HTTP_TCP_KEEPALIVE_SECS");
-    let chat_http1_only = run_env_bool(run, "SYMEM_CHAT_HTTP_HTTP1_ONLY", false);
-    let chat_http_client_pool_size = run_env_value(run, "SYMEM_CHAT_HTTP_CLIENT_POOL_SIZE");
+        run_env_value(run, "SYMBIOTIC_MEMORY__TRANSPORT__TCP_KEEPALIVE_SECS");
+    let chat_http1_only = run_env_bool(run, "SYMBIOTIC_MEMORY__TRANSPORT__HTTP1_ONLY", false);
+    let chat_http_client_pool_size =
+        run_env_value(run, "SYMBIOTIC_MEMORY__TRANSPORT__CHAT_CLIENT_POOL_SIZE");
     let chat_http_pool_max_idle_per_host =
-        run_env_value(run, "SYMEM_CHAT_HTTP_POOL_MAX_IDLE_PER_HOST");
-    let chat_http_connect_timeout_secs = run_env_value(run, "SYMEM_CHAT_HTTP_CONNECT_TIMEOUT_SECS");
-    let chat_http_tcp_keepalive_secs = run_env_value(run, "SYMEM_CHAT_HTTP_TCP_KEEPALIVE_SECS");
-    let chat_http_timeout_secs = run_env_value(run, "SYMEM_CHAT_HTTP_TIMEOUT_SECS");
-    let openrouter_embed_input_type = run_env_value(run, "SYMEM_OPENROUTER_EMBED_INPUT_TYPE")
-        .or_else(|| run_env_value(run, "SYMEM_EMBED_INPUT_TYPE"));
-    let openrouter_embed_send_default_input_type =
-        run_env_bool(run, "SYMEM_OPENROUTER_EMBED_SEND_DEFAULT_INPUT_TYPE", false);
-    let embed_batch_size = run_env_value(run, "SYMEM_EMBED_BATCH_SIZE");
-    let embed_batch_max_chars = run_env_value(run, "SYMEM_EMBED_BATCH_MAX_CHARS");
-    let embed_max_chars = run_env_value(run, "SYMEM_EMBED_MAX_CHARS");
+        run_env_value(run, "SYMBIOTIC_MEMORY__TRANSPORT__POOL_MAX_IDLE_PER_HOST");
+    let chat_http_connect_timeout_secs =
+        run_env_value(run, "SYMBIOTIC_MEMORY__TRANSPORT__CONNECT_TIMEOUT_SECS");
+    let chat_http_tcp_keepalive_secs =
+        run_env_value(run, "SYMBIOTIC_MEMORY__TRANSPORT__TCP_KEEPALIVE_SECS");
+    let chat_http_timeout_secs = run_env_value(run, "SYMBIOTIC_MEMORY__TRANSPORT__CHAT_TIMEOUT_SECS");
+    let openrouter_embed_input_type = run_env_value(run, "SYMBIOTIC_MEMORY__EMBED__INPUT_TYPE");
+    let openrouter_embed_send_default_input_type = run_env_bool(
+        run,
+        "SYMBIOTIC_MEMORY__EMBED__SEND_DEFAULT_INPUT_TYPE",
+        false,
+    );
+    let embed_batch_size = run_env_value(run, "SYMBIOTIC_MEMORY__EMBED__BATCH_SIZE");
+    let embed_batch_max_chars = run_env_value(run, "SYMBIOTIC_MEMORY__EMBED__BATCH_MAX_CHARS");
+    let embed_max_chars = run_env_value(run, "MEMBENCH_EMBED_MAX_CHARS");
     let distill_thinking = role_thinking_label(run, "DISTILL");
     let query_planner_thinking = role_thinking_label(run, "QUERY_PLANNER");
     let answer_thinking = role_thinking_label(run, "ANSWER");
     let judge_thinking = role_thinking_label(run, "JUDGE");
     // Oracle-gold mode: the answerer is fed ONLY gold-session raw turns (the "reader ceiling"
-    // method), bypassing recall. Set by `--oracle-gold` (which exports SYMEM_ORACLE_GOLD=1) or the
+    // method), bypassing recall. Set by `--oracle-gold` (which exports MEMBENCH_ORACLE_GOLD=1) or the
     // env var directly — read the env so both paths land in the run record.
-    let oracle_gold = run_env_bool(run, "SYMEM_ORACLE_GOLD", false);
+    let oracle_gold = run_env_bool(run, "MEMBENCH_ORACLE_GOLD", false);
     let rerank = resolved_rerank_params(run);
     let mut params = json!({
         "schema": "membench.run_params.v1",
@@ -5904,7 +5912,7 @@ fn symbiotic_memory_run_params(run: &SymbioticMemoryCliRun) -> serde_json::Value
         },
         "ingest_stop_after_raw_embed": effective_stop_after_raw_embed(run),
         "ingest_diagnostic_mode": effective_ingest_diagnostic(run),
-        "provider_queue_debug_requests": run_env_bool(run, "SYMEM_PROVIDER_QUEUE_DEBUG_REQUESTS", false),
+        "provider_queue_debug_requests": run_env_bool(run, "SYMBIOTIC_MEMORY__QUEUE__DEBUG_REQUESTS", false),
         "openrouter_http1_only": openrouter_http1_only,
         "openrouter_http_client_pool_size": openrouter_http_client_pool_size,
         "openrouter_http_pool_max_idle_per_host": openrouter_http_pool_max_idle_per_host,
@@ -6078,11 +6086,11 @@ fn fallback_provider_binding_for_role(
     default_operator: &str,
     default_model: &str,
 ) -> serde_json::Value {
-    let operator = run_env_value(run, &format!("SYMEM_{role}_OPERATOR"))
+    let operator = run_env_value(run, &format!("MEMBENCH_{role}_OPERATOR"))
         .unwrap_or_else(|| default_operator.to_string());
-    let model = run_env_value(run, &format!("SYMEM_{role}_MODEL"))
+    let model = run_env_value(run, &format!("MEMBENCH_{role}_MODEL"))
         .unwrap_or_else(|| default_model.to_string());
-    let queue_id = run_env_value(run, &format!("SYMEM_{role}_QUEUE_ID"))
+    let queue_id = run_env_value(run, &format!("MEMBENCH_{role}_QUEUE_ID"))
         .unwrap_or_else(|| format!("{operation}:{operator}:{model}"));
     json!({
         "operation": operation,
@@ -6121,10 +6129,10 @@ fn effective_embedding_adapter(
         } else {
             "ollama"
         };
-        let operator = run_env_value(run, "SYMEM_EMBED_OPERATOR")
+        let operator = run_env_value(run, "MEMBENCH_EMBED_OPERATOR")
             .unwrap_or_else(|| default_operator.to_string());
-        let model = run_env_value(run, "SYMEM_EMBED_MODEL")
-            .or_else(|| run_env_value(run, "SYMEM_OLLAMA_EMBED_MODEL"))
+        let model = run_env_value(run, "MEMBENCH_EMBED_MODEL")
+            .or_else(|| run_env_value(run, "MEMBENCH_OLLAMA_EMBED_MODEL"))
             .unwrap_or_else(|| {
                 if run.embedder == "openrouter" {
                     "qwen/qwen3-embedding-8b".to_string()
@@ -6134,7 +6142,7 @@ fn effective_embedding_adapter(
             });
         let mut adapter =
             symbiotic_memory::ProviderAdapterConfig::new("embedding", operator, model);
-        if let Some(queue_id) = run_env_value(run, "SYMEM_EMBED_QUEUE_ID") {
+        if let Some(queue_id) = run_env_value(run, "MEMBENCH_EMBED_QUEUE_ID") {
             adapter.queue_id = Some(queue_id);
         }
         return adapter;
@@ -6158,13 +6166,13 @@ fn provider_adapter_for_role(
     base: &symbiotic_memory::ProviderAdapterConfig,
 ) -> symbiotic_memory::ProviderAdapterConfig {
     let mut adapter = base.clone();
-    if let Some(operator) = run_env_value(run, &format!("SYMEM_{role}_OPERATOR")) {
+    if let Some(operator) = run_env_value(run, &format!("MEMBENCH_{role}_OPERATOR")) {
         adapter.operator = operator;
     }
-    if let Some(model) = run_env_value(run, &format!("SYMEM_{role}_MODEL")) {
+    if let Some(model) = run_env_value(run, &format!("MEMBENCH_{role}_MODEL")) {
         adapter.model = model;
     }
-    if let Some(queue_id) = run_env_value(run, &format!("SYMEM_{role}_QUEUE_ID")) {
+    if let Some(queue_id) = run_env_value(run, &format!("MEMBENCH_{role}_QUEUE_ID")) {
         adapter.queue_id = Some(queue_id);
     }
     adapter
@@ -6309,7 +6317,7 @@ fn role_setting_for_adapter(
         "logical_retry_attempts": resolved.logical_retry_attempts,
         "thinking": thinking_mode_label(thinking_mode(run, role).or_else(|| default_thinking_mode(role))),
         "reasoning_effort": role_reasoning_effort(run, role),
-        "max_tokens": run_env_value(run, &format!("SYMEM_{role}_MAX_TOKENS"))
+        "max_tokens": run_env_value(run, &format!("MEMBENCH_{role}_MAX_TOKENS"))
             .and_then(|value| value.parse::<u32>().ok())
             .or_else(|| default_role_max_tokens(role)),
     })
@@ -6324,14 +6332,14 @@ fn fallback_role_setting(
         "active": active,
         "thinking": fallback_thinking_mode_label(run, role),
         "reasoning_effort": fallback_role_reasoning_effort(run, role),
-        "max_tokens": run_env_value(run, &format!("SYMEM_{role}_MAX_TOKENS"))
+        "max_tokens": run_env_value(run, &format!("MEMBENCH_{role}_MAX_TOKENS"))
             .and_then(|value| value.parse::<u32>().ok()),
     })
 }
 
 fn fallback_thinking_mode_label(run: &SymbioticMemoryCliRun, role: &str) -> Option<String> {
-    let value = run_env_value(run, &format!("SYMEM_{role}_THINKING"))
-        .or_else(|| run_env_value(run, &format!("SYMEM_{role}_REASONING")))?;
+    let value = run_env_value(run, &format!("MEMBENCH_{role}_THINKING"))
+        .or_else(|| run_env_value(run, &format!("MEMBENCH_{role}_REASONING")))?;
     Some(match value.to_ascii_lowercase().as_str() {
         "off" | "disabled" | "disable" | "false" | "0" => "disabled".to_string(),
         "on" | "enabled" | "enable" | "true" | "1" | "high" | "max" => "enabled".to_string(),
@@ -6340,16 +6348,16 @@ fn fallback_thinking_mode_label(run: &SymbioticMemoryCliRun, role: &str) -> Opti
 }
 
 fn fallback_role_reasoning_effort(run: &SymbioticMemoryCliRun, role: &str) -> Option<String> {
-    run_env_value(run, &format!("SYMEM_{role}_REASONING_EFFORT")).or_else(|| {
-        let value = run_env_value(run, &format!("SYMEM_{role}_THINKING"))?.to_ascii_lowercase();
+    run_env_value(run, &format!("MEMBENCH_{role}_REASONING_EFFORT")).or_else(|| {
+        let value = run_env_value(run, &format!("MEMBENCH_{role}_THINKING"))?.to_ascii_lowercase();
         matches!(value.as_str(), "high" | "max").then_some(value)
     })
 }
 
 #[cfg_attr(feature = "symbiotic-memory-adapter", allow(dead_code))]
 fn runtime_env_binding(run: &SymbioticMemoryCliRun, role: &str) -> Option<String> {
-    let operator = run_env_value(run, &format!("SYMEM_{role}_OPERATOR"));
-    let model = run_env_value(run, &format!("SYMEM_{role}_MODEL"));
+    let operator = run_env_value(run, &format!("MEMBENCH_{role}_OPERATOR"));
+    let model = run_env_value(run, &format!("MEMBENCH_{role}_MODEL"));
     match (operator, model) {
         (Some(operator), Some(model)) => Some(format!("{operator}:{model}")),
         (Some(operator), None) => Some(format!("{operator}:configured-model")),
@@ -6367,8 +6375,8 @@ struct ResolvedJudgeParams {
 #[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
 fn resolved_judge_params(run: &SymbioticMemoryCliRun) -> ResolvedJudgeParams {
     let operator =
-        run_env_value(run, "SYMEM_JUDGE_OPERATOR").unwrap_or_else(|| "deepseek".to_string());
-    let model = run_env_value(run, "SYMEM_JUDGE_MODEL")
+        run_env_value(run, "MEMBENCH_JUDGE_OPERATOR").unwrap_or_else(|| "deepseek".to_string());
+    let model = run_env_value(run, "MEMBENCH_JUDGE_MODEL")
         .or_else(|| scorer_judge_model(&run.scorer).map(ToOwned::to_owned))
         .unwrap_or_else(|| "deepseek-v4-flash".to_string());
     ResolvedJudgeParams { operator, model }
@@ -6388,9 +6396,9 @@ fn scorer_judge_model(scorer: &str) -> Option<&str> {
 fn warn_inert_tuning_knobs(run: &SymbioticMemoryCliRun, redo_stage: Option<&str>) {
     let is_set = |key: &str| run_env_value(run, key).is_some();
 
-    // (a) Consolidator knobs require the consolidator gate: SYMEM_CONSOLIDATOR truthy AND
+    // (a) Consolidator knobs require the consolidator gate: MEMBENCH_CONSOLIDATOR truthy AND
     //     consolidate_briefs on (i.e. not disabled via --no-consolidate-briefs).
-    let consolidator_truthy = run_env_value(run, "SYMEM_CONSOLIDATOR")
+    let consolidator_truthy = run_env_value(run, "MEMBENCH_CONSOLIDATOR")
         .map(|value| {
             matches!(
                 value.trim().to_ascii_lowercase().as_str(),
@@ -6401,57 +6409,60 @@ fn warn_inert_tuning_knobs(run: &SymbioticMemoryCliRun, redo_stage: Option<&str>
     let consolidator_enabled = consolidator_truthy && run.consolidate_briefs;
     if !consolidator_enabled {
         for key in [
-            "SYMEM_CONSOLIDATE_INPUT",
-            "SYMEM_CONSOLIDATE_MODEL",
-            "SYMEM_CONSOLIDATE_THINKING",
-            "SYMEM_CONSOLIDATE_TURNS_PER_WINDOW",
+            "MEMBENCH_CONSOLIDATE_MODEL",
+            "MEMBENCH_CONSOLIDATE_THINKING",
+            "SYMBIOTIC_MEMORY__DISTILL__CONSOLIDATE_INPUT",
+            "SYMBIOTIC_MEMORY__DISTILL__CONSOLIDATE_TURNS_PER_WINDOW",
         ] {
             if is_set(key) {
                 eprintln!(
-                    "WARNING: {key} is set but the consolidator is disabled (no truthy SYMEM_CONSOLIDATOR / --no-consolidate-briefs) — it will have NO effect."
+                    "WARNING: {key} is set but the consolidator is disabled (no truthy MEMBENCH_CONSOLIDATOR / --no-consolidate-briefs) — it will have NO effect."
                 );
             }
         }
     }
 
-    // (b) Re-embed knobs require --re-embed or SYMEM_REDO=embed.
+    // (b) Re-embed knobs require --re-embed or MEMBENCH_REDO=embed.
     let reembed_active = run.re_embed || redo_stage == Some("embed");
     if !reembed_active {
-        for key in ["SYMEM_REEMBED_CHUNK", "SYMEM_REEMBED_CONCURRENCY"] {
+        for key in ["MEMBENCH_REEMBED_CHUNK", "MEMBENCH_REEMBED_CONCURRENCY"] {
             if is_set(key) {
                 eprintln!(
-                    "WARNING: {key} is set but re-embed is off (no --re-embed / SYMEM_REDO=embed) — it will have NO effect."
+                    "WARNING: {key} is set but re-embed is off (no --re-embed / MEMBENCH_REDO=embed) — it will have NO effect."
                 );
             }
         }
     }
 
-    // (c) Multi-hop sub-knobs require the SYMEM_MULTIHOP gate.
-    let multihop_enabled = run_env_value(run, "SYMEM_MULTIHOP")
+    // (c) Multi-hop sub-knobs require the experimental.multihop config gate.
+    let multihop_enabled = run_env_value(run, "SYMBIOTIC_MEMORY__EXPERIMENTAL__MULTIHOP")
         .map(|value| matches!(value.trim(), "1" | "true" | "on"))
         .unwrap_or(false);
     if !multihop_enabled {
         for key in [
-            "SYMEM_MULTIHOP_SEED",
-            "SYMEM_MULTIHOP_ENTITIES",
-            "SYMEM_MULTIHOP_ROUND2_K",
-            "SYMEM_MULTIHOP_ALL",
+            "SYMBIOTIC_MEMORY__EXPERIMENTAL__MULTIHOP_SEED",
+            "SYMBIOTIC_MEMORY__EXPERIMENTAL__MULTIHOP_ENTITIES",
+            "SYMBIOTIC_MEMORY__EXPERIMENTAL__MULTIHOP_ROUND2_K",
+            "SYMBIOTIC_MEMORY__EXPERIMENTAL__MULTIHOP_ALL",
         ] {
             if is_set(key) {
                 eprintln!(
-                    "WARNING: {key} is set but multi-hop is off (SYMEM_MULTIHOP not 1/true/on) — it will have NO effect."
+                    "WARNING: {key} is set but multi-hop is off (SYMBIOTIC_MEMORY__EXPERIMENTAL__MULTIHOP not 1/true/on) — it will have NO effect."
                 );
             }
         }
     }
 
-    // (d) Temporal-filter min-keep requires the SYMEM_TEMPORAL_FILTER gate.
-    let temporal_filter_enabled = run_env_value(run, "SYMEM_TEMPORAL_FILTER")
-        .map(|value| matches!(value.trim(), "1" | "true" | "on"))
-        .unwrap_or(false);
-    if !temporal_filter_enabled && is_set("SYMEM_TEMPORAL_FILTER_MIN") {
+    // (d) Temporal-filter min-keep requires the experimental.temporal_filter config gate.
+    let temporal_filter_enabled =
+        run_env_value(run, "SYMBIOTIC_MEMORY__EXPERIMENTAL__TEMPORAL_FILTER")
+            .map(|value| matches!(value.trim(), "1" | "true" | "on"))
+            .unwrap_or(false);
+    if !temporal_filter_enabled
+        && is_set("SYMBIOTIC_MEMORY__EXPERIMENTAL__TEMPORAL_FILTER_MIN_KEEP")
+    {
         eprintln!(
-            "WARNING: SYMEM_TEMPORAL_FILTER_MIN is set but the temporal filter is off (SYMEM_TEMPORAL_FILTER not 1/true/on) — it will have NO effect."
+            "WARNING: SYMBIOTIC_MEMORY__EXPERIMENTAL__TEMPORAL_FILTER_MIN_KEEP is set but the temporal filter is off (SYMBIOTIC_MEMORY__EXPERIMENTAL__TEMPORAL_FILTER not 1/true/on) — it will have NO effect."
         );
     }
 }
@@ -6506,15 +6517,22 @@ fn run_env_bool(run: &SymbioticMemoryCliRun, key: &str, default: bool) -> bool {
 }
 
 fn effective_stop_after_raw_embed(run: &SymbioticMemoryCliRun) -> bool {
-    run.stop_after_raw_embed || run_env_bool(run, "SYMEM_INGEST_STOP_AFTER_RAW_EMBED", false)
+    // `--stop-after-raw-embed` is the harness switch; the engine-config field
+    // (`distill.ingest_stop_after_raw_embed`) is honored via its config env key.
+    run.stop_after_raw_embed
+        || run_env_bool(
+            run,
+            "SYMBIOTIC_MEMORY__DISTILL__INGEST_STOP_AFTER_RAW_EMBED",
+            false,
+        )
 }
 
 /// Resolve the reranker binding (model/operator/base url + optional stage-1 prefilter) from the
-/// `SYMEM_RERANK*` env knobs WITHOUT building the actual reranker. Mirrors `reranker()` /
+/// `MEMBENCH_RERANK*` env knobs WITHOUT building the actual reranker. Mirrors `reranker()` /
 /// `build_reranker()` so the run record reports the same model the recall engine actually used.
 /// Returns `{ "enabled": false }` when rerank is off.
 fn resolved_rerank_params(run: &SymbioticMemoryCliRun) -> serde_json::Value {
-    let enabled = run_env_value(run, "SYMEM_RERANK")
+    let enabled = run_env_value(run, "MEMBENCH_RERANK")
         .map(|value| {
             matches!(
                 value.trim().to_ascii_lowercase().as_str(),
@@ -6525,17 +6543,17 @@ fn resolved_rerank_params(run: &SymbioticMemoryCliRun) -> serde_json::Value {
     if !enabled {
         return json!({ "enabled": false });
     }
-    let base_url = run_env_value(run, "SYMEM_RERANK_BASE_URL")
+    let base_url = run_env_value(run, "MEMBENCH_RERANK_BASE_URL")
         .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
-    let model = run_env_value(run, "SYMEM_RERANK_MODEL")
+    let model = run_env_value(run, "MEMBENCH_RERANK_MODEL")
         .unwrap_or_else(|| "nvidia/llama-nemotron-rerank-vl-1b-v2:free".to_string());
     let is_local = base_url.contains("localhost")
         || base_url.contains("127.0.0.1")
         || base_url.contains("[::1]");
-    let operator = run_env_value(run, "SYMEM_RERANK_OPERATOR")
+    let operator = run_env_value(run, "MEMBENCH_RERANK_OPERATOR")
         .unwrap_or_else(|| if is_local { "local" } else { "openrouter" }.to_string());
     let stage1_model =
-        run_env_value(run, "SYMEM_RERANK_STAGE1_MODEL").filter(|value| !value.trim().is_empty());
+        run_env_value(run, "MEMBENCH_RERANK_STAGE1_MODEL").filter(|value| !value.trim().is_empty());
     json!({
         "enabled": true,
         "operation": "rerank",
@@ -6553,7 +6571,7 @@ fn effective_ingest_diagnostic(run: &SymbioticMemoryCliRun) -> Option<String> {
     }
     run.ingest_diagnostic
         .clone()
-        .or_else(|| run_env_value(run, "SYMEM_INGEST_DIAGNOSTIC_MODE"))
+        .or_else(|| run_env_value(run, "SYMBIOTIC_MEMORY__DISTILL__INGEST_DIAGNOSTIC_MODE"))
         .and_then(normalize_ingest_diagnostic)
 }
 
@@ -6615,21 +6633,22 @@ fn apply_symbiotic_memory_env(
         .provider_queue_dir
         .clone()
         .unwrap_or_else(|| run.run_root.join("provider-queue"));
-    cmd.env("SYMEM_PROVIDER_QUEUE_DIR", provider_queue_dir);
+    cmd.env("MEMBENCH_PROVIDER_QUEUE_DIR", provider_queue_dir);
     if let Some(memory_config) = &run.memory_config {
-        cmd.env("SYMEM_CONFIG", memory_config);
+        cmd.env("MEMBENCH_CONFIG", memory_config);
     }
-    set_env_default(cmd, "SYMEM_JUDGE_OPERATOR", "deepseek");
-    set_env_default(cmd, "SYMEM_JUDGE_BASE_URL", "https://api.deepseek.com");
-    set_env_default(cmd, "SYMEM_JUDGE_MODEL", "deepseek-v4-flash");
-    set_env_default(cmd, "SYMEM_JUDGE_THINKING", "disabled");
-    set_env_default(cmd, "SYMEM_JUDGE_MAX_TOKENS", "64");
-    set_env_default(cmd, "SYMEM_DISTILL_PARSE_RETRIES", "4");
-    set_env_default(cmd, "SYMEM_DISTILL_WINDOW_TIMEOUT_SECS", "0");
-    set_env_default(cmd, "SYMEM_DISTILL_TURNS_PER_WINDOW", "16");
-    set_env_default(cmd, "SYMEM_QUESTION_TIMEOUT_SECS", "0");
-    set_env_default(cmd, "SYMEM_TRACE_JSONL", "1");
-    set_env_default(cmd, "SYMEM_QUEUE_TRACE_JSONL", "1");
+    set_env_default(cmd, "MEMBENCH_JUDGE_OPERATOR", "deepseek");
+    set_env_default(cmd, "MEMBENCH_JUDGE_BASE_URL", "https://api.deepseek.com");
+    set_env_default(cmd, "MEMBENCH_JUDGE_MODEL", "deepseek-v4-flash");
+    set_env_default(cmd, "MEMBENCH_JUDGE_THINKING", "disabled");
+    set_env_default(cmd, "MEMBENCH_JUDGE_MAX_TOKENS", "64");
+    // Distill knobs are engine config; export them through the kit's config env layer.
+    set_env_default(cmd, "SYMBIOTIC_MEMORY__DISTILL__PARSE_RETRIES", "4");
+    set_env_default(cmd, "SYMBIOTIC_MEMORY__DISTILL__WINDOW_TIMEOUT_SECS", "0");
+    set_env_default(cmd, "SYMBIOTIC_MEMORY__DISTILL__TURNS_PER_WINDOW", "16");
+    set_env_default(cmd, "MEMBENCH_QUESTION_TIMEOUT_SECS", "0");
+    set_env_default(cmd, "MEMBENCH_TRACE_JSONL", "1");
+    set_env_default(cmd, "MEMBENCH_QUEUE_TRACE_JSONL", "1");
     Ok(())
 }
 
@@ -6639,13 +6658,13 @@ fn apply_symbiotic_memory_prewarm_env(
     cmd: &mut std::process::Command,
 ) {
     let provider_queue_dir = prewarm.trace_dir.join("provider-queue");
-    cmd.env("SYMEM_PROVIDER_QUEUE_DIR", &provider_queue_dir);
+    cmd.env("MEMBENCH_PROVIDER_QUEUE_DIR", &provider_queue_dir);
     cmd.env(
-        "SYMEM_TRACE_JSONL_PATH",
+        "MEMBENCH_TRACE_JSONL_PATH",
         prewarm.trace_dir.join("model-traces.jsonl"),
     );
     cmd.env(
-        "SYMEM_QUEUE_TRACE_JSONL_PATH",
+        "MEMBENCH_QUEUE_TRACE_JSONL_PATH",
         provider_queue_dir.join("model-queue-traces.jsonl"),
     );
 }
@@ -7291,15 +7310,15 @@ mod tests {
             })
             .collect::<BTreeMap<_, _>>();
         assert_eq!(
-            envs.get("SYMEM_PROVIDER_QUEUE_DIR").map(String::as_str),
+            envs.get("MEMBENCH_PROVIDER_QUEUE_DIR").map(String::as_str),
             Some("run/raw/judge-cache-prewarm/provider-queue")
         );
         assert_eq!(
-            envs.get("SYMEM_TRACE_JSONL_PATH").map(String::as_str),
+            envs.get("MEMBENCH_TRACE_JSONL_PATH").map(String::as_str),
             Some("run/raw/judge-cache-prewarm/model-traces.jsonl")
         );
         assert_eq!(
-            envs.get("SYMEM_QUEUE_TRACE_JSONL_PATH").map(String::as_str),
+            envs.get("MEMBENCH_QUEUE_TRACE_JSONL_PATH").map(String::as_str),
             Some("run/raw/judge-cache-prewarm/provider-queue/model-queue-traces.jsonl")
         );
     }
@@ -7507,7 +7526,7 @@ mod tests {
         let env_file = dir.path().join(".env.test.local");
         std::fs::write(
             &env_file,
-            "SYMEM_EMBED_OPERATOR=openrouter\nSYMEM_EMBED_MODEL=qwen/qwen3-embedding-8b\n",
+            "MEMBENCH_EMBED_OPERATOR=openrouter\nMEMBENCH_EMBED_MODEL=qwen/qwen3-embedding-8b\n",
         )
         .unwrap();
         let mut run = sample_run(None);
@@ -7523,7 +7542,7 @@ mod tests {
         let env_file = dir.path().join(".env.test.local");
         std::fs::write(
             &env_file,
-            "SYMEM_EMBED_OPERATOR=openrouter\nSYMEM_EMBED_MODEL=qwen/qwen3-embedding-8b\n",
+            "MEMBENCH_EMBED_OPERATOR=openrouter\nMEMBENCH_EMBED_MODEL=qwen/qwen3-embedding-8b\n",
         )
         .unwrap();
         let mut run = sample_run(None);
@@ -7939,7 +7958,7 @@ mod tests {
         let exported = cmd
             .get_envs()
             .find_map(|(key, value)| {
-                (key == "SYMEM_CONFIG").then(|| value.map(|value| value.to_owned()))
+                (key == "MEMBENCH_CONFIG").then(|| value.map(|value| value.to_owned()))
             })
             .flatten();
         assert_eq!(
@@ -8009,7 +8028,7 @@ mod tests {
         let env_file = dir.path().join(".env.test.local");
         std::fs::write(
             &env_file,
-            "SYMEM_ORACLE_GOLD=1\nSYMEM_RERANK=1\nSYMEM_RERANK_MODEL=cohere/rerank-4-fast\n",
+            "MEMBENCH_ORACLE_GOLD=1\nMEMBENCH_RERANK=1\nMEMBENCH_RERANK_MODEL=cohere/rerank-4-fast\n",
         )
         .unwrap();
         let mut run = sample_run(None);
@@ -8039,7 +8058,7 @@ mod tests {
         let env_file = dir.path().join(".env.test.local");
         std::fs::write(
             &env_file,
-            "SYMEM_JUDGE_OPERATOR=deepseek\nSYMEM_JUDGE_MODEL=deepseek-v4-pro\n",
+            "MEMBENCH_JUDGE_OPERATOR=deepseek\nMEMBENCH_JUDGE_MODEL=deepseek-v4-pro\n",
         )
         .unwrap();
         let mut run = sample_run(None);
@@ -8057,7 +8076,7 @@ mod tests {
         let env_file = dir.path().join(".env.test.local");
         std::fs::write(
             &env_file,
-            "SYMEM_ANSWER_OPERATOR=deepseek\nSYMEM_ANSWER_MODEL=deepseek-v4-pro\n",
+            "MEMBENCH_ANSWER_OPERATOR=deepseek\nMEMBENCH_ANSWER_MODEL=deepseek-v4-pro\n",
         )
         .unwrap();
         let mut run = sample_run(None);

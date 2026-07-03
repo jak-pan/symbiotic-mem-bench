@@ -16,7 +16,8 @@ benchmark script:
 - per-question SQLite vault reuse;
 - partial vault resume when raw turns exist but facts are missing;
 - bounded chat/embedding retries;
-- optional distill-window cache through `SYMEM_DISTILL_CACHE_DIR`;
+- optional distill-window cache through the kit's `distill.cache_dir` config field
+  (`SYMBIOTIC_MEMORY__DISTILL__CACHE_DIR`);
 - foundation SQLite workflow queue for LongMemEval row leases and completion state;
 - foundation model queue response-cache traces for provider-backed adapters;
 - foundation model queue transition traces under `provider-queue/model-queue-traces.jsonl`;
@@ -44,7 +45,7 @@ Run notes:
 artificial output caps.
 - Earlier probes used a whole-row timeout and showed why that was the wrong control point: slow rows
 can be legitimate when work is waiting in durable model queues. Normal runs now leave
-`SYMEM_QUESTION_TIMEOUT_SECS=0` and rely on per-step/model timeouts instead.
+`MEMBENCH_QUESTION_TIMEOUT_SECS=0` and rely on per-step/model timeouts instead.
 - Hypothesis JSONL had 10 rows and zero forbidden scoring fields.
 - the historical score recorder updated all 10 vault manifests.
 - Provider response cache contained 342 chat responses and 17,168 embedding responses after the
@@ -101,7 +102,7 @@ This is a parity target, not a product claim for this standalone crate yet. New 
 
 Before a full 500 quality run:
 
-1. Enable `SYMEM_DISTILL_CACHE_DIR` for all paid runs.
+1. Enable the kit's `distill.cache_dir` (`SYMBIOTIC_MEMORY__DISTILL__CACHE_DIR`) for all paid runs.
 2. Use `model-traces.jsonl` to verify cache-hit/miss token accounting.
 3. Verify all DeepSeek and Gemini calls route through the foundation model queues; do not add
   separate stage-specific semaphores.

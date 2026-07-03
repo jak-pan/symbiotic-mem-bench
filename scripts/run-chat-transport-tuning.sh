@@ -39,9 +39,9 @@ Useful env:
   SAMPLE=stratified
   RUN_NAME=<explicit run name>
   DEBUG_REQUESTS=1            # stores raw provider payloads; local forensics only
-  SYMEM_WORKFLOW_MAX_IN_FLIGHT=10
-  SYMEM_DISTILL_WINDOW_MAX_INPUT_TOKENS=<tokens>
-  SYMEM_PROVIDER_TRACE=1      # default
+  MEMBENCH_WORKFLOW_MAX_IN_FLIGHT=10
+  SYMBIOTIC_MEMORY__DISTILL__WINDOW_MAX_INPUT_TOKENS=<tokens>
+  SYMBIOTIC_MEMORY__TRANSPORT__PROVIDER_TRACE=true   # default
 
 Example:
   scripts/run-chat-transport-tuning.sh deepseek-v4-flash-distill h2-64x32
@@ -70,10 +70,10 @@ fi
 case "$profile" in
   deepseek-v4-flash-distill)
     cohort="chat-transport/deepseek-v4-flash-distill"
-    operator="${SYMEM_DISTILL_OPERATOR:-deepseek}"
-    model="${SYMEM_DISTILL_MODEL:-deepseek-v4-flash}"
-    embedder="${SYMEM_EMBEDDER:-hash}"
-    store="${SYMEM_STORE:-sqlite}"
+    operator="${MEMBENCH_DISTILL_OPERATOR:-deepseek}"
+    model="${MEMBENCH_DISTILL_MODEL:-deepseek-v4-flash}"
+    embedder="${MEMBENCH_EMBEDDER:-hash}"
+    store="${MEMBENCH_STORE:-sqlite}"
     ;;
   *)
     echo "unknown profile: $profile" >&2
@@ -122,10 +122,16 @@ fi
 
 limit="${LIMIT:-10}"
 sample="${SAMPLE:-stratified}"
-workflow_max_in_flight="${SYMEM_WORKFLOW_MAX_IN_FLIGHT:-10}"
+workflow_max_in_flight="${MEMBENCH_WORKFLOW_MAX_IN_FLIGHT:-10}"
 safe_profile="$(echo "$profile" | tr '/:' '--')"
 run_name="${RUN_NAME:-tune-chat-${safe_profile}-${limit}q-${shape}-$(date -u +%Y%m%d-%H%M%S)}"
-debug_requests="${DEBUG_REQUESTS:-${SYMEM_PROVIDER_QUEUE_DEBUG_REQUESTS:-0}}"
+debug_requests="${DEBUG_REQUESTS:-${SYMBIOTIC_MEMORY__QUEUE__DEBUG_REQUESTS:-0}}"
+
+# The kit config env layer parses booleans strictly (true/false).
+to_bool() { case "$1" in 1|true|TRUE|on|yes) echo true ;; *) echo false ;; esac; }
+http1_bool="$(to_bool "$http1")"
+debug_requests_bool="$(to_bool "$debug_requests")"
+provider_trace_bool="$(to_bool "${SYMBIOTIC_MEMORY__TRANSPORT__PROVIDER_TRACE:-1}")"
 
 echo "cohort=$cohort"
 echo "run_name=$run_name"
@@ -137,14 +143,14 @@ else
   echo "debug_requests=off (dashboard-safe traces only)"
 fi
 
-SYMEM_PROVIDER_TRACE="${SYMEM_PROVIDER_TRACE:-1}" \
-SYMEM_PROVIDER_QUEUE_DEBUG_REQUESTS="$debug_requests" \
-SYMEM_DISTILL_OPERATOR="$operator" \
-SYMEM_DISTILL_MODEL="$model" \
-SYMEM_WORKFLOW_MAX_IN_FLIGHT="$workflow_max_in_flight" \
-SYMEM_CHAT_HTTP_CLIENT_POOL_SIZE="$pool" \
-SYMEM_CHAT_HTTP_POOL_MAX_IDLE_PER_HOST="$idle" \
-SYMEM_CHAT_HTTP_HTTP1_ONLY="$http1" \
+SYMBIOTIC_MEMORY__TRANSPORT__PROVIDER_TRACE="$provider_trace_bool" \
+SYMBIOTIC_MEMORY__QUEUE__DEBUG_REQUESTS="$debug_requests_bool" \
+MEMBENCH_DISTILL_OPERATOR="$operator" \
+MEMBENCH_DISTILL_MODEL="$model" \
+MEMBENCH_WORKFLOW_MAX_IN_FLIGHT="$workflow_max_in_flight" \
+SYMBIOTIC_MEMORY__TRANSPORT__CHAT_CLIENT_POOL_SIZE="$pool" \
+SYMBIOTIC_MEMORY__TRANSPORT__POOL_MAX_IDLE_PER_HOST="$idle" \
+SYMBIOTIC_MEMORY__TRANSPORT__HTTP1_ONLY="$http1_bool" \
 "$membench_bin" \
   --system symbiotic-memory \
   --benchmark long-mem-eval \

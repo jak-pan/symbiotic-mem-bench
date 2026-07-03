@@ -53,11 +53,11 @@ The templates document the current raw-light LongMemEval defaults:
   `symbiotic-memory` code/config. These are throughput/retry defaults, not model window limits.
 - Memory-local chunking uses approximate token budgets before provider calls. Numeric defaults are
   owned by `symbiotic-memory` code/config.
-- Distill prompt-cache prewarm is enabled by default. Set `SYMEM_DISTILL_PREWARM_CACHE=0` only for a
+- Distill prompt-cache prewarm is enabled by default. Set `SYMBIOTIC_MEMORY__DISTILL__PREWARM_CACHE=false` only for a
   deliberate no-prewarm comparison.
-- Embedding per-input local text cap is controlled by `SYMEM_EMBED_MAX_CHARS`; batch packing must not
+- Embedding per-input local text cap is controlled by `MEMBENCH_EMBED_MAX_CHARS`; batch packing must not
   truncate individual inputs.
-- Distillery windows of 16 source turns by default. Set `SYMEM_DISTILL_TURNS_PER_WINDOW=1` only for
+- Distillery windows of 16 source turns by default. Set `SYMBIOTIC_MEMORY__DISTILL__TURNS_PER_WINDOW=1` only for
   an explicit atomic-turn experiment; it is too many paid model calls for normal runs.
 
 Queue and cache overrides are intentionally commented out. Prefer the selected memory YAML profile
@@ -69,7 +69,7 @@ Provider queues, model traces, and response-cache state belong under each run ro
 root is explicitly overridden. This keeps scratch runs reproducible and prevents unrelated benchmark
 attempts from silently sharing partial state.
 
-For prompt forensics, set `SYMEM_PROVIDER_QUEUE_DEBUG_REQUESTS=1` for the run. Native Symbiotic
+For prompt forensics, set `SYMBIOTIC_MEMORY__QUEUE__DEBUG_REQUESTS=true` for the run. Native Symbiotic
 Memory runs then write raw provider requests under
 `provider-queue/requests/{chat,embedding}/{input_hash}.json`, matching the `input_hash` in
 `provider-queue/model-queue-traces.jsonl`. This is deliberately off by default because it stores

@@ -25,18 +25,20 @@ BIN=(cargo run --release --features symbiotic-memory-adapter --bin membench --
 echo "=== windowing sweep limit=$LIMIT ==="
 
 # ---- vault builds (fresh ingest; the run itself is the collapse-default arm)
-# NOTE for future sweeps: the -rw vaults re-pay the base distill (~$1.5-2 each
-# at 50q). Now that semantic mode is validated, build reweave vaults from the
-# non-rw ones instead:
-#   SYMEM_CONSOLIDATOR=llm SYMEM_REDO=reweave <run> --source-vault-root .../w50-count/vaults
-# (kept as fresh ingests for the first run to hold the construction path
-# identical across all four vaults).
+# METHODOLOGY (owner, 2026-07-04): distill is a nondeterministic LLM phase —
+# never re-roll it unless the treatment changes distill inputs. Build reweave
+# arms from the SAME base vault via the redo machinery so the fact base is
+# byte-identical and the measured delta is the reweave pass alone (variance
+# control first, cost second):
+#   MEMBENCH_CONSOLIDATOR=llm MEMBENCH_REDO=reweave <run> --source-vault-root .../w50-count/vaults
+# Fresh re-ingest is only correct for arms that change ingest itself
+# (e.g. count vs semantic windowing).
 "${BIN[@]}" --run-name "w${LIMIT}-count"
-env SYMEM_CONSOLIDATOR=llm \
+env MEMBENCH_CONSOLIDATOR=llm \
   "${BIN[@]}" --run-name "w${LIMIT}-count-rw"
 env SYMBIOTIC_MEMORY__DISTILL__WINDOW_BOUNDARY=semantic \
   "${BIN[@]}" --run-name "w${LIMIT}-sem"
-env SYMBIOTIC_MEMORY__DISTILL__WINDOW_BOUNDARY=semantic SYMEM_CONSOLIDATOR=llm \
+env SYMBIOTIC_MEMORY__DISTILL__WINDOW_BOUNDARY=semantic MEMBENCH_CONSOLIDATOR=llm \
   "${BIN[@]}" --run-name "w${LIMIT}-sem-rw"
 
 # ---- answer-only arms over each vault

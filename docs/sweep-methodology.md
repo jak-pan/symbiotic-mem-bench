@@ -14,7 +14,7 @@ comparison confounds the treatment with re-roll noise.
   inputs themselves: windowing mode (`distill.window_boundary`,
   `turns_per_window`), distill prompt, embedding model/dims.
 - **Post-distill treatments** build from the SAME base vault:
-  - reweave / re-embed / re-index: `SYMEM_REDO=<stage>`
+  - reweave / re-embed / re-index: `MEMBENCH_REDO=<stage>`
     `--source-vault-root <base>/vaults` — invalidates just that manifest
     stage, reuses every valid upstream stage, keeps the fact base
     byte-identical;
@@ -36,8 +36,8 @@ Arms are declared as `SYMBIOTIC_MEMORY__*` config overrides (env-file or
 process env); the bench resolves them through the kit's typed config and
 records the hash + per-key provenance in `run-params.json` (`kit_config`).
 Two runs with equal hashes ran the same kit configuration — cite the hash
-when comparing runs. Harness-side toggles (`SYMEM_CONSOLIDATOR`,
-`SYMEM_REDO`, `--memory-config` recall profiles) are recorded in run-params
+when comparing runs. Harness-side toggles (`MEMBENCH_CONSOLIDATOR`,
+`MEMBENCH_REDO`, `--memory-config` recall profiles) are recorded in run-params
 alongside.
 
 ## Benchmarking derivation invalidation (staged-ingest protocol — NOT built yet)

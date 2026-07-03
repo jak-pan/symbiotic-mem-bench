@@ -20,11 +20,11 @@ workflow:       distill-only tuning runs use 10Q stratified LongMemEval
 Runtime environment:
 
 ```bash
-SYMEM_DISTILL_OPERATOR=deepseek
-SYMEM_DISTILL_MODEL=deepseek-v4-flash
-SYMEM_CHAT_HTTP_CLIENT_POOL_SIZE=64
-SYMEM_CHAT_HTTP_POOL_MAX_IDLE_PER_HOST=32
-SYMEM_CHAT_HTTP_HTTP1_ONLY=0
+MEMBENCH_DISTILL_OPERATOR=deepseek
+MEMBENCH_DISTILL_MODEL=deepseek-v4-flash
+SYMBIOTIC_MEMORY__TRANSPORT__CHAT_CLIENT_POOL_SIZE=64
+SYMBIOTIC_MEMORY__TRANSPORT__POOL_MAX_IDLE_PER_HOST=32
+SYMBIOTIC_MEMORY__TRANSPORT__HTTP1_ONLY=false
 ```
 
 Use this command to reproduce the selected shape:
@@ -50,9 +50,9 @@ The code now exposes a separate chat transport pool for DeepSeek and other
 OpenAI-compatible chat providers:
 
 ```text
-SYMEM_CHAT_HTTP_CLIENT_POOL_SIZE
-SYMEM_CHAT_HTTP_POOL_MAX_IDLE_PER_HOST
-SYMEM_CHAT_HTTP_HTTP1_ONLY
+SYMBIOTIC_MEMORY__TRANSPORT__CHAT_CLIENT_POOL_SIZE (transport.chat_client_pool_size)
+SYMBIOTIC_MEMORY__TRANSPORT__POOL_MAX_IDLE_PER_HOST (transport.pool_max_idle_per_host)
+SYMBIOTIC_MEMORY__TRANSPORT__HTTP1_ONLY (transport.http1_only)
 ```
 
 Those are below the provider queue. They do not change the workflow

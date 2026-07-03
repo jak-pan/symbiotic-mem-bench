@@ -13,7 +13,7 @@
 #   [run-name]        output run name (default: <model-slug>-<prompt-slug>-500)
 #   [baseline-run]    optional existing run to print alongside for an A/B
 #
-# Env overrides: SYMEM_ANSWER_THINKING (default on), VAULT, DS, ANSWER_OPERATOR.
+# Env overrides: MEMBENCH_ANSWER_THINKING (default on), VAULT, DS, ANSWER_OPERATOR.
 # Requires OPENROUTER_API_KEY in ./.env.test.local. One paid run at a time (membench enforces).
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -27,7 +27,7 @@ BASELINE="${4:-}"
 DS="${DS:-runs/inputs/longmemeval-cleaned/longmemeval_s_cleaned.json}"
 VAULT="${VAULT:-runs/symbiotic-memory/long-mem-eval/500/factconsol-thinkon-500-20260624/vaults}"
 ANSWER_OPERATOR="${ANSWER_OPERATOR:-openrouter}"
-THINKING="${SYMEM_ANSWER_THINKING:-on}"
+THINKING="${MEMBENCH_ANSWER_THINKING:-on}"
 
 [ -d "$PROMPT_DIR" ] || { echo "prompt-dir not found: $PROMPT_DIR" >&2; exit 1; }
 [ -d "$VAULT" ]      || { echo "source vault not found: $VAULT" >&2; exit 1; }
@@ -35,8 +35,8 @@ THINKING="${SYMEM_ANSWER_THINKING:-on}"
 
 echo ">> oracle-test  model=$MODEL  prompt=$PROMPT_DIR  run=$RUN_NAME  thinking=$THINKING"
 log="/tmp/oracle-test-$RUN_NAME.log"
-SYMEM_IGNORE_SOURCE_HASH=1 SYMEM_ANSWER_THINKING="$THINKING" \
-SYMEM_ANSWER_OPERATOR="$ANSWER_OPERATOR" SYMEM_ANSWER_MODEL="$MODEL" \
+MEMBENCH_IGNORE_SOURCE_HASH=1 MEMBENCH_ANSWER_THINKING="$THINKING" \
+MEMBENCH_ANSWER_OPERATOR="$ANSWER_OPERATOR" MEMBENCH_ANSWER_MODEL="$MODEL" \
 ./target/release/membench --symbiotic-memory --long-mem-eval --dataset "$DS" --limit 500 \
   --sample stratified --memory-config config/symbiotic-memory/longmemeval-raw-light.yaml \
   --memory-manifest ../symbiotic-memory/Cargo.toml --embedder openrouter --distiller llm \

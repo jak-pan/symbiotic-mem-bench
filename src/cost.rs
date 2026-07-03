@@ -207,7 +207,7 @@ const PRICING_CATALOG_SOURCE: &str =
 
 /// Lazily-loaded OpenRouter pricing catalog: model id -> (input_per_M_usd, output_per_M_usd).
 /// Sourced from `config/pricing/openrouter-pricing.json`, a snapshot of OpenRouter's `/models`
-/// pricing refreshed by `scripts/refresh-pricing.sh`. Path overridable via `SYMEM_PRICING_CACHE`.
+/// pricing refreshed by `scripts/refresh-pricing.sh`. Path overridable via `MEMBENCH_PRICING_CACHE`.
 /// Missing/unparsable file -> empty catalog (callers fall back to the static table).
 fn openrouter_pricing_catalog() -> &'static std::collections::HashMap<String, (f64, f64)> {
     static CATALOG: std::sync::OnceLock<std::collections::HashMap<String, (f64, f64)>> =
@@ -216,7 +216,7 @@ fn openrouter_pricing_catalog() -> &'static std::collections::HashMap<String, (f
 }
 
 fn pricing_catalog_path() -> std::path::PathBuf {
-    match std::env::var("SYMEM_PRICING_CACHE") {
+    match std::env::var("MEMBENCH_PRICING_CACHE") {
         Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
         _ => std::path::PathBuf::from(concat!(
             env!("CARGO_MANIFEST_DIR"),

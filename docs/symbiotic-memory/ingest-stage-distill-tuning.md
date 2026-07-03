@@ -11,7 +11,7 @@ timing can be compared without unrelated stage noise.
 The best candidate from this pass is a smaller distill window budget:
 
 ```text
-SYMEM_DISTILL_WINDOW_MAX_INPUT_TOKENS=3000
+SYMBIOTIC_MEMORY__DISTILL__WINDOW_MAX_INPUT_TOKENS=3000
 ```
 
 This setting produced materially faster DeepSeek tail latency on the 10Q
@@ -27,7 +27,7 @@ Run a distill-only arm:
 RUN_NAME=target-10q-distillonly-flash-window3k-$(date -u +%Y%m%d-%H%M%S) \
 LIMIT=10 \
 SAMPLE=stratified \
-SYMEM_DISTILL_WINDOW_MAX_INPUT_TOKENS=3000 \
+SYMBIOTIC_MEMORY__DISTILL__WINDOW_MAX_INPUT_TOKENS=3000 \
 scripts/run-ingest-stage-tuning.sh distill
 ```
 
@@ -37,7 +37,7 @@ Run raw embedding and distill concurrently, still stopping before later stages:
 RUN_NAME=target-10q-rawembed-distill-flash-qwen-window3k-$(date -u +%Y%m%d-%H%M%S) \
 LIMIT=10 \
 SAMPLE=stratified \
-SYMEM_DISTILL_WINDOW_MAX_INPUT_TOKENS=3000 \
+SYMBIOTIC_MEMORY__DISTILL__WINDOW_MAX_INPUT_TOKENS=3000 \
 scripts/run-ingest-stage-tuning.sh raw-embed-distill
 ```
 

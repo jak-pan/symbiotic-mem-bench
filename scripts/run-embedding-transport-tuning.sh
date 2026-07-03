@@ -33,7 +33,7 @@ Useful env:
   SAMPLE=stratified
   RUN_NAME=<explicit run name>
   DEBUG_REQUESTS=1            # stores raw provider request payloads; local forensics only
-  SYMEM_PROVIDER_TRACE=1      # default
+  SYMBIOTIC_MEMORY__TRANSPORT__PROVIDER_TRACE=true   # default
 
 Example:
   scripts/run-embedding-transport-tuning.sh openrouter-qwen3-8b-1024 h1-32x32
@@ -62,15 +62,15 @@ fi
 case "$profile" in
   openrouter-qwen3-8b-1024)
     cohort="embed-transport/openrouter-qwen3-8b-1024-32k"
-    embedder="${SYMEM_EMBEDDER:-openrouter}"
-    store="${SYMEM_STORE:-zvec-hybrid}"
-    operator="${SYMEM_EMBED_OPERATOR:-openrouter}"
-    model="${SYMEM_EMBED_MODEL:-qwen/qwen3-embedding-8b}"
-    dims="${SYMEM_EMBED_DIMS:-1024}"
-    request_dims="${SYMEM_EMBED_REQUEST_DIMS:-$dims}"
-    batch_size="${SYMEM_EMBED_BATCH_SIZE:-250}"
-    batch_max_chars="${SYMEM_EMBED_BATCH_MAX_CHARS:-32000}"
-    max_chars="${SYMEM_EMBED_MAX_CHARS:-32000}"
+    embedder="${MEMBENCH_EMBEDDER:-openrouter}"
+    store="${MEMBENCH_STORE:-zvec-hybrid}"
+    operator="${MEMBENCH_EMBED_OPERATOR:-openrouter}"
+    model="${MEMBENCH_EMBED_MODEL:-qwen/qwen3-embedding-8b}"
+    dims="${MEMBENCH_EMBED_DIMS:-1024}"
+    request_dims="${MEMBENCH_EMBED_REQUEST_DIMS:-$dims}"
+    batch_size="${SYMBIOTIC_MEMORY__EMBED__BATCH_SIZE:-250}"
+    batch_max_chars="${SYMBIOTIC_MEMORY__EMBED__BATCH_MAX_CHARS:-32000}"
+    max_chars="${MEMBENCH_EMBED_MAX_CHARS:-32000}"
     ;;
   *)
     echo "unknown profile: $profile" >&2
@@ -114,10 +114,16 @@ fi
 
 limit="${LIMIT:-10}"
 sample="${SAMPLE:-stratified}"
-workflow_max_in_flight="${SYMEM_WORKFLOW_MAX_IN_FLIGHT:-10}"
+workflow_max_in_flight="${MEMBENCH_WORKFLOW_MAX_IN_FLIGHT:-10}"
 safe_profile="$(echo "$profile" | tr '/:' '--')"
 run_name="${RUN_NAME:-tune-${safe_profile}-${limit}q-${shape}-$(date -u +%Y%m%d-%H%M%S)}"
-debug_requests="${DEBUG_REQUESTS:-${SYMEM_PROVIDER_QUEUE_DEBUG_REQUESTS:-0}}"
+debug_requests="${DEBUG_REQUESTS:-${SYMBIOTIC_MEMORY__QUEUE__DEBUG_REQUESTS:-0}}"
+
+# The kit config env layer parses booleans strictly (true/false).
+to_bool() { case "$1" in 1|true|TRUE|on|yes) echo true ;; *) echo false ;; esac; }
+http1_bool="$(to_bool "$http1")"
+debug_requests_bool="$(to_bool "$debug_requests")"
+provider_trace_bool="$(to_bool "${SYMBIOTIC_MEMORY__TRANSPORT__PROVIDER_TRACE:-1}")"
 
 echo "cohort=$cohort"
 echo "run_name=$run_name"
@@ -129,19 +135,19 @@ else
   echo "debug_requests=off (dashboard-safe traces only)"
 fi
 
-SYMEM_PROVIDER_TRACE="${SYMEM_PROVIDER_TRACE:-1}" \
-SYMEM_PROVIDER_QUEUE_DEBUG_REQUESTS="$debug_requests" \
-SYMEM_EMBED_OPERATOR="$operator" \
-SYMEM_EMBED_MODEL="$model" \
-SYMEM_EMBED_DIMS="$dims" \
-SYMEM_EMBED_REQUEST_DIMS="$request_dims" \
-SYMEM_EMBED_BATCH_SIZE="$batch_size" \
-SYMEM_EMBED_BATCH_MAX_CHARS="$batch_max_chars" \
-SYMEM_EMBED_MAX_CHARS="$max_chars" \
-SYMEM_WORKFLOW_MAX_IN_FLIGHT="$workflow_max_in_flight" \
-SYMEM_OPENROUTER_HTTP_CLIENT_POOL_SIZE="$pool" \
-SYMEM_OPENROUTER_HTTP_POOL_MAX_IDLE_PER_HOST="$idle" \
-SYMEM_OPENROUTER_HTTP_HTTP1_ONLY="$http1" \
+SYMBIOTIC_MEMORY__TRANSPORT__PROVIDER_TRACE="$provider_trace_bool" \
+SYMBIOTIC_MEMORY__QUEUE__DEBUG_REQUESTS="$debug_requests_bool" \
+MEMBENCH_EMBED_OPERATOR="$operator" \
+MEMBENCH_EMBED_MODEL="$model" \
+MEMBENCH_EMBED_DIMS="$dims" \
+MEMBENCH_EMBED_REQUEST_DIMS="$request_dims" \
+SYMBIOTIC_MEMORY__EMBED__BATCH_SIZE="$batch_size" \
+SYMBIOTIC_MEMORY__EMBED__BATCH_MAX_CHARS="$batch_max_chars" \
+MEMBENCH_EMBED_MAX_CHARS="$max_chars" \
+MEMBENCH_WORKFLOW_MAX_IN_FLIGHT="$workflow_max_in_flight" \
+SYMBIOTIC_MEMORY__TRANSPORT__OPENROUTER_CLIENT_POOL_SIZE="$pool" \
+SYMBIOTIC_MEMORY__TRANSPORT__POOL_MAX_IDLE_PER_HOST="$idle" \
+SYMBIOTIC_MEMORY__TRANSPORT__HTTP1_ONLY="$http1_bool" \
 "$membench_bin" \
   --system symbiotic-memory \
   --benchmark long-mem-eval \

@@ -389,7 +389,7 @@ infer failure from missing later stages alone; use durable state and trace event
 Embedding batch progress is request-oriented. `embed_raw` and `embed_facts` success events may carry
 batch item counts and total item counts; these represent persisted embedding batches, not source-row
 completion. Batch sizing defaults are code-owned. The separate per-input local cap is
-`SYMEM_EMBED_MAX_CHARS`. Dashboards should display both concepts without implying that the batch text
+`MEMBENCH_EMBED_MAX_CHARS`. Dashboards should display both concepts without implying that the batch text
 budget is the per-item model window.
 
 ## Queue Events

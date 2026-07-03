@@ -277,8 +277,8 @@ reference timestamp so temporal questions replay against the benchmark's pinned 
 The default LongMemEval judge prompt mode is `semantic-shared-compact`: a stable shared prefix that
 keeps the LongMemEval yes/no rubric while accepting equivalent or inferable answers that the original
 verbose prompt repeatedly marked as false negatives in spot checks. Each run records
-`judge_prompt_mode` in `scored.json`. Use `SYMEM_JUDGE_PROMPT_MODE=official` only for original-prompt
-audit runs, or `SYMEM_JUDGE_PROMPT_MODE=category-prefix` for cache experiments with official-style
+`judge_prompt_mode` in `scored.json`. Use `MEMBENCH_JUDGE_PROMPT_MODE=official` only for original-prompt
+audit runs, or `MEMBENCH_JUDGE_PROMPT_MODE=category-prefix` for cache experiments with official-style
 per-category wording.
 
 Judge cache prewarm is wired and opt-in: for DeepSeek rejudge or score-heavy runs,
@@ -313,7 +313,7 @@ Useful modes and limits:
 ```
 
 The runner loads `.env.test.local` from this benchmark repository by default, sets
-`SYMEM_PROVIDER_QUEUE_DIR` to `<run-root>/provider-queue` unless overridden, and only fills provider
+`MEMBENCH_PROVIDER_QUEUE_DIR` to `<run-root>/provider-queue` unless overridden, and only fills provider
 queue/model defaults that the caller has not already set. It does not implicitly read sibling repo
 env files.
 
@@ -333,13 +333,14 @@ DeepSeek Flash query planner, and foundation-owned provider/model queue defaults
 
 Embedding request sizing has two separate axes:
 
-- `SYMEM_EMBED_BATCH_SIZE` and `SYMEM_EMBED_BATCH_MAX_CHARS` control request packing only. Defaults
+- `SYMBIOTIC_MEMORY__EMBED__BATCH_SIZE` and `SYMBIOTIC_MEMORY__EMBED__BATCH_MAX_CHARS` (the
+  kit's `embed.batch_size` / `embed.batch_max_chars` config fields) control request packing only. Defaults
   are code-owned in `symbiotic-memory`. They are request-level throughput knobs: larger request char
   budgets reduce HTTP fanout, but each request can take longer and retries more work when it fails.
-- `SYMEM_EMBED_MAX_CHARS` controls the local per-input text cap passed to the embedding provider. It
+- `MEMBENCH_EMBED_MAX_CHARS` controls the local per-input text cap passed to the embedding provider. It
   is also code-owned and separate from request packing.
 
-Do not use `SYMEM_EMBED_BATCH_MAX_CHARS` as an individual-input truncation cap, and do not use these
+Do not use `SYMBIOTIC_MEMORY__EMBED__BATCH_MAX_CHARS` as an individual-input truncation cap, and do not use these
 batch settings as substitute provider concurrency limits. Provider concurrency belongs to the model
 queue id; workflow concurrency belongs to source-row fan-out.
 

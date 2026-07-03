@@ -47,16 +47,16 @@ use symbiotic_queue::{
 
 /// The reranker configuration threaded from the harness into the `RecallEngine`. Carries the main
 /// (stage-2) reranker plus an optional cheap stage-1 prefilter reranker and its top-x cut. Built by
-/// `membench`'s `reranker()` from the `SYMEM_RERANK*` env knobs; a `None` cascade (or a cascade with
+/// `membench`'s `reranker()` from the `MEMBENCH_RERANK*` env knobs; a `None` cascade (or a cascade with
 /// `main == None`) means rerank is disabled.
 #[cfg(feature = "symbiotic-memory-adapter")]
 #[derive(Clone, Default)]
 pub struct RerankCascade {
-    /// Main (stage-2) reranker. `None` when SYMEM_RERANK is off.
+    /// Main (stage-2) reranker. `None` when MEMBENCH_RERANK is off.
     pub main: Option<Arc<dyn Reranker>>,
-    /// Optional cheap stage-1 prefilter reranker (enabled when SYMEM_RERANK_STAGE1_MODEL is set).
+    /// Optional cheap stage-1 prefilter reranker (enabled when MEMBENCH_RERANK_STAGE1_MODEL is set).
     pub stage1: Option<Arc<dyn Reranker>>,
-    /// Stage-1 -> stage-2 count cut (SYMEM_RERANK_STAGE1_TOP_X, default 20). Only meaningful when
+    /// Stage-1 -> stage-2 count cut (MEMBENCH_RERANK_STAGE1_TOP_X, default 20). Only meaningful when
     /// `stage1` is present.
     pub stage1_top_x: usize,
 }
@@ -88,10 +88,8 @@ where
 {
     [
         "MEMBENCH_REFERENCE_DATETIME",
-        "SYMEM_REFERENCE_DATETIME",
-        // Compatibility aliases for explicitly pinned benchmark clocks.
+        // Alias for explicitly pinned benchmark clocks.
         "MEMBENCH_REFERENCE_DATE",
-        "SYMEM_REFERENCE_DATE",
     ]
     .into_iter()
     .find_map(|key| {
@@ -439,10 +437,10 @@ fn reembed_mode() -> bool {
 /// so re-embedding turns re-calls the embedding API for every turn just to produce byte-identical
 /// vectors. That bulk turn re-embed is the dominant cost of a full re-embed. With this off, the prep
 /// COPIES the source `zvec-hybrid` index (preserving the existing turn vectors) and only facts are
-/// re-embedded + upserted. Set `SYMEM_REEMBED_TURNS=1` to force a full turn re-embed — required when
+/// re-embedded + upserted. Set `MEMBENCH_REEMBED_TURNS=1` to force a full turn re-embed — required when
 /// the embedding model or dimensions change (the copied index would then be stale).
 pub fn reembed_turns() -> bool {
-    std::env::var("SYMEM_REEMBED_TURNS")
+    std::env::var("MEMBENCH_REEMBED_TURNS")
         .ok()
         .is_some_and(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES" | "on"))
 }
@@ -455,12 +453,12 @@ async fn embed_texts_in_chunks<E: EmbeddingProvider>(
     embedder: &E,
     texts: &[String],
 ) -> anyhow::Result<Vec<Vec<f32>>> {
-    let chunk = std::env::var("SYMEM_REEMBED_CHUNK")
+    let chunk = std::env::var("MEMBENCH_REEMBED_CHUNK")
         .ok()
         .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|size| *size > 0)
         .unwrap_or(100);
-    let concurrency = std::env::var("SYMEM_REEMBED_CONCURRENCY")
+    let concurrency = std::env::var("MEMBENCH_REEMBED_CONCURRENCY")
         .ok()
         .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|size| *size > 0)
@@ -1169,19 +1167,19 @@ fn prepare_zvec_index_cache(
 
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn strict_zvec_manifest_validation() -> bool {
-    std::env::var("SYMEM_ZVEC_STRICT_MANIFEST")
+    std::env::var("MEMBENCH_ZVEC_STRICT_MANIFEST")
         .ok()
         .map(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES"))
         .unwrap_or(false)
 }
 
-/// SYMEM_IGNORE_SOURCE_HASH opt-out for the answer-only manifest gate. A field-name rename in
+/// MEMBENCH_IGNORE_SOURCE_HASH opt-out for the answer-only manifest gate. A field-name rename in
 /// `SourceDocument` changes the serialized shape (and thus `source_shape_hash`) even when the
 /// underlying source DATA is unchanged, which makes the answer-only path refuse to reuse a golden
 /// vault. When this is set, the gate logs a warning and proceeds instead of refusing. Off by default.
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn ignore_source_hash() -> bool {
-    std::env::var("SYMEM_IGNORE_SOURCE_HASH")
+    std::env::var("MEMBENCH_IGNORE_SOURCE_HASH")
         .ok()
         .map(|value| {
             matches!(
@@ -1194,7 +1192,7 @@ fn ignore_source_hash() -> bool {
 
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn zvec_flush_before_recall() -> bool {
-    std::env::var("SYMEM_ZVEC_SKIP_FLUSH_BEFORE_RECALL")
+    std::env::var("MEMBENCH_ZVEC_SKIP_FLUSH_BEFORE_RECALL")
         .ok()
         .map(|value| !matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES"))
         .unwrap_or(true)
@@ -1579,14 +1577,14 @@ where
         manifest
     });
     if manifest.source_hash != source_hash {
-        // SYMEM_IGNORE_SOURCE_HASH opt-out: a field-name rename in SourceDocument changes the
+        // MEMBENCH_IGNORE_SOURCE_HASH opt-out: a field-name rename in SourceDocument changes the
         // serialized shape (and thus this hash) even though the underlying source DATA is unchanged.
         // When set, log a warning and PROCEED reusing the existing vault instead of refusing. The
         // stored manifest source_hash is left untouched (we do not rewrite it), so the check still
         // fires for anyone who has not opted out.
         if ignore_source_hash() {
             eprintln!(
-                "[longmemeval] WARNING: vault {} manifest source hash mismatch (stored={} computed={}); SYMEM_IGNORE_SOURCE_HASH set, proceeding with existing vault",
+                "[longmemeval] WARNING: vault {} manifest source hash mismatch (stored={} computed={}); MEMBENCH_IGNORE_SOURCE_HASH set, proceeding with existing vault",
                 row.question_id, manifest.source_hash, source_hash
             );
         } else {
@@ -1694,7 +1692,7 @@ where
             // prompt and reuses the base distilled facts untouched.
             let cleared = store.clear_briefs().await?;
             eprintln!(
-                "[longmemeval] {} SYMEM_REDO=reweave cleared {cleared} prior briefs",
+                "[longmemeval] {} MEMBENCH_REDO=reweave cleared {cleared} prior briefs",
                 row.question_id
             );
             manifest.stages.remove(&MemoryStage::Consolidate);
@@ -1946,7 +1944,7 @@ where
         );
     }
     let step_started = Instant::now();
-    // For SYMEM_REDO=index, force a FULL index rebuild (rebuild_index re-upserts every recall
+    // For MEMBENCH_REDO=index, force a FULL index rebuild (rebuild_index re-upserts every recall
     // record from sqlite) instead of the incremental-flush path. The re-ingest above set
     // incremental_ingest_completed = true, but incremental-flush hard-bails on an empty index if
     // the linked-vault prep deleted the zvec dir; the full rebuild is robust and is the whole point
@@ -2716,7 +2714,7 @@ fn queue_error(err: QueueError) -> anyhow::Error {
 
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn workflow_max_in_flight(configured: Option<usize>) -> usize {
-    std::env::var("SYMEM_WORKFLOW_MAX_IN_FLIGHT")
+    std::env::var("MEMBENCH_WORKFLOW_MAX_IN_FLIGHT")
         .ok()
         .and_then(|value| value.parse().ok())
         .or(configured)
@@ -2726,18 +2724,18 @@ fn workflow_max_in_flight(configured: Option<usize>) -> usize {
 
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn raw_embed_only_diagnostic() -> bool {
-    std::env::var("SYMEM_INGEST_STOP_AFTER_RAW_EMBED")
-        .ok()
-        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+    // Engine-config field (`distill.ingest_stop_after_raw_embed`), resolved through the
+    // kit config the harness installed for this run.
+    kit_config().distill.ingest_stop_after_raw_embed
 }
 
-/// Gold-oracle mode (`--oracle-gold` / `SYMEM_ORACLE_GOLD=1`). When on, the answerer is fed ONLY the
+/// Gold-oracle mode (`--oracle-gold` / `MEMBENCH_ORACLE_GOLD=1`). When on, the answerer is fed ONLY the
 /// gold-session raw turns for each question (zero retrieval, zero noise) instead of the recall→rerank
 /// output, isolating the reader so we can tell whether multi-session answers fail from noise/dilution
 /// or because the reader genuinely cannot compile them even with perfect evidence.
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn oracle_gold_enabled() -> bool {
-    std::env::var("SYMEM_ORACLE_GOLD")
+    std::env::var("MEMBENCH_ORACLE_GOLD")
         .ok()
         .is_some_and(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES"))
 }
@@ -2758,13 +2756,13 @@ fn build_gold_oracle_context(row: &LongMemEvalRecord) -> Option<Vec<String>> {
     // that are noise. Scan all sessions and keep only the marked turns, so the answerer sees the
     // minimal exact list and nothing else.
     // Two env-gated context-shaping levers (both default OFF = original behavior):
-    //   SYMEM_ORACLE_SORT_BY_DATE=1 → emit turns in chronological captured_at order (across sessions),
+    //   MEMBENCH_ORACLE_SORT_BY_DATE=1 → emit turns in chronological captured_at order (across sessions),
     //                                 not haystack-session order — a clean timeline to count along.
-    //   SYMEM_ORACLE_DROP_SCORE=1   → omit the fixed "score: 1.000" tag, which is pure noise on gold.
-    let sort_by_date = std::env::var("SYMEM_ORACLE_SORT_BY_DATE")
+    //   MEMBENCH_ORACLE_DROP_SCORE=1   → omit the fixed "score: 1.000" tag, which is pure noise on gold.
+    let sort_by_date = std::env::var("MEMBENCH_ORACLE_SORT_BY_DATE")
         .map(|v| matches!(v.trim(), "1" | "on" | "true" | "yes"))
         .unwrap_or(false);
-    let drop_score = std::env::var("SYMEM_ORACLE_DROP_SCORE")
+    let drop_score = std::env::var("MEMBENCH_ORACLE_DROP_SCORE")
         .map(|v| matches!(v.trim(), "1" | "on" | "true" | "yes"))
         .unwrap_or(false);
     // (captured_at, original_seq, rendered_line) — captured_at is rfc3339 so it sorts chronologically;
@@ -2828,7 +2826,7 @@ fn build_gold_oracle_context(row: &LongMemEvalRecord) -> Option<Vec<String>> {
 
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn workflow_max_attempts() -> u32 {
-    std::env::var("SYMEM_WORKFLOW_MAX_ATTEMPTS")
+    std::env::var("MEMBENCH_WORKFLOW_MAX_ATTEMPTS")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(3)
@@ -2837,7 +2835,7 @@ fn workflow_max_attempts() -> u32 {
 
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn workflow_retry_delay_seconds(attempt: u32) -> u64 {
-    let base = std::env::var("SYMEM_WORKFLOW_RETRY_DELAY_SECS")
+    let base = std::env::var("MEMBENCH_WORKFLOW_RETRY_DELAY_SECS")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(2_u64)
@@ -2866,7 +2864,7 @@ where
 
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn question_timeout() -> Option<Duration> {
-    let seconds = std::env::var("SYMEM_QUESTION_TIMEOUT_SECS")
+    let seconds = std::env::var("MEMBENCH_QUESTION_TIMEOUT_SECS")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(0);
@@ -3445,17 +3443,17 @@ mod tests {
     #[test]
     fn workflow_max_in_flight_uses_config_with_env_override() {
         unsafe {
-            std::env::remove_var("SYMEM_WORKFLOW_MAX_IN_FLIGHT");
+            std::env::remove_var("MEMBENCH_WORKFLOW_MAX_IN_FLIGHT");
         }
         assert_eq!(workflow_max_in_flight(Some(37)), 37);
         assert_eq!(workflow_max_in_flight(None), 50);
 
         unsafe {
-            std::env::set_var("SYMEM_WORKFLOW_MAX_IN_FLIGHT", "12");
+            std::env::set_var("MEMBENCH_WORKFLOW_MAX_IN_FLIGHT", "12");
         }
         assert_eq!(workflow_max_in_flight(Some(37)), 12);
         unsafe {
-            std::env::remove_var("SYMEM_WORKFLOW_MAX_IN_FLIGHT");
+            std::env::remove_var("MEMBENCH_WORKFLOW_MAX_IN_FLIGHT");
         }
     }
 
@@ -3525,7 +3523,7 @@ mod tests {
         use symbiotic_memory::providers::{DisabledChatProvider, HashEmbeddingProvider};
 
         unsafe {
-            std::env::remove_var("SYMEM_WORKFLOW_MAX_IN_FLIGHT");
+            std::env::remove_var("MEMBENCH_WORKFLOW_MAX_IN_FLIGHT");
         }
 
         let dir = tempfile::tempdir().unwrap();
