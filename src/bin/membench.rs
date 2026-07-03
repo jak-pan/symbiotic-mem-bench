@@ -80,7 +80,9 @@ struct Cli {
     symem_bin: Option<PathBuf>,
     #[arg(long, default_value = "llm")]
     distiller: String,
-    #[arg(long, default_value = "gemini")]
+    /// Owner-default stack: qwen3-embedding-8b via OpenRouter (+ the nemotron
+    /// free reranker). Gemini embeddings are NOT the default.
+    #[arg(long, default_value = "openrouter")]
     embedder: String,
     #[arg(long, default_value = "zvec-hybrid")]
     store: String,
@@ -6059,7 +6061,7 @@ fn effective_embedding_adapter(
             .or_else(|| run_env_value(run, "SYMEM_OLLAMA_EMBED_MODEL"))
             .unwrap_or_else(|| {
                 if run.embedder == "openrouter" {
-                    "openai/text-embedding-3-small".to_string()
+                    "qwen/qwen3-embedding-8b".to_string()
                 } else {
                     "nomic-embed-text".to_string()
                 }
@@ -7337,10 +7339,10 @@ mod tests {
         ]);
         let score = enabled_by_default("score", cli.score, cli.no_score).unwrap();
         assert_eq!(cli.distiller, "llm");
-        assert_eq!(cli.embedder, "gemini");
+        assert_eq!(cli.embedder, "openrouter");
         assert!(score);
         assert!(!is_ephemeral_native_smoke_run(
-            &cli, false, "llm", "gemini", score
+            &cli, false, "llm", "openrouter", score
         ));
 
         let smoke = Cli::parse_from([
