@@ -25,6 +25,12 @@ BIN=(cargo run --release --features symbiotic-memory-adapter --bin membench --
 echo "=== windowing sweep limit=$LIMIT ==="
 
 # ---- vault builds (fresh ingest; the run itself is the collapse-default arm)
+# NOTE for future sweeps: the -rw vaults re-pay the base distill (~$1.5-2 each
+# at 50q). Now that semantic mode is validated, build reweave vaults from the
+# non-rw ones instead:
+#   SYMEM_CONSOLIDATOR=llm SYMEM_REDO=reweave <run> --source-vault-root .../w50-count/vaults
+# (kept as fresh ingests for the first run to hold the construction path
+# identical across all four vaults).
 "${BIN[@]}" --run-name "w${LIMIT}-count"
 env SYMEM_CONSOLIDATOR=llm \
   "${BIN[@]}" --run-name "w${LIMIT}-count-rw"
