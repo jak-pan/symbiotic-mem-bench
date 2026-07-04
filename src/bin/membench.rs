@@ -4156,9 +4156,6 @@ fn prepare_re_embed_linked_vaults(
     for row in rows {
         let source_vault = source_vault_root.join(&row.question_id);
         let target_vault = target_vault_root.join(&row.question_id);
-        // Converge pre-facade vaults (legacy file names) to the canonical
-        // layout before reading from / writing over them.
-        symbiotic_mem_bench::symbiotic_memory_adapter::migrate_legacy_vault_layout(&source_vault)?;
         let source_manifest = source_vault.join("manifest.json");
         let source_memory = source_vault.join(VAULT_DB_FILE);
         if !source_manifest.is_file() || !source_memory.is_file() {
@@ -4168,7 +4165,6 @@ fn prepare_re_embed_linked_vaults(
             );
         }
         std::fs::create_dir_all(&target_vault)?;
-        symbiotic_mem_bench::symbiotic_memory_adapter::migrate_legacy_vault_layout(&target_vault)?;
         remove_path_if_exists(&target_vault.join("manifest.json"))?;
         remove_path_if_exists(&target_vault.join(VAULT_DB_FILE))?;
         remove_path_if_exists(&target_vault.join("archive"))?;
@@ -4220,7 +4216,6 @@ fn prepare_supersession_detection_vaults(
     for row in rows {
         let source_vault = source_vault_root.join(&row.question_id);
         let target_vault = target_vault_root.join(&row.question_id);
-        symbiotic_mem_bench::symbiotic_memory_adapter::migrate_legacy_vault_layout(&source_vault)?;
         let source_manifest = source_vault.join("manifest.json");
         let source_memory = source_vault.join(VAULT_DB_FILE);
         if !source_manifest.is_file() || !source_memory.is_file() {
@@ -4230,7 +4225,6 @@ fn prepare_supersession_detection_vaults(
             );
         }
         std::fs::create_dir_all(&target_vault)?;
-        symbiotic_mem_bench::symbiotic_memory_adapter::migrate_legacy_vault_layout(&target_vault)?;
         remove_path_if_exists(&target_vault.join("manifest.json"))?;
         remove_path_if_exists(&target_vault.join(VAULT_DB_FILE))?;
         remove_path_if_exists(&target_vault.join("archive"))?;
@@ -4269,7 +4263,6 @@ fn prepare_answer_only_linked_vaults(
     for row in rows {
         let source_vault = source_vault_root.join(&row.question_id);
         let target_vault = target_vault_root.join(&row.question_id);
-        symbiotic_mem_bench::symbiotic_memory_adapter::migrate_legacy_vault_layout(&source_vault)?;
         let source_manifest = source_vault.join("manifest.json");
         let source_memory = source_vault.join(VAULT_DB_FILE);
         if !source_manifest.is_file() || !source_memory.is_file() {
@@ -4280,7 +4273,6 @@ fn prepare_answer_only_linked_vaults(
         }
 
         std::fs::create_dir_all(&target_vault)?;
-        symbiotic_mem_bench::symbiotic_memory_adapter::migrate_legacy_vault_layout(&target_vault)?;
         remove_path_if_exists(&target_vault.join("manifest.json"))?;
         remove_path_if_exists(&target_vault.join(VAULT_DB_FILE))?;
         remove_path_if_exists(&target_vault.join("archive"))?;
@@ -7173,14 +7165,12 @@ mod tests {
         let run_root = dir.path().join("run");
         let source_vault = source_root.join("q1");
         std::fs::create_dir_all(source_vault.join("archive/memories")).unwrap();
-        // Legacy pre-facade names on disk: prep must converge them to the
-        // canonical layout (vault.db + index.zvec) by renaming in place.
-        std::fs::create_dir_all(source_vault.join("zvec-hybrid")).unwrap();
+        std::fs::create_dir_all(source_vault.join(VAULT_INDEX_DIR)).unwrap();
         std::fs::write(source_vault.join("manifest.json"), r#"{"source":"stable"}"#).unwrap();
-        std::fs::write(source_vault.join("memory.sqlite"), b"sqlite").unwrap();
+        std::fs::write(source_vault.join(VAULT_DB_FILE), b"sqlite").unwrap();
         std::fs::write(source_vault.join("archive/memories/fact.md"), "fact").unwrap();
         std::fs::write(
-            source_vault.join("zvec-hybrid/index-manifest.json"),
+            source_vault.join(VAULT_INDEX_DIR).join("index-manifest.json"),
             r#"{"source":"zvec"}"#,
         )
         .unwrap();
@@ -7202,9 +7192,6 @@ mod tests {
 
         prepare_answer_only_linked_vaults(&run_root, &source_root, &rows).unwrap();
 
-        // The legacy source names were renamed in place, bytes untouched.
-        assert!(!source_vault.join("memory.sqlite").exists());
-        assert!(!source_vault.join("zvec-hybrid").exists());
         assert_eq!(
             std::fs::read(source_vault.join(VAULT_DB_FILE)).unwrap(),
             b"sqlite"

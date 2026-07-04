@@ -902,43 +902,23 @@ async fn open_store_with_metrics(
     .await?
 }
 
-/// Pre-facade vaults named the ledger `memory.sqlite` and the vector index
-/// `zvec-hybrid/`. The kit's vault facade owns the canonical names now
-/// (`vault.db`, `index.zvec/`) and there is no pre-launch backwards
-/// compatibility: converge the on-disk state instead — an idempotent,
-/// same-directory rename. Bytes are untouched, so a cached index manifest's
-/// recorded sqlite sha still validates and the expensive golden vaults keep
-/// opening. Called before every vault open and by the answer-only/redo
-/// vault preps on their source baselines.
-#[cfg(feature = "symbiotic-memory-adapter")]
-pub fn migrate_legacy_vault_layout(vault_dir: &Path) -> anyhow::Result<()> {
-    for (legacy, canonical) in [
-        ("memory.sqlite", symbiotic_memory::vault::VAULT_DB_FILE),
-        ("zvec-hybrid", symbiotic_memory::vault::VAULT_INDEX_DIR),
-    ] {
-        let legacy = vault_dir.join(legacy);
-        let canonical = vault_dir.join(canonical);
-        if legacy.exists() && !canonical.exists() {
-            fs::rename(&legacy, &canonical)?;
-        }
-    }
-    Ok(())
-}
-
 /// Open the vault at `vault_dir` through the kit's vault facade — canonical
-/// layout only (legacy names are renamed in place first, see
-/// [`migrate_legacy_vault_layout`]). Backend selection flows through the kit
-/// profile: the run's `.store-zvec` marker label maps onto `storage.backend`
-/// (same "anything but zvec-hybrid means sqlite" wildcard the old match had)
-/// and the embedder's dimensions onto `storage.vector_dimensions`, exactly
-/// as before.
+/// layout only. The bench knows NOTHING about the store's file names or
+/// internals: it hands the kit a directory and a profile, full stop (the
+/// one-time rename of pre-facade vault files was done as a batch operation
+/// over the runs tree, not adapter code — a benchmark harness renaming a
+/// store's internal files is the same abstraction leak the facade exists to
+/// kill). Backend selection flows through the kit profile: the run's
+/// `.store-zvec` marker label maps onto `storage.backend` (same "anything
+/// but zvec-hybrid means sqlite" wildcard the old match had) and the
+/// embedder's dimensions onto `storage.vector_dimensions`, exactly as
+/// before.
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn open_store_with_metrics_blocking(
     vault_dir: &Path,
     backend: &str,
     dimensions: usize,
 ) -> anyhow::Result<(BenchMemoryStore, BTreeMap<String, serde_json::Value>)> {
-    migrate_legacy_vault_layout(vault_dir)?;
     let mut profile = kit_config().clone();
     profile.storage.backend = match backend {
         "zvec-hybrid" => "zvec-hybrid",
@@ -1557,11 +1537,6 @@ where
     let vault_dir = run_root.join("vaults").join(&row.question_id);
     let step_started = Instant::now();
     fs::create_dir_all(&vault_dir)?;
-    // Converge any pre-facade vault to the canonical layout BEFORE the index
-    // cache is validated below — the rename keeps bytes (and thus the cached
-    // manifest's sqlite sha) intact, so a migrated golden vault still hits
-    // the trusted-manifest fast path instead of a full index rebuild.
-    migrate_legacy_vault_layout(&vault_dir)?;
     insert_elapsed_ms(
         &mut setup_metrics,
         "create_vault_dir_ms",
