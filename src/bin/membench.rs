@@ -3868,7 +3868,10 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
         let zvec_marker = run.run_root.join(".store-zvec");
         let selected_backend = match run.store.as_str() {
             "sqlite" => "sqlite",
-            "zvec" | "zvec-hybrid" => "zvec-hybrid",
+            // `--store zvec` selects the kit's §12 single store now that it
+            // exists; it is no longer an alias of the transitional hybrid.
+            "zvec" => "zvec",
+            "zvec-hybrid" => "zvec-hybrid",
             _ => "zvec-hybrid",
         };
         std::fs::write(&zvec_marker, format!("{selected_backend}\n"))?;

@@ -921,6 +921,8 @@ fn open_store_with_metrics_blocking(
 ) -> anyhow::Result<(BenchMemoryStore, BTreeMap<String, serde_json::Value>)> {
     let mut profile = kit_config().clone();
     profile.storage.backend = match backend {
+        // The §12 phase-A single store (no sqlite ledger) — parity A/B lane.
+        "zvec" => "zvec",
         "zvec-hybrid" => "zvec-hybrid",
         _ => "sqlite",
     }
@@ -1347,6 +1349,10 @@ fn store_backend_label(run_root: &Path) -> &'static str {
     };
     match raw.trim() {
         "sqlite" => "sqlite",
+        // The §12 single store: the label must NOT collapse into zvec-hybrid,
+        // or the hybrid's sqlite-hash index-cache logic runs against a vault
+        // that has no ledger and deletes the live index.zvec collection.
+        "zvec" => "zvec",
         "zvec-hybrid" | "" => "zvec-hybrid",
         _ => "zvec-hybrid",
     }
@@ -1516,7 +1522,16 @@ where
     let setup_started_at = Utc::now();
     let setup_started = Instant::now();
     let mut setup_metrics = BTreeMap::<String, serde_json::Value>::new();
-    let store_backend = store_backend_label(run_root);
+    // A kit profile pinned to the §12 single store (e.g.
+    // SYMBIOTIC_MEMORY__STORAGE__BACKEND=zvec through resolve_kit_config)
+    // outranks the run marker: the marker vocabulary predates the single
+    // store, and treating such a vault as zvec-hybrid would run the
+    // sqlite-hash index-cache logic against a vault with no ledger.
+    let store_backend = if kit_config().storage.backend == "zvec" {
+        "zvec"
+    } else {
+        store_backend_label(run_root)
+    };
     setup_metrics.insert(
         "store_backend".to_string(),
         serde_json::json!(store_backend),
