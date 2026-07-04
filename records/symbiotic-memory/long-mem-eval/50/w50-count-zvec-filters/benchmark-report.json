@@ -1,0 +1,411 @@
+{
+  "artifact_manifest": {
+    "available": [
+      "memory_traces",
+      "model_traces",
+      "score_summary",
+      "step_analytics"
+    ],
+    "missing": [
+      "hypotheses",
+      "partial_verdicts",
+      "provenance",
+      "scored",
+      "verdicts"
+    ],
+    "native_state_available": false,
+    "native_state_note": "Meta record: dashboard-safe traces retained; vaults, raw outputs, raw provider request payloads, and question-level data artifacts omitted.",
+    "omitted_data_artifacts": [
+      "hypotheses",
+      "provenance",
+      "scored",
+      "verdicts",
+      "partial_verdicts"
+    ]
+  },
+  "artifacts": {
+    "hypotheses": {
+      "bytes": 22381,
+      "kind": "hypotheses",
+      "non_empty_lines": 50,
+      "path": "runs/symbiotic-memory/long-mem-eval/50/w50-count-zvec-filters/artifacts/hypotheses.jsonl",
+      "sha256": "32b4142a57771647e2a0f1cbeb6e640cfa3d68f4cb62ec9e083629661d42d30a"
+    },
+    "memory_traces": {
+      "bytes": 1260248,
+      "kind": "memory_traces",
+      "non_empty_lines": 1612,
+      "path": "runs/symbiotic-memory/long-mem-eval/50/w50-count-zvec-filters/artifacts/memory-traces.jsonl",
+      "sha256": "e38fe5128c0879f774f083f97ef85173c8949fbf40b0b5cd4326998a81aabda4"
+    },
+    "model_traces": {
+      "bytes": 129504,
+      "kind": "model_traces",
+      "non_empty_lines": 371,
+      "path": "runs/symbiotic-memory/long-mem-eval/50/w50-count-zvec-filters/artifacts/model-traces.jsonl",
+      "sha256": "5271fec1287590757495e2825132fc5fb1f224a578c08ba0cec5cef494c49d5c"
+    },
+    "partial_verdicts": {
+      "bytes": 63299,
+      "kind": "partial_verdicts",
+      "non_empty_lines": 50,
+      "path": "runs/symbiotic-memory/long-mem-eval/50/w50-count-zvec-filters/artifacts/partial-verdicts.jsonl",
+      "sha256": "8c580944ef1ada7216d3dfe15aa8a75d88bf32ceb850695126a82700d356d2ba"
+    },
+    "provenance": {
+      "bytes": 146474,
+      "kind": "provenance",
+      "non_empty_lines": 50,
+      "path": "runs/symbiotic-memory/long-mem-eval/50/w50-count-zvec-filters/artifacts/provenance.jsonl",
+      "sha256": "907e0223f737aef35f6be560022b9806dbaf431ce700dab702f2926265b01b9d"
+    },
+    "score_summary": {
+      "bytes": 1514,
+      "kind": "score_summary",
+      "non_empty_lines": 55,
+      "path": "runs/symbiotic-memory/long-mem-eval/50/w50-count-zvec-filters/artifacts/score-summary.json",
+      "sha256": "7067df5d3373d6b633adf5693f5bd349da697ced06d0eb012d06b1bb430e6cad"
+    },
+    "scored": {
+      "bytes": 931,
+      "kind": "scored",
+      "non_empty_lines": 45,
+      "path": "runs/symbiotic-memory/long-mem-eval/50/w50-count-zvec-filters/artifacts/scored.json",
+      "sha256": "528c8767f9ecc20e78b8899238b4de0e3ece158086b36be92dc933fae2879d0f"
+    },
+    "step_analytics": {
+      "bytes": 1237522,
+      "kind": "step_analytics",
+      "non_empty_lines": 44249,
+      "path": "runs/symbiotic-memory/long-mem-eval/50/w50-count-zvec-filters/artifacts/step-analytics.json",
+      "sha256": "0b007cf1d90d31456fe5a0e66f603a66d0c9cdd54821e5559b01d8c2d794f718"
+    },
+    "verdicts": {
+      "bytes": 63299,
+      "kind": "verdicts",
+      "non_empty_lines": 50,
+      "path": "runs/symbiotic-memory/long-mem-eval/50/w50-count-zvec-filters/artifacts/verdicts.jsonl",
+      "sha256": "389922c58b62e4a0ff3d81802f32c27e9f87dc803562cb6c7413f093ade77b72"
+    }
+  },
+  "benchmark": "long-mem-eval",
+  "cohort": {
+    "dataset_fingerprint": "941cd0647b60fd86faa143d8c58efe83b556fae6fe130edb83bc70d145c6d90e",
+    "judge_model": "deepseek-v4-flash",
+    "judge_prompt_mode": "official"
+  },
+  "config_signature": "1d7d1eb3e3bcef3918f1e713d2f396e55921d62b03f55c48bed60206c5f56dd7",
+  "created_at": "2026-07-04T11:41:08.512520+00:00",
+  "metrics": {
+    "abstention_accuracy": {
+      "correct": 0,
+      "total": 1,
+      "value": 0.0
+    },
+    "accuracy": {
+      "correct": 45,
+      "total": 50,
+      "value": 0.9
+    },
+    "cache": {
+      "cached_input_tokens": 1024,
+      "output_tokens": 13581,
+      "prompt_cache_hits": 0,
+      "prompt_cache_misses": 117,
+      "prompt_cache_partial_hits": 7,
+      "response_cache_hits": 0,
+      "roles": [],
+      "uncached_input_tokens": 521161
+    },
+    "cost_micro_usd": 51694,
+    "task_averaged_accuracy": 0.9027777777777776
+  },
+  "models": {
+    "answer": "qwen/qwen3.7-plus",
+    "distill": "deepseek-v4-flash",
+    "embed": "qwen/qwen3-embedding-8b",
+    "judge": "deepseek-v4-flash",
+    "rerank": "nvidia/llama-nemotron-rerank-vl-1b-v2:free"
+  },
+  "run_kind": "native",
+  "run_name": "w50-count-zvec-filters",
+  "run_params": {
+    "answer_gap_retry": false,
+    "answer_only": true,
+    "answer_output": true,
+    "answer_unavailable_retry": false,
+    "answer_verifier": false,
+    "answerer": true,
+    "benchmark": "long-mem-eval",
+    "chat_http1_only": false,
+    "chat_http_client_pool_size": null,
+    "chat_http_connect_timeout_secs": null,
+    "chat_http_pool_max_idle_per_host": null,
+    "chat_http_tcp_keepalive_secs": null,
+    "chat_http_timeout_secs": null,
+    "configured_models": {
+      "answer": {
+        "model": "qwen/qwen3.7-plus",
+        "operation": "chat",
+        "operator": "openrouter",
+        "queue_id": "chat:openrouter:qwen/qwen3.7-plus"
+      },
+      "chat_model": "none",
+      "chat_provider": "disabled",
+      "distill": {
+        "model": "deepseek-v4-flash",
+        "operation": "chat",
+        "operator": "deepseek",
+        "queue_id": "chat:deepseek:deepseek-v4-flash"
+      },
+      "embed": {
+        "model": "qwen/qwen3-embedding-8b",
+        "operation": "embedding",
+        "operator": "openrouter",
+        "queue_id": "embedding:openrouter:qwen/qwen3-embedding-8b"
+      },
+      "embedding_model": "hash-embedding-v1",
+      "embedding_provider": "hash",
+      "prompt_cache": true,
+      "query_planner": {
+        "model": "deepseek-v4-flash",
+        "operation": "chat",
+        "operator": "deepseek",
+        "queue_id": "chat:deepseek:deepseek-v4-flash"
+      },
+      "rerank": {
+        "base_url": "https://openrouter.ai/api/v1",
+        "enabled": true,
+        "model": "nvidia/llama-nemotron-rerank-vl-1b-v2:free",
+        "operation": "rerank",
+        "operator": "openrouter",
+        "queue_id": "rerank:openrouter:nvidia/llama-nemotron-rerank-vl-1b-v2:free",
+        "stage1_model": null
+      }
+    },
+    "configured_workflow_max_in_flight": 50,
+    "consolidate_briefs": false,
+    "dataset": "runs/inputs/longmemeval-cleaned/longmemeval_s_cleaned.json",
+    "distill_prompt": "distill",
+    "distiller": "llm",
+    "embed_batch_max_chars": null,
+    "embed_batch_size": null,
+    "embed_max_chars": null,
+    "embedder": "openrouter",
+    "env_file": null,
+    "ephemeral_smoke_run": false,
+    "evidence_ledger": false,
+    "fresh": false,
+    "generative_answerer_enabled": true,
+    "ingest_diagnostic": null,
+    "ingest_diagnostic_mode": null,
+    "ingest_stop_after_raw_embed": false,
+    "judge_model": "deepseek-v4-flash",
+    "judge_operator": "deepseek",
+    "judge_workers": 400,
+    "kit_config": {
+      "hash": "aa6958ef4945843ee80d2198ed4888ae45d719aa94b50855bb4f9295ad11cf63",
+      "overrides": [
+        {
+          "path": "storage.backend",
+          "source": "Env"
+        }
+      ]
+    },
+    "limit": 50,
+    "memory_config": "config/symbiotic-memory/longmemeval-raw-light.yaml",
+    "memory_manifest": "../symbiotic-memory/Cargo.toml",
+    "openrouter_embed_input_type": null,
+    "openrouter_embed_send_default_input_type": false,
+    "openrouter_http1_only": true,
+    "openrouter_http_client_pool_size": null,
+    "openrouter_http_connect_timeout_secs": null,
+    "openrouter_http_pool_max_idle_per_host": null,
+    "openrouter_http_tcp_keepalive_secs": null,
+    "oracle": null,
+    "oracle_gold": false,
+    "prewarm_judge_cache": 0,
+    "prewarm_pause_secs": 10,
+    "prompt_dir": null,
+    "provider_queue_available": true,
+    "provider_queue_debug_requests": false,
+    "provider_queue_dir": null,
+    "query_planner": "flash",
+    "rerank": {
+      "base_url": "https://openrouter.ai/api/v1",
+      "enabled": true,
+      "model": "nvidia/llama-nemotron-rerank-vl-1b-v2:free",
+      "operation": "rerank",
+      "operator": "openrouter",
+      "queue_id": "rerank:openrouter:nvidia/llama-nemotron-rerank-vl-1b-v2:free",
+      "stage1_model": null
+    },
+    "resume": false,
+    "role_settings": {
+      "answer": {
+        "active": true,
+        "input_units_per_minute": null,
+        "logical_retry_attempts": 4,
+        "max_in_flight": 1000,
+        "max_tokens": null,
+        "model": "qwen/qwen3.7-plus",
+        "operation": "chat",
+        "operator": "openrouter",
+        "queue_id": "chat:openrouter:qwen/qwen3.7-plus",
+        "reasoning_effort": null,
+        "requests_per_minute": null,
+        "retry_attempts": 4,
+        "thinking": "disabled",
+        "timeout_seconds": 600
+      },
+      "distill": {
+        "active": true,
+        "input_units_per_minute": null,
+        "logical_retry_attempts": 4,
+        "max_in_flight": 2000,
+        "max_tokens": null,
+        "model": "deepseek-v4-flash",
+        "operation": "chat",
+        "operator": "deepseek",
+        "queue_id": "chat:deepseek:deepseek-v4-flash",
+        "reasoning_effort": null,
+        "requests_per_minute": null,
+        "retry_attempts": 4,
+        "thinking": null,
+        "timeout_seconds": 600
+      },
+      "embed": {
+        "active": true,
+        "input_units_per_minute": null,
+        "logical_retry_attempts": 6,
+        "max_in_flight": 2000,
+        "max_tokens": null,
+        "model": "qwen/qwen3-embedding-8b",
+        "operation": "embedding",
+        "operator": "openrouter",
+        "queue_id": "embedding:openrouter:qwen/qwen3-embedding-8b",
+        "reasoning_effort": null,
+        "requests_per_minute": null,
+        "retry_attempts": 6,
+        "thinking": null,
+        "timeout_seconds": 300
+      },
+      "judge": {
+        "active": true,
+        "input_units_per_minute": null,
+        "logical_retry_attempts": 4,
+        "max_in_flight": 2000,
+        "max_tokens": 64,
+        "model": "deepseek-v4-flash",
+        "operation": "chat",
+        "operator": "deepseek",
+        "queue_id": "chat:deepseek:deepseek-v4-flash",
+        "reasoning_effort": null,
+        "requests_per_minute": null,
+        "retry_attempts": 4,
+        "thinking": "disabled",
+        "timeout_seconds": 600
+      },
+      "query_planner": {
+        "active": true,
+        "input_units_per_minute": null,
+        "logical_retry_attempts": 4,
+        "max_in_flight": 2000,
+        "max_tokens": 512,
+        "model": "deepseek-v4-flash",
+        "operation": "chat",
+        "operator": "deepseek",
+        "queue_id": "chat:deepseek:deepseek-v4-flash",
+        "reasoning_effort": null,
+        "requests_per_minute": null,
+        "retry_attempts": 4,
+        "thinking": "disabled",
+        "timeout_seconds": 600
+      }
+    },
+    "routed": false,
+    "run_kind": "native",
+    "run_name": "w50-count-zvec-filters",
+    "run_root": "runs/symbiotic-memory/long-mem-eval/50/w50-count-zvec-filters",
+    "runtime_models": {
+      "answer": "queued:openrouter:qwen/qwen3.7-plus",
+      "distill": "queued:deepseek:deepseek-v4-flash",
+      "embed": "queued:openrouter:qwen/qwen3-embedding-8b",
+      "judge": "queued:deepseek:deepseek-v4-flash",
+      "query_planner": "queued:deepseek:deepseek-v4-flash"
+    },
+    "runtime_provider_note": "Configured models come from the requested memory config; runtime models describe the providers this membench adapter actually invoked.",
+    "sample": "stratified",
+    "schema": "membench.run_params.v1",
+    "score": true,
+    "score_output": true,
+    "scorer": "queued-longmemeval-deepseek-v4-flash",
+    "source_vault_root": null,
+    "stop_after_raw_embed": false,
+    "store": "zvec",
+    "supersession_detection": false,
+    "symem_bin": null,
+    "system": "symbiotic-memory",
+    "thinking": {
+      "answer": "disabled",
+      "distill": null,
+      "judge": "disabled",
+      "query_planner": "disabled",
+      "summary": "query-planner:disabled,answer:disabled,judge:disabled"
+    },
+    "transport": {
+      "chat": {
+        "client_pool_size": null,
+        "connect_timeout_secs": null,
+        "http1_only": false,
+        "label": "h2",
+        "pool_max_idle_per_host": null,
+        "provider": "deepseek",
+        "tcp_keepalive_secs": null,
+        "timeout_secs": null
+      },
+      "embed": {
+        "client_pool_size": null,
+        "connect_timeout_secs": null,
+        "http1_only": true,
+        "label": "h1",
+        "pool_max_idle_per_host": null,
+        "provider": "openrouter",
+        "tcp_keepalive_secs": null
+      }
+    },
+    "workflow": {
+      "configured_max_in_flight": 50,
+      "env_override": null,
+      "max_in_flight": 64
+    },
+    "workflow_max_in_flight": 64,
+    "workflow_max_in_flight_env_override": null,
+    "workflow_queue_available": true
+  },
+  "schema": "membench.report.v1",
+  "system": "symbiotic-memory",
+  "meta_record": {
+    "schema": "membench.meta_record.v1",
+    "omitted": [
+      "vaults",
+      "raw",
+      "traces",
+      "provider-queue/requests",
+      "artifacts/hypotheses.jsonl",
+      "artifacts/provenance.jsonl",
+      "artifacts/scored.json",
+      "artifacts/verdicts.jsonl",
+      "artifacts/partial-verdicts.jsonl"
+    ],
+    "retained": [
+      "benchmark-report.json",
+      "run-params.json",
+      "artifacts/memory-traces.jsonl",
+      "artifacts/model-traces.jsonl",
+      "artifacts/step-analytics.json",
+      "workflow",
+      "provider-queue/model-queue-traces.jsonl"
+    ]
+  }
+}

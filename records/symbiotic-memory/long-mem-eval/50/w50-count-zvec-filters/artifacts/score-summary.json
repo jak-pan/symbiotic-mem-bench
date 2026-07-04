@@ -1,0 +1,55 @@
+{
+  "elapsed_ms": 2057,
+  "hypotheses_file": "runs/symbiotic-memory/long-mem-eval/50/w50-count-zvec-filters/raw/hypotheses.jsonl",
+  "judge_model": "deepseek-v4-flash",
+  "judge_prompt_mode": "official",
+  "metrics": {
+    "counts": {
+      "abstention_correct": 0,
+      "abstention_total": 1,
+      "judge_errors": 0,
+      "scored": 50,
+      "total_correct": 45
+    },
+    "judge_model": "deepseek-v4-flash",
+    "judge_prompt_mode": "official",
+    "overall_accuracy": 0.9,
+    "per_question_type": {
+      "knowledge-update": {
+        "accuracy": 0.875,
+        "correct": 7,
+        "total": 8
+      },
+      "multi-session": {
+        "accuracy": 0.7777777777777778,
+        "correct": 7,
+        "total": 9
+      },
+      "single-session-assistant": {
+        "accuracy": 1.0,
+        "correct": 8,
+        "total": 8
+      },
+      "single-session-preference": {
+        "accuracy": 0.875,
+        "correct": 7,
+        "total": 8
+      },
+      "single-session-user": {
+        "accuracy": 0.8888888888888888,
+        "correct": 8,
+        "total": 9
+      },
+      "temporal-reasoning": {
+        "accuracy": 1.0,
+        "correct": 8,
+        "total": 8
+      }
+    },
+    "task_averaged_accuracy": 0.9027777777777777
+  },
+  "schema_version": 1,
+  "scored_file": "runs/symbiotic-memory/long-mem-eval/50/w50-count-zvec-filters/raw/scored.json",
+  "scorer": "queued-longmemeval-deepseek-v4-flash",
+  "verdicts_file": "runs/symbiotic-memory/long-mem-eval/50/w50-count-zvec-filters/raw/verdicts.jsonl"
+}
