@@ -3761,7 +3761,7 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
     symbiotic_mem_bench::symbiotic_memory_adapter::set_redo_stage(redo_stage);
     // Supersession-detection post-pass (MEMBENCH_SUPERSESSION_DETECTION): the kit's deterministic
     // lifecycle-detection pass runs over each vault's active base facts BEFORE answering. It
-    // MUTATES memory.sqlite / the recall index / the archive, so it is only valid over vaults this
+    // MUTATES the vault ledger / the recall index / the archive, so it is only valid over vaults this
     // run owns as real copies — require --answer-only + --source-vault-root and prep with
     // `prepare_supersession_detection_vaults` below (never the symlinking answer-only prep).
     let supersession_detection = run_env_bool(&run, "MEMBENCH_SUPERSESSION_DETECTION", false);
@@ -3808,8 +3808,8 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
             );
         }
         if redo_active {
-            // A redo stage COPIES memory.sqlite (re-running mutates it) and omits zvec-hybrid so the
-            // index rebuilds fresh at the current embedding dimensions.
+            // A redo stage COPIES the vault ledger (re-running mutates it) and omits the vector
+            // index so it rebuilds fresh at the current embedding dimensions.
             prepare_re_embed_linked_vaults(&run.run_root, source_vault_root, &rows)?;
         } else if supersession_detection {
             prepare_supersession_detection_vaults(&run.run_root, source_vault_root, &rows)?;
@@ -4133,14 +4133,17 @@ fn clear_answer_only_run_outputs(run_root: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
-/// Like `prepare_answer_only_linked_vaults`, but COPIES `memory.sqlite` (re-embedding mutates it via
-/// `upsert_facts`, so symlinking would corrupt the shared source baseline) and intentionally omits
-/// `zvec-hybrid` so the recall index is rebuilt fresh at the current embedding dimensions.
+/// Like `prepare_answer_only_linked_vaults`, but COPIES the `vault.db` ledger (re-embedding
+/// mutates it via `upsert_facts`, so symlinking would corrupt the shared source baseline) and
+/// intentionally omits `index.zvec` so the recall index is rebuilt fresh at the current embedding
+/// dimensions.
 fn prepare_re_embed_linked_vaults(
     run_root: &Path,
     source_vault_root: &Path,
     rows: &[symbiotic_mem_bench::symbiotic_memory_adapter::LongMemEvalRecord],
 ) -> anyhow::Result<()> {
+    use symbiotic_memory::vault::{VAULT_DB_FILE, VAULT_INDEX_DIR};
+
     let source_vault_root = resolve_source_vault_root(source_vault_root);
     if !source_vault_root.is_dir() {
         anyhow::bail!(
@@ -4153,33 +4156,37 @@ fn prepare_re_embed_linked_vaults(
     for row in rows {
         let source_vault = source_vault_root.join(&row.question_id);
         let target_vault = target_vault_root.join(&row.question_id);
+        // Converge pre-facade vaults (legacy file names) to the canonical
+        // layout before reading from / writing over them.
+        symbiotic_mem_bench::symbiotic_memory_adapter::migrate_legacy_vault_layout(&source_vault)?;
         let source_manifest = source_vault.join("manifest.json");
-        let source_memory = source_vault.join("memory.sqlite");
+        let source_memory = source_vault.join(VAULT_DB_FILE);
         if !source_manifest.is_file() || !source_memory.is_file() {
             anyhow::bail!(
-                "source vault {} is missing manifest.json or memory.sqlite",
+                "source vault {} is missing manifest.json or vault.db",
                 source_vault.display()
             );
         }
         std::fs::create_dir_all(&target_vault)?;
+        symbiotic_mem_bench::symbiotic_memory_adapter::migrate_legacy_vault_layout(&target_vault)?;
         remove_path_if_exists(&target_vault.join("manifest.json"))?;
-        remove_path_if_exists(&target_vault.join("memory.sqlite"))?;
+        remove_path_if_exists(&target_vault.join(VAULT_DB_FILE))?;
         remove_path_if_exists(&target_vault.join("archive"))?;
-        remove_path_if_exists(&target_vault.join("zvec-hybrid"))?;
+        remove_path_if_exists(&target_vault.join(VAULT_INDEX_DIR))?;
         std::fs::copy(&source_manifest, target_vault.join("manifest.json"))?;
-        std::fs::copy(&source_memory, target_vault.join("memory.sqlite"))?;
+        std::fs::copy(&source_memory, target_vault.join(VAULT_DB_FILE))?;
         let source_archive = source_vault.join("archive");
         if source_archive.exists() {
             link_path(&source_archive, &target_vault.join("archive"))?;
         }
         // Facts-only re-embed (the default): carry the source vector index forward so the existing
         // raw-turn vectors are preserved — only fact vectors get overwritten by upsert_facts, no turn
-        // re-embed. A full turn re-embed (MEMBENCH_REEMBED_TURNS=1) instead leaves zvec-hybrid absent so
+        // re-embed. A full turn re-embed (MEMBENCH_REEMBED_TURNS=1) instead leaves index.zvec absent so
         // the index rebuilds from scratch at the (possibly new) embedding dimensions.
         if !symbiotic_mem_bench::symbiotic_memory_adapter::reembed_turns() {
-            let source_zvec = source_vault.join("zvec-hybrid");
+            let source_zvec = source_vault.join(VAULT_INDEX_DIR);
             if source_zvec.is_dir() {
-                copy_dir_recursive(&source_zvec, &target_vault.join("zvec-hybrid"))?;
+                copy_dir_recursive(&source_zvec, &target_vault.join(VAULT_INDEX_DIR))?;
             }
         }
     }
@@ -4187,18 +4194,20 @@ fn prepare_re_embed_linked_vaults(
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
-/// Like `prepare_answer_only_linked_vaults`, but COPIES `memory.sqlite`, the `archive` directory
-/// AND the `zvec-hybrid` index: the supersession-detection post-pass mutates all three before
-/// answering (`detect_and_apply_supersessions` re-upserts the newer side of each flagged pair —
-/// sqlite rows + recall-index vectors — and rewrites both sides' canonical Archive Markdown), so a
-/// symlink into the frozen source baseline would corrupt it for every other arm. Copying the zvec
-/// index alongside the byte-identical sqlite also keeps the trusted-manifest fast path (no index
-/// rebuild before the pass runs).
+/// Like `prepare_answer_only_linked_vaults`, but COPIES the `vault.db` ledger, the `archive`
+/// directory AND the `index.zvec` index: the supersession-detection post-pass mutates all three
+/// before answering (`detect_and_apply_supersessions` re-upserts the newer side of each flagged
+/// pair — ledger rows + recall-index vectors — and rewrites both sides' canonical Archive
+/// Markdown), so a symlink into the frozen source baseline would corrupt it for every other arm.
+/// Copying the zvec index alongside the byte-identical ledger also keeps the trusted-manifest
+/// fast path (no index rebuild before the pass runs).
 fn prepare_supersession_detection_vaults(
     run_root: &Path,
     source_vault_root: &Path,
     rows: &[symbiotic_mem_bench::symbiotic_memory_adapter::LongMemEvalRecord],
 ) -> anyhow::Result<()> {
+    use symbiotic_memory::vault::{VAULT_DB_FILE, VAULT_INDEX_DIR};
+
     let source_vault_root = resolve_source_vault_root(source_vault_root);
     if !source_vault_root.is_dir() {
         anyhow::bail!(
@@ -4211,28 +4220,30 @@ fn prepare_supersession_detection_vaults(
     for row in rows {
         let source_vault = source_vault_root.join(&row.question_id);
         let target_vault = target_vault_root.join(&row.question_id);
+        symbiotic_mem_bench::symbiotic_memory_adapter::migrate_legacy_vault_layout(&source_vault)?;
         let source_manifest = source_vault.join("manifest.json");
-        let source_memory = source_vault.join("memory.sqlite");
+        let source_memory = source_vault.join(VAULT_DB_FILE);
         if !source_manifest.is_file() || !source_memory.is_file() {
             anyhow::bail!(
-                "source vault {} is missing manifest.json or memory.sqlite",
+                "source vault {} is missing manifest.json or vault.db",
                 source_vault.display()
             );
         }
         std::fs::create_dir_all(&target_vault)?;
+        symbiotic_mem_bench::symbiotic_memory_adapter::migrate_legacy_vault_layout(&target_vault)?;
         remove_path_if_exists(&target_vault.join("manifest.json"))?;
-        remove_path_if_exists(&target_vault.join("memory.sqlite"))?;
+        remove_path_if_exists(&target_vault.join(VAULT_DB_FILE))?;
         remove_path_if_exists(&target_vault.join("archive"))?;
-        remove_path_if_exists(&target_vault.join("zvec-hybrid"))?;
+        remove_path_if_exists(&target_vault.join(VAULT_INDEX_DIR))?;
         std::fs::copy(&source_manifest, target_vault.join("manifest.json"))?;
-        std::fs::copy(&source_memory, target_vault.join("memory.sqlite"))?;
+        std::fs::copy(&source_memory, target_vault.join(VAULT_DB_FILE))?;
         let source_archive = source_vault.join("archive");
         if source_archive.is_dir() {
             copy_dir_recursive(&source_archive, &target_vault.join("archive"))?;
         }
-        let source_zvec = source_vault.join("zvec-hybrid");
+        let source_zvec = source_vault.join(VAULT_INDEX_DIR);
         if source_zvec.is_dir() {
-            copy_dir_recursive(&source_zvec, &target_vault.join("zvec-hybrid"))?;
+            copy_dir_recursive(&source_zvec, &target_vault.join(VAULT_INDEX_DIR))?;
         }
     }
     Ok(())
@@ -4244,6 +4255,8 @@ fn prepare_answer_only_linked_vaults(
     source_vault_root: &Path,
     rows: &[symbiotic_mem_bench::symbiotic_memory_adapter::LongMemEvalRecord],
 ) -> anyhow::Result<()> {
+    use symbiotic_memory::vault::{VAULT_DB_FILE, VAULT_INDEX_DIR};
+
     let source_vault_root = resolve_source_vault_root(source_vault_root);
     if !source_vault_root.is_dir() {
         anyhow::bail!(
@@ -4256,29 +4269,31 @@ fn prepare_answer_only_linked_vaults(
     for row in rows {
         let source_vault = source_vault_root.join(&row.question_id);
         let target_vault = target_vault_root.join(&row.question_id);
+        symbiotic_mem_bench::symbiotic_memory_adapter::migrate_legacy_vault_layout(&source_vault)?;
         let source_manifest = source_vault.join("manifest.json");
-        let source_memory = source_vault.join("memory.sqlite");
+        let source_memory = source_vault.join(VAULT_DB_FILE);
         if !source_manifest.is_file() || !source_memory.is_file() {
             anyhow::bail!(
-                "source vault {} is missing manifest.json or memory.sqlite",
+                "source vault {} is missing manifest.json or vault.db",
                 source_vault.display()
             );
         }
 
         std::fs::create_dir_all(&target_vault)?;
+        symbiotic_mem_bench::symbiotic_memory_adapter::migrate_legacy_vault_layout(&target_vault)?;
         remove_path_if_exists(&target_vault.join("manifest.json"))?;
-        remove_path_if_exists(&target_vault.join("memory.sqlite"))?;
+        remove_path_if_exists(&target_vault.join(VAULT_DB_FILE))?;
         remove_path_if_exists(&target_vault.join("archive"))?;
-        remove_path_if_exists(&target_vault.join("zvec-hybrid"))?;
+        remove_path_if_exists(&target_vault.join(VAULT_INDEX_DIR))?;
         std::fs::copy(source_manifest, target_vault.join("manifest.json"))?;
-        link_path(&source_memory, &target_vault.join("memory.sqlite"))?;
+        link_path(&source_memory, &target_vault.join(VAULT_DB_FILE))?;
         let source_archive = source_vault.join("archive");
         if source_archive.exists() {
             link_path(&source_archive, &target_vault.join("archive"))?;
         }
-        let source_zvec = source_vault.join("zvec-hybrid");
+        let source_zvec = source_vault.join(VAULT_INDEX_DIR);
         if source_zvec.exists() {
-            link_path(&source_zvec, &target_vault.join("zvec-hybrid"))?;
+            link_path(&source_zvec, &target_vault.join(VAULT_INDEX_DIR))?;
         }
     }
     Ok(())
@@ -6911,6 +6926,7 @@ mod tests {
             answerer: true,
             routed: false,
             answer_only: true,
+            rejudge: false,
             re_embed: false,
             consolidate_briefs: false,
             stop_after_raw_embed: false,
@@ -7150,12 +7166,15 @@ mod tests {
         use symbiotic_mem_bench::symbiotic_memory_adapter::{
             LongMemEvalMessage, LongMemEvalRecord,
         };
+        use symbiotic_memory::vault::{VAULT_DB_FILE, VAULT_INDEX_DIR};
 
         let dir = tempfile::tempdir().unwrap();
         let source_root = dir.path().join("source-vaults");
         let run_root = dir.path().join("run");
         let source_vault = source_root.join("q1");
         std::fs::create_dir_all(source_vault.join("archive/memories")).unwrap();
+        // Legacy pre-facade names on disk: prep must converge them to the
+        // canonical layout (vault.db + index.zvec) by renaming in place.
         std::fs::create_dir_all(source_vault.join("zvec-hybrid")).unwrap();
         std::fs::write(source_vault.join("manifest.json"), r#"{"source":"stable"}"#).unwrap();
         std::fs::write(source_vault.join("memory.sqlite"), b"sqlite").unwrap();
@@ -7170,20 +7189,30 @@ mod tests {
             question_type: Some("direct".to_string()),
             question: "What happened?".to_string(),
             answer: None,
+            answer_session_ids: Vec::new(),
             question_date: None,
             haystack_dates: Vec::new(),
             haystack_session_ids: Vec::new(),
             haystack_sessions: vec![vec![LongMemEvalMessage {
                 role: "user".to_string(),
                 content: "fact".to_string(),
+                has_answer: false,
             }]],
         }];
 
         prepare_answer_only_linked_vaults(&run_root, &source_root, &rows).unwrap();
 
+        // The legacy source names were renamed in place, bytes untouched.
+        assert!(!source_vault.join("memory.sqlite").exists());
+        assert!(!source_vault.join("zvec-hybrid").exists());
+        assert_eq!(
+            std::fs::read(source_vault.join(VAULT_DB_FILE)).unwrap(),
+            b"sqlite"
+        );
+
         let target_vault = run_root.join("vaults/q1");
         assert!(
-            std::fs::symlink_metadata(target_vault.join("memory.sqlite"))
+            std::fs::symlink_metadata(target_vault.join(VAULT_DB_FILE))
                 .unwrap()
                 .file_type()
                 .is_symlink()
@@ -7201,27 +7230,28 @@ mod tests {
                 .is_symlink()
         );
         assert!(
-            std::fs::symlink_metadata(target_vault.join("zvec-hybrid"))
+            std::fs::symlink_metadata(target_vault.join(VAULT_INDEX_DIR))
                 .unwrap()
                 .file_type()
                 .is_symlink()
         );
-        remove_path_if_exists(&target_vault.join("zvec-hybrid")).unwrap();
-        std::fs::create_dir_all(target_vault.join("zvec-hybrid")).unwrap();
+        remove_path_if_exists(&target_vault.join(VAULT_INDEX_DIR)).unwrap();
+        std::fs::create_dir_all(target_vault.join(VAULT_INDEX_DIR)).unwrap();
         std::fs::write(
-            target_vault.join("zvec-hybrid/index-manifest.json"),
+            target_vault.join(VAULT_INDEX_DIR).join("index-manifest.json"),
             r#"{"source":"stale-target"}"#,
         )
         .unwrap();
         prepare_answer_only_linked_vaults(&run_root, &source_root, &rows).unwrap();
         assert!(
-            std::fs::symlink_metadata(target_vault.join("zvec-hybrid"))
+            std::fs::symlink_metadata(target_vault.join(VAULT_INDEX_DIR))
                 .unwrap()
                 .file_type()
                 .is_symlink()
         );
         assert_eq!(
-            std::fs::read_to_string(target_vault.join("zvec-hybrid/index-manifest.json")).unwrap(),
+            std::fs::read_to_string(target_vault.join(VAULT_INDEX_DIR).join("index-manifest.json"))
+                .unwrap(),
             r#"{"source":"zvec"}"#
         );
 
@@ -7241,7 +7271,7 @@ mod tests {
         let vaults = run_root.join("vaults");
         std::fs::create_dir_all(vaults.join("q1")).unwrap();
         std::fs::create_dir_all(vaults.join("q2")).unwrap();
-        std::fs::write(vaults.join("q1/memory.sqlite"), b"sqlite").unwrap();
+        std::fs::write(vaults.join("q1/vault.db"), b"sqlite").unwrap();
         std::fs::write(
             run_root.join("benchmark-report.json"),
             r#"{"metrics":{"accuracy":{"value":0.874}}}"#,
@@ -7251,8 +7281,8 @@ mod tests {
         // COPY (default): store is populated, source survives intact.
         vault_save_in(&store, &run_root, Some("golden"), false).unwrap();
         let stored_vaults = store.join("golden/vaults");
-        assert!(stored_vaults.join("q1/memory.sqlite").is_file());
-        assert!(vaults.join("q1/memory.sqlite").is_file());
+        assert!(stored_vaults.join("q1/vault.db").is_file());
+        assert!(vaults.join("q1/vault.db").is_file());
         assert!(
             !std::fs::symlink_metadata(&vaults)
                 .unwrap()
@@ -7451,6 +7481,7 @@ mod tests {
                 question: "q".to_string(),
                 question_date: None,
                 answer: Some(Value::String("a".to_string())),
+                answer_session_ids: Vec::new(),
                 haystack_dates: Vec::new(),
                 haystack_session_ids: Vec::new(),
                 haystack_sessions: Vec::new(),
@@ -7511,12 +7542,14 @@ mod tests {
 
     #[test]
     fn native_runs_are_fresh_by_default() {
-        assert!(effective_fresh(false, false, false).unwrap());
-        assert!(effective_fresh(false, false, true).unwrap());
-        assert!(!effective_fresh(true, false, false).unwrap());
-        assert!(!effective_fresh(false, true, false).unwrap());
-        assert!(effective_fresh(true, false, true).is_err());
-        assert!(effective_fresh(false, true, true).is_err());
+        assert!(effective_fresh(false, false, false, false).unwrap());
+        assert!(effective_fresh(false, false, false, true).unwrap());
+        assert!(!effective_fresh(true, false, false, false).unwrap());
+        assert!(!effective_fresh(false, true, false, false).unwrap());
+        assert!(!effective_fresh(false, false, true, false).unwrap());
+        assert!(effective_fresh(true, false, false, true).is_err());
+        assert!(effective_fresh(false, true, false, true).is_err());
+        assert!(effective_fresh(false, false, true, true).is_err());
     }
 
     #[test]

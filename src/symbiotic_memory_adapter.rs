@@ -37,7 +37,6 @@ use symbiotic_memory::trace::{
     MemoryTraceEvent, MemoryTraceEventKind, MemoryTraceOperation, MemoryTraceSink,
 };
 #[cfg(feature = "symbiotic-memory-adapter")]
-use symbiotic_memory::types::{FactEvidence, RawTurnEvidence};
 use symbiotic_memory::types::{SourceDocument, SourceTurn};
 #[cfg(feature = "symbiotic-memory-adapter")]
 use symbiotic_queue::{
@@ -434,7 +433,7 @@ fn reembed_mode() -> bool {
 
 /// Supersession-detection post-pass gate (`MEMBENCH_SUPERSESSION_DETECTION`, resolved by the
 /// harness like the redo stage). For an answer-only run over linked source vaults, each vault's
-/// memory.sqlite + archive get the kit's deterministic [`symbiotic_memory::detect_and_apply_supersessions`]
+/// ledger + archive get the kit's deterministic [`symbiotic_memory::detect_and_apply_supersessions`]
 /// pass applied BEFORE answering. Detection MUTATES the store (status flips via `upsert_facts`),
 /// the recall index and the Archive Markdown, so the harness preps these arms with COPIED vaults
 /// (`prepare_supersession_detection_vaults`), never symlinks into the frozen source baseline.
@@ -452,7 +451,7 @@ fn supersession_detection_enabled() -> bool {
 /// changes fact `search_text` (via the distill/enrich metadata logic) — raw-turn text is identical,
 /// so re-embedding turns re-calls the embedding API for every turn just to produce byte-identical
 /// vectors. That bulk turn re-embed is the dominant cost of a full re-embed. With this off, the prep
-/// COPIES the source `zvec-hybrid` index (preserving the existing turn vectors) and only facts are
+/// COPIES the source `index.zvec` index (preserving the existing turn vectors) and only facts are
 /// re-embedded + upserted. Set `MEMBENCH_REEMBED_TURNS=1` to force a full turn re-embed — required when
 /// the embedding model or dimensions change (the copied index would then be stale).
 pub fn reembed_turns() -> bool {
@@ -857,12 +856,13 @@ where
     Ok(completed_hyps)
 }
 
+/// The blessed kit store behind every bench vault. The kit's vault facade
+/// owns the backend decision (ROBUST-PLANE §12 — hosts never name a
+/// backend); the bench only records which backend the profile resolved to
+/// and manages its persisted index cache through the facade's
+/// backend-neutral maintenance surface.
 #[cfg(feature = "symbiotic-memory-adapter")]
-#[derive(Clone)]
-enum BenchMemoryStore {
-    Sqlite(symbiotic_memory::storage::sqlite::SqliteStore),
-    ZvecHybrid(symbiotic_memory::storage::zvec::ZvecHybridIndexedSqliteStore),
-}
+type BenchMemoryStore = symbiotic_memory::VaultStore;
 
 #[cfg(feature = "symbiotic-memory-adapter")]
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -891,234 +891,252 @@ struct RecallIndexEnsureReport {
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
-impl BenchMemoryStore {
-    async fn open_with_metrics(
-        vault_dir: PathBuf,
-        backend: String,
-        dimensions: usize,
-    ) -> anyhow::Result<(Self, BTreeMap<String, serde_json::Value>)> {
-        tokio::task::spawn_blocking(move || {
-            Self::open_with_metrics_blocking(&vault_dir, &backend, dimensions)
-        })
-        .await?
-    }
+async fn open_store_with_metrics(
+    vault_dir: PathBuf,
+    backend: String,
+    dimensions: usize,
+) -> anyhow::Result<(BenchMemoryStore, BTreeMap<String, serde_json::Value>)> {
+    tokio::task::spawn_blocking(move || {
+        open_store_with_metrics_blocking(&vault_dir, &backend, dimensions)
+    })
+    .await?
+}
 
-    fn open_with_metrics_blocking(
-        vault_dir: &Path,
-        backend: &str,
-        dimensions: usize,
-    ) -> anyhow::Result<(Self, BTreeMap<String, serde_json::Value>)> {
-        let sqlite_path = vault_dir.join("memory.sqlite");
-        match backend {
-            "zvec-hybrid" => {
-                let (store, report) =
-                    symbiotic_memory::storage::zvec::ZvecHybridIndexedSqliteStore::open_with_report(
-                    &sqlite_path,
-                    vault_dir.join("zvec-hybrid"),
-                    dimensions,
-                    )?;
-                let mut metrics = BTreeMap::new();
-                metrics.insert(
-                    "store_sqlite_open_ms".to_string(),
-                    serde_json::json!(report.sqlite_open_ms),
-                );
-                metrics.insert(
-                    "store_zvec_total_ms".to_string(),
-                    serde_json::json!(report.zvec_total_ms),
-                );
-                metrics.insert(
-                    "store_zvec_init_ms".to_string(),
-                    serde_json::json!(report.zvec_init_ms),
-                );
-                metrics.insert(
-                    "store_zvec_collection_open_ms".to_string(),
-                    serde_json::json!(report.collection_open_ms),
-                );
-                metrics.insert(
-                    "store_zvec_schema_ms".to_string(),
-                    serde_json::json!(report.schema_ms),
-                );
-                metrics.insert(
-                    "store_zvec_collection_create_ms".to_string(),
-                    serde_json::json!(report.collection_create_ms),
-                );
-                metrics.insert(
-                    "store_zvec_collection_created".to_string(),
-                    serde_json::json!(report.collection_created),
-                );
-                Ok((Self::ZvecHybrid(store), metrics))
-            }
-            _ => Ok((
-                Self::Sqlite(symbiotic_memory::storage::sqlite::SqliteStore::open(
-                    sqlite_path,
-                )?),
-                BTreeMap::new(),
-            )),
+/// Pre-facade vaults named the ledger `memory.sqlite` and the vector index
+/// `zvec-hybrid/`. The kit's vault facade owns the canonical names now
+/// (`vault.db`, `index.zvec/`) and there is no pre-launch backwards
+/// compatibility: converge the on-disk state instead — an idempotent,
+/// same-directory rename. Bytes are untouched, so a cached index manifest's
+/// recorded sqlite sha still validates and the expensive golden vaults keep
+/// opening. Called before every vault open and by the answer-only/redo
+/// vault preps on their source baselines.
+#[cfg(feature = "symbiotic-memory-adapter")]
+pub fn migrate_legacy_vault_layout(vault_dir: &Path) -> anyhow::Result<()> {
+    for (legacy, canonical) in [
+        ("memory.sqlite", symbiotic_memory::vault::VAULT_DB_FILE),
+        ("zvec-hybrid", symbiotic_memory::vault::VAULT_INDEX_DIR),
+    ] {
+        let legacy = vault_dir.join(legacy);
+        let canonical = vault_dir.join(canonical);
+        if legacy.exists() && !canonical.exists() {
+            fs::rename(&legacy, &canonical)?;
         }
     }
+    Ok(())
+}
 
-    async fn ensure_recall_index(
-        &self,
-        vault_dir: &Path,
-        source_hash: &str,
-        cache_state: Option<&ZvecIndexCacheState>,
-        incremental_ingest_completed: bool,
-    ) -> anyhow::Result<RecallIndexEnsureReport> {
-        match self {
-            Self::Sqlite(_) => Ok(RecallIndexEnsureReport {
-                action: "sqlite-noop",
-                record_count: None,
-                metrics: BTreeMap::new(),
-            }),
-            Self::ZvecHybrid(store) => {
-                let Some(cache_state) = cache_state else {
-                    let record_count = store.rebuild_index().await?;
-                    return Ok(RecallIndexEnsureReport {
-                        action: "rebuild-no-cache-state",
-                        record_count: Some(record_count),
-                        metrics: BTreeMap::new(),
-                    });
-                };
-                if cache_state.valid {
-                    return Ok(RecallIndexEnsureReport {
-                        action: if cache_state.trusted_manifest {
-                            "manifest-trusted"
-                        } else {
-                            "manifest-validated"
-                        },
-                        record_count: None,
-                        metrics: BTreeMap::new(),
-                    });
-                }
-                let mut metrics = BTreeMap::new();
-                if incremental_ingest_completed {
-                    if zvec_flush_before_recall() {
-                        let step_started = Instant::now();
-                        let store_for_flush = store.clone();
-                        tokio::task::spawn_blocking(move || store_for_flush.index().flush())
-                            .await??;
-                        insert_elapsed_ms(
-                            &mut metrics,
-                            "recall_index_flush_ms",
-                            step_started.elapsed(),
-                        );
-                        let step_started = Instant::now();
-                        let store_for_count = store.clone();
-                        let record_count = tokio::task::spawn_blocking(move || {
-                            store_for_count.index().doc_count()
-                        })
-                        .await??;
-                        insert_elapsed_ms(
-                            &mut metrics,
-                            "recall_index_doc_count_ms",
-                            step_started.elapsed(),
-                        );
-                        if record_count == 0 {
-                            anyhow::bail!(
-                                "zvec-hybrid incremental ingest completed but produced an empty index"
-                            );
-                        }
-                        let step_started = Instant::now();
-                        let sqlite_sha256 = sha256_file(&vault_dir.join("memory.sqlite"))?;
-                        insert_elapsed_ms(
-                            &mut metrics,
-                            "recall_index_sqlite_sha256_ms",
-                            step_started.elapsed(),
-                        );
-                        let step_started = Instant::now();
-                        write_zvec_index_manifest(
-                            vault_dir,
-                            &ZvecIndexManifest {
-                                schema_version: ZVEC_INDEX_MANIFEST_SCHEMA_VERSION,
-                                backend: "zvec-hybrid".to_string(),
-                                source_hash: source_hash.to_string(),
-                                sqlite_sha256,
-                                dimensions: store.index().dimensions(),
-                                record_count,
-                                built_at: Utc::now(),
-                            },
-                        )?;
-                        insert_elapsed_ms(
-                            &mut metrics,
-                            "recall_index_manifest_write_ms",
-                            step_started.elapsed(),
-                        );
-                        return Ok(RecallIndexEnsureReport {
-                            action: "incremental-flush",
-                            record_count: Some(record_count),
-                            metrics,
-                        });
-                    }
-                    let step_started = Instant::now();
-                    let store_for_count = store.clone();
-                    let record_count =
-                        tokio::task::spawn_blocking(move || store_for_count.index().doc_count())
-                            .await??;
-                    insert_elapsed_ms(
-                        &mut metrics,
-                        "recall_index_doc_count_ms",
-                        step_started.elapsed(),
-                    );
-                    if record_count == 0 {
-                        metrics.insert(
-                            "recall_index_doc_count_zero_before_flush".to_string(),
-                            serde_json::json!(true),
-                        );
-                    }
-                    return Ok(RecallIndexEnsureReport {
-                        action: "incremental-live",
-                        record_count: Some(record_count),
-                        metrics,
-                    });
-                }
-                let step_started = Instant::now();
-                let record_count = store.rebuild_index().await?;
-                insert_elapsed_ms(
-                    &mut metrics,
-                    "recall_index_rebuild_ms",
-                    step_started.elapsed(),
-                );
-                let step_started = Instant::now();
-                let store_for_flush = store.clone();
-                tokio::task::spawn_blocking(move || store_for_flush.index().flush()).await??;
-                insert_elapsed_ms(
-                    &mut metrics,
-                    "recall_index_flush_ms",
-                    step_started.elapsed(),
-                );
-                let step_started = Instant::now();
-                let sqlite_sha256 = sha256_file(&vault_dir.join("memory.sqlite"))?;
-                insert_elapsed_ms(
-                    &mut metrics,
-                    "recall_index_sqlite_sha256_ms",
-                    step_started.elapsed(),
-                );
-                let step_started = Instant::now();
-                write_zvec_index_manifest(
-                    vault_dir,
-                    &ZvecIndexManifest {
-                        schema_version: ZVEC_INDEX_MANIFEST_SCHEMA_VERSION,
-                        backend: "zvec-hybrid".to_string(),
-                        source_hash: source_hash.to_string(),
-                        sqlite_sha256,
-                        dimensions: store.index().dimensions(),
-                        record_count,
-                        built_at: Utc::now(),
-                    },
-                )?;
-                insert_elapsed_ms(
-                    &mut metrics,
-                    "recall_index_manifest_write_ms",
-                    step_started.elapsed(),
-                );
-                Ok(RecallIndexEnsureReport {
-                    action: "rebuild",
-                    record_count: Some(record_count),
-                    metrics,
-                })
-            }
-        }
+/// Open the vault at `vault_dir` through the kit's vault facade — canonical
+/// layout only (legacy names are renamed in place first, see
+/// [`migrate_legacy_vault_layout`]). Backend selection flows through the kit
+/// profile: the run's `.store-zvec` marker label maps onto `storage.backend`
+/// (same "anything but zvec-hybrid means sqlite" wildcard the old match had)
+/// and the embedder's dimensions onto `storage.vector_dimensions`, exactly
+/// as before.
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn open_store_with_metrics_blocking(
+    vault_dir: &Path,
+    backend: &str,
+    dimensions: usize,
+) -> anyhow::Result<(BenchMemoryStore, BTreeMap<String, serde_json::Value>)> {
+    migrate_legacy_vault_layout(vault_dir)?;
+    let mut profile = kit_config().clone();
+    profile.storage.backend = match backend {
+        "zvec-hybrid" => "zvec-hybrid",
+        _ => "sqlite",
     }
+    .to_string();
+    profile.storage.vector_dimensions = dimensions;
+    let (vault, report) = symbiotic_memory::Vault::open_with_report(vault_dir, &profile)?;
+    let mut metrics = BTreeMap::new();
+    if let Some(report) = report.zvec {
+        metrics.insert(
+            "store_sqlite_open_ms".to_string(),
+            serde_json::json!(report.sqlite_open_ms),
+        );
+        metrics.insert(
+            "store_zvec_total_ms".to_string(),
+            serde_json::json!(report.zvec_total_ms),
+        );
+        metrics.insert(
+            "store_zvec_init_ms".to_string(),
+            serde_json::json!(report.zvec_init_ms),
+        );
+        metrics.insert(
+            "store_zvec_collection_open_ms".to_string(),
+            serde_json::json!(report.collection_open_ms),
+        );
+        metrics.insert(
+            "store_zvec_schema_ms".to_string(),
+            serde_json::json!(report.schema_ms),
+        );
+        metrics.insert(
+            "store_zvec_collection_create_ms".to_string(),
+            serde_json::json!(report.collection_create_ms),
+        );
+        metrics.insert(
+            "store_zvec_collection_created".to_string(),
+            serde_json::json!(report.collection_created),
+        );
+    }
+    Ok((vault.store(), metrics))
+}
+
+/// Make sure the persisted vector recall index is usable before recall runs,
+/// through the facade's backend-neutral maintenance surface — on a backend
+/// with no vector index this is a no-op, otherwise the cached index is
+/// trusted, flushed, or rebuilt exactly as before.
+#[cfg(feature = "symbiotic-memory-adapter")]
+async fn ensure_recall_index(
+    store: &BenchMemoryStore,
+    vault_dir: &Path,
+    source_hash: &str,
+    cache_state: Option<&ZvecIndexCacheState>,
+    incremental_ingest_completed: bool,
+) -> anyhow::Result<RecallIndexEnsureReport> {
+    if !store.has_vector_recall_index() {
+        return Ok(RecallIndexEnsureReport {
+            action: "sqlite-noop",
+            record_count: None,
+            metrics: BTreeMap::new(),
+        });
+    }
+    let Some(cache_state) = cache_state else {
+        let record_count = store.rebuild_recall_index().await?.unwrap_or(0);
+        return Ok(RecallIndexEnsureReport {
+            action: "rebuild-no-cache-state",
+            record_count: Some(record_count),
+            metrics: BTreeMap::new(),
+        });
+    };
+    if cache_state.valid {
+        return Ok(RecallIndexEnsureReport {
+            action: if cache_state.trusted_manifest {
+                "manifest-trusted"
+            } else {
+                "manifest-validated"
+            },
+            record_count: None,
+            metrics: BTreeMap::new(),
+        });
+    }
+    let mut metrics = BTreeMap::new();
+    if incremental_ingest_completed {
+        if zvec_flush_before_recall() {
+            let step_started = Instant::now();
+            let store_for_flush = store.clone();
+            tokio::task::spawn_blocking(move || store_for_flush.flush_recall_index()).await??;
+            insert_elapsed_ms(&mut metrics, "recall_index_flush_ms", step_started.elapsed());
+            let step_started = Instant::now();
+            let store_for_count = store.clone();
+            let record_count =
+                tokio::task::spawn_blocking(move || store_for_count.recall_index_doc_count())
+                    .await??
+                    .unwrap_or(0);
+            insert_elapsed_ms(
+                &mut metrics,
+                "recall_index_doc_count_ms",
+                step_started.elapsed(),
+            );
+            if record_count == 0 {
+                anyhow::bail!(
+                    "zvec-hybrid incremental ingest completed but produced an empty index"
+                );
+            }
+            let step_started = Instant::now();
+            let sqlite_sha256 = sha256_file(&vault_dir.join(symbiotic_memory::vault::VAULT_DB_FILE))?;
+            insert_elapsed_ms(
+                &mut metrics,
+                "recall_index_sqlite_sha256_ms",
+                step_started.elapsed(),
+            );
+            let step_started = Instant::now();
+            write_zvec_index_manifest(
+                vault_dir,
+                &ZvecIndexManifest {
+                    schema_version: ZVEC_INDEX_MANIFEST_SCHEMA_VERSION,
+                    backend: "zvec-hybrid".to_string(),
+                    source_hash: source_hash.to_string(),
+                    sqlite_sha256,
+                    dimensions: store.recall_index_dimensions().unwrap_or(0),
+                    record_count,
+                    built_at: Utc::now(),
+                },
+            )?;
+            insert_elapsed_ms(
+                &mut metrics,
+                "recall_index_manifest_write_ms",
+                step_started.elapsed(),
+            );
+            return Ok(RecallIndexEnsureReport {
+                action: "incremental-flush",
+                record_count: Some(record_count),
+                metrics,
+            });
+        }
+        let step_started = Instant::now();
+        let store_for_count = store.clone();
+        let record_count =
+            tokio::task::spawn_blocking(move || store_for_count.recall_index_doc_count())
+                .await??
+                .unwrap_or(0);
+        insert_elapsed_ms(
+            &mut metrics,
+            "recall_index_doc_count_ms",
+            step_started.elapsed(),
+        );
+        if record_count == 0 {
+            metrics.insert(
+                "recall_index_doc_count_zero_before_flush".to_string(),
+                serde_json::json!(true),
+            );
+        }
+        return Ok(RecallIndexEnsureReport {
+            action: "incremental-live",
+            record_count: Some(record_count),
+            metrics,
+        });
+    }
+    let step_started = Instant::now();
+    let record_count = store.rebuild_recall_index().await?.unwrap_or(0);
+    insert_elapsed_ms(
+        &mut metrics,
+        "recall_index_rebuild_ms",
+        step_started.elapsed(),
+    );
+    let step_started = Instant::now();
+    let store_for_flush = store.clone();
+    tokio::task::spawn_blocking(move || store_for_flush.flush_recall_index()).await??;
+    insert_elapsed_ms(&mut metrics, "recall_index_flush_ms", step_started.elapsed());
+    let step_started = Instant::now();
+    let sqlite_sha256 = sha256_file(&vault_dir.join(symbiotic_memory::vault::VAULT_DB_FILE))?;
+    insert_elapsed_ms(
+        &mut metrics,
+        "recall_index_sqlite_sha256_ms",
+        step_started.elapsed(),
+    );
+    let step_started = Instant::now();
+    write_zvec_index_manifest(
+        vault_dir,
+        &ZvecIndexManifest {
+            schema_version: ZVEC_INDEX_MANIFEST_SCHEMA_VERSION,
+            backend: "zvec-hybrid".to_string(),
+            source_hash: source_hash.to_string(),
+            sqlite_sha256,
+            dimensions: store.recall_index_dimensions().unwrap_or(0),
+            record_count,
+            built_at: Utc::now(),
+        },
+    )?;
+    insert_elapsed_ms(
+        &mut metrics,
+        "recall_index_manifest_write_ms",
+        step_started.elapsed(),
+    );
+    Ok(RecallIndexEnsureReport {
+        action: "rebuild",
+        record_count: Some(record_count),
+        metrics,
+    })
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
@@ -1126,7 +1144,7 @@ const ZVEC_INDEX_MANIFEST_SCHEMA_VERSION: u32 = 1;
 
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn zvec_index_dir(vault_dir: &Path) -> PathBuf {
-    vault_dir.join("zvec-hybrid")
+    vault_dir.join(symbiotic_memory::vault::VAULT_INDEX_DIR)
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
@@ -1160,7 +1178,7 @@ fn prepare_zvec_index_cache(
         });
     }
 
-    let sqlite_path = vault_dir.join("memory.sqlite");
+    let sqlite_path = vault_dir.join(symbiotic_memory::vault::VAULT_DB_FILE);
     let sqlite_sha256 = if sqlite_path.is_file() {
         Some(sha256_file(&sqlite_path)?)
     } else {
@@ -1339,161 +1357,6 @@ fn insert_elapsed_ms(
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
-#[async_trait::async_trait]
-impl MemoryStore for BenchMemoryStore {
-    async fn upsert_receipt(
-        &self,
-        receipt: symbiotic_memory::types::RawArchiveReceipt,
-    ) -> Result<(), symbiotic_memory::storage::StoreError> {
-        match self {
-            Self::Sqlite(store) => store.upsert_receipt(receipt).await,
-            Self::ZvecHybrid(store) => store.upsert_receipt(receipt).await,
-        }
-    }
-
-    async fn upsert_turns(
-        &self,
-        turns: Vec<SourceTurn>,
-        embeddings: Vec<Vec<f32>>,
-    ) -> Result<(), symbiotic_memory::storage::StoreError> {
-        match self {
-            Self::Sqlite(store) => store.upsert_turns(turns, embeddings).await,
-            Self::ZvecHybrid(store) => store.upsert_turns(turns, embeddings).await,
-        }
-    }
-
-    async fn upsert_facts(
-        &self,
-        facts: Vec<symbiotic_memory::types::MemoryFact>,
-        embeddings: Vec<Vec<f32>>,
-    ) -> Result<(), symbiotic_memory::storage::StoreError> {
-        match self {
-            Self::Sqlite(store) => store.upsert_facts(facts, embeddings).await,
-            Self::ZvecHybrid(store) => store.upsert_facts(facts, embeddings).await,
-        }
-    }
-
-    async fn receipts(
-        &self,
-    ) -> Result<
-        Vec<symbiotic_memory::types::RawArchiveReceipt>,
-        symbiotic_memory::storage::StoreError,
-    > {
-        match self {
-            Self::Sqlite(store) => store.receipts().await,
-            Self::ZvecHybrid(store) => store.receipts().await,
-        }
-    }
-
-    async fn active_facts(
-        &self,
-    ) -> Result<Vec<symbiotic_memory::types::MemoryFact>, symbiotic_memory::storage::StoreError>
-    {
-        match self {
-            Self::Sqlite(store) => store.active_facts().await,
-            Self::ZvecHybrid(store) => store.active_facts().await,
-        }
-    }
-
-    async fn active_base_facts(
-        &self,
-    ) -> Result<Vec<symbiotic_memory::types::MemoryFact>, symbiotic_memory::storage::StoreError>
-    {
-        match self {
-            Self::Sqlite(store) => store.active_base_facts().await,
-            Self::ZvecHybrid(store) => store.active_base_facts().await,
-        }
-    }
-
-    async fn clear_briefs(&self) -> Result<u64, symbiotic_memory::storage::StoreError> {
-        match self {
-            Self::Sqlite(store) => store.clear_briefs().await,
-            Self::ZvecHybrid(store) => store.clear_briefs().await,
-        }
-    }
-
-    async fn active_briefs(
-        &self,
-    ) -> Result<Vec<symbiotic_memory::MemoryFact>, symbiotic_memory::storage::StoreError> {
-        match self {
-            Self::Sqlite(store) => store.active_briefs().await,
-            Self::ZvecHybrid(store) => store.active_briefs().await,
-        }
-    }
-
-    async fn delete_briefs_by_memory_ids(
-        &self,
-        ids: &[String],
-    ) -> Result<u64, symbiotic_memory::storage::StoreError> {
-        match self {
-            Self::Sqlite(store) => store.delete_briefs_by_memory_ids(ids).await,
-            Self::ZvecHybrid(store) => store.delete_briefs_by_memory_ids(ids).await,
-        }
-    }
-
-    async fn turns(&self) -> Result<Vec<SourceTurn>, symbiotic_memory::storage::StoreError> {
-        match self {
-            Self::Sqlite(store) => store.turns().await,
-            Self::ZvecHybrid(store) => store.turns().await,
-        }
-    }
-
-    async fn fact_search(
-        &self,
-        query_embedding: &[f32],
-        query: &str,
-        top_k: usize,
-    ) -> Result<Vec<FactEvidence>, symbiotic_memory::storage::StoreError> {
-        match self {
-            Self::Sqlite(store) => store.fact_search(query_embedding, query, top_k).await,
-            Self::ZvecHybrid(store) => store.fact_search(query_embedding, query, top_k).await,
-        }
-    }
-
-    async fn raw_turn_search(
-        &self,
-        query_embedding: &[f32],
-        query: &str,
-        top_k: usize,
-    ) -> Result<Vec<RawTurnEvidence>, symbiotic_memory::storage::StoreError> {
-        match self {
-            Self::Sqlite(store) => store.raw_turn_search(query_embedding, query, top_k).await,
-            Self::ZvecHybrid(store) => store.raw_turn_search(query_embedding, query, top_k).await,
-        }
-    }
-
-    async fn get_turns_by_turn_ids(
-        &self,
-        ids: &[String],
-    ) -> Result<Vec<RawTurnEvidence>, symbiotic_memory::storage::StoreError> {
-        match self {
-            Self::Sqlite(store) => store.get_turns_by_turn_ids(ids).await,
-            Self::ZvecHybrid(store) => store.get_turns_by_turn_ids(ids).await,
-        }
-    }
-
-    async fn get_facts_by_source_turn_ids(
-        &self,
-        turn_ids: &[String],
-    ) -> Result<Vec<FactEvidence>, symbiotic_memory::storage::StoreError> {
-        match self {
-            Self::Sqlite(store) => store.get_facts_by_source_turn_ids(turn_ids).await,
-            Self::ZvecHybrid(store) => store.get_facts_by_source_turn_ids(turn_ids).await,
-        }
-    }
-
-    async fn get_facts_by_memory_ids(
-        &self,
-        ids: &[String],
-    ) -> Result<Vec<FactEvidence>, symbiotic_memory::storage::StoreError> {
-        match self {
-            Self::Sqlite(store) => store.get_facts_by_memory_ids(ids).await,
-            Self::ZvecHybrid(store) => store.get_facts_by_memory_ids(ids).await,
-        }
-    }
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
 fn store_backend_label(run_root: &Path) -> &'static str {
     let marker = run_root.join(".store-zvec");
     if !marker.exists() {
@@ -1536,7 +1399,7 @@ fn spawn_workflow_heartbeat(
 /// Apply the kit's deterministic supersession-detection pass over an answer-only vault BEFORE
 /// answering: same-subject / same-attribute / different-value active base-fact pairs with strictly
 /// ordered dates get the older side stamped `Superseded`, exactly as slot-key supersession would
-/// have. Persists through the store (memory.sqlite + recall index via `upsert_facts`) AND the
+/// have. Persists through the store (ledger + recall index via `upsert_facts`) AND the
 /// vault archive (canonical Markdown), so the arm's vaults must be real copies. Logs every flagged
 /// pair (with content snippets, for false-positive review) into the run log and records the
 /// per-vault counts as a `supersession_detection` adapter stage in the memory trace.
@@ -1694,6 +1557,11 @@ where
     let vault_dir = run_root.join("vaults").join(&row.question_id);
     let step_started = Instant::now();
     fs::create_dir_all(&vault_dir)?;
+    // Converge any pre-facade vault to the canonical layout BEFORE the index
+    // cache is validated below — the rename keeps bytes (and thus the cached
+    // manifest's sqlite sha) intact, so a migrated golden vault still hits
+    // the trusted-manifest fast path instead of a full index rebuild.
+    migrate_legacy_vault_layout(&vault_dir)?;
     insert_elapsed_ms(
         &mut setup_metrics,
         "create_vault_dir_ms",
@@ -1776,7 +1644,7 @@ where
     );
 
     let step_started = Instant::now();
-    let (store, store_open_metrics) = BenchMemoryStore::open_with_metrics(
+    let (store, store_open_metrics) = open_store_with_metrics(
         vault_dir.clone(),
         store_backend.to_string(),
         dimensions,
@@ -2108,14 +1976,14 @@ where
     // the linked-vault prep deleted the zvec dir; the full rebuild is robust and is the whole point
     // of an index-only redo.
     let ensure_index_incremental = incremental_ingest_completed && redo_stage() != Some("index");
-    let recall_index_report = store
-        .ensure_recall_index(
-            &vault_dir,
-            &source_hash,
-            zvec_cache_state.as_ref(),
-            ensure_index_incremental,
-        )
-        .await?;
+    let recall_index_report = ensure_recall_index(
+        &store,
+        &vault_dir,
+        &source_hash,
+        zvec_cache_state.as_ref(),
+        ensure_index_incremental,
+    )
+    .await?;
     insert_elapsed_ms(
         &mut pre_recall_metrics,
         "ensure_recall_index_ms",
@@ -2368,8 +2236,6 @@ where
     D: Distiller,
     C: ChatProvider,
 {
-    use symbiotic_memory::storage::sqlite::SqliteStore;
-
     if let Some(parent) = out_path.as_ref().parent() {
         fs::create_dir_all(parent)?;
     }
@@ -2400,7 +2266,14 @@ where
         );
         let vault_dir = run_root.as_ref().join("vaults").join(&row.question_id);
         fs::create_dir_all(&vault_dir)?;
-        let store = SqliteStore::open(vault_dir.join("memory.sqlite"))?;
+        // This legacy sequential path is sqlite-pinned by name; the pin now
+        // flows through the profile instead of a concrete store type.
+        let (store, _) = open_store_with_metrics(
+            vault_dir.clone(),
+            "sqlite".to_string(),
+            embedder_factory().dimensions(),
+        )
+        .await?;
         let existing_turns = store.turns().await?;
         let existing_facts = store.active_facts().await?;
         if existing_turns.is_empty() {
@@ -3291,6 +3164,16 @@ mod tests {
     #[cfg(feature = "symbiotic-memory-adapter")]
     use symbiotic_memory::types::{MemoryFact, RawArchiveReceipt};
 
+    /// Read-side handle onto a test vault's sqlite ledger, opened through
+    /// the vault facade — tests don't name backends either.
+    #[cfg(feature = "symbiotic-memory-adapter")]
+    async fn open_vault_ledger(vault_dir: &Path) -> BenchMemoryStore {
+        open_store_with_metrics(vault_dir.to_path_buf(), "sqlite".to_string(), 3)
+            .await
+            .unwrap()
+            .0
+    }
+
     #[cfg(feature = "symbiotic-memory-adapter")]
     #[test]
     fn checked_in_symbiotic_memory_profiles_load_from_benchmark_repo() {
@@ -3482,11 +3365,13 @@ mod tests {
             question: "Where did I buy the racket?".to_string(),
             question_date: Some("2023/01/02 (Mon) 00:00".to_string()),
             answer: None,
+            answer_session_ids: Vec::new(),
             haystack_dates: vec!["2023/01/01 (Sun) 00:00".to_string()],
             haystack_session_ids: vec!["s1".to_string()],
             haystack_sessions: vec![vec![LongMemEvalMessage {
                 role: "user".to_string(),
                 content: "I bought the racket downtown.".to_string(),
+                has_answer: false,
             }]],
         };
         let mut off = symbiotic_memory::config::RecallPolicy::default();
@@ -3516,11 +3401,13 @@ mod tests {
             question: "Where did I buy the racket?".to_string(),
             question_date: Some("2023/01/02 (Mon) 00:00".to_string()),
             answer: None,
+            answer_session_ids: Vec::new(),
             haystack_dates: vec!["2023/01/01 (Sun) 00:00".to_string()],
             haystack_session_ids: vec!["s1".to_string()],
             haystack_sessions: vec![vec![LongMemEvalMessage {
                 role: "user".to_string(),
                 content: "I bought the racket downtown.".to_string(),
+                has_answer: false,
             }]],
         };
         let mut raw40 = symbiotic_memory::config::RecallPolicy::default();
@@ -3542,6 +3429,7 @@ mod tests {
             question_type: None,
             question: "What did I buy?".to_string(),
             answer: None,
+            answer_session_ids: Vec::new(),
             question_date: None,
             haystack_dates: Vec::new(),
             haystack_session_ids: Vec::new(),
@@ -3570,6 +3458,7 @@ mod tests {
             question_type: None,
             question: "What did I buy?".to_string(),
             answer: None,
+            answer_session_ids: Vec::new(),
             question_date: None,
             haystack_dates: Vec::new(),
             haystack_session_ids: Vec::new(),
@@ -3693,11 +3582,13 @@ mod tests {
                 question: format!("What did I say in item {idx}?"),
                 question_date: Some("2023/01/02 (Mon) 00:00".to_string()),
                 answer: Some(serde_json::json!(format!("item {idx}"))),
+                answer_session_ids: Vec::new(),
                 haystack_dates: vec!["2023/01/01 (Sun) 00:00".to_string()],
                 haystack_session_ids: vec![format!("s{idx}")],
                 haystack_sessions: vec![vec![LongMemEvalMessage {
                     role: "user".to_string(),
                     content: format!("I mentioned item {idx}."),
+                    has_answer: false,
                 }]],
             })
             .collect::<Vec<_>>();
@@ -3722,6 +3613,7 @@ mod tests {
             || DisabledChatProvider,
             None,
             None,
+            RerankCascade::default(),
             None,
             None,
             policy,
@@ -3830,7 +3722,6 @@ mod tests {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         use symbiotic_memory::config::RecallPolicy;
         use symbiotic_memory::providers::DisabledChatProvider;
-        use symbiotic_memory::storage::sqlite::SqliteStore;
 
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("hyps.jsonl");
@@ -3840,11 +3731,13 @@ mod tests {
             question: "How many pens did I buy?".to_string(),
             question_date: Some("2023/01/02 (Mon) 00:00".to_string()),
             answer: Some(serde_json::json!(4)),
+            answer_session_ids: Vec::new(),
             haystack_dates: vec!["2023/01/01 (Sun) 00:00".to_string()],
             haystack_session_ids: vec!["s1".to_string()],
             haystack_sessions: vec![vec![LongMemEvalMessage {
                 role: "user".to_string(),
                 content: "I bought 4 pens.".to_string(),
+                has_answer: false,
             }]],
         };
         let mut policy = RecallPolicy::default();
@@ -3894,8 +3787,8 @@ mod tests {
         assert!(manifest.stage_succeeded(MemoryStage::WriteArchive));
         assert!(!manifest.stage_succeeded(MemoryStage::EmbedFacts));
         assert_eq!(
-            SqliteStore::open(vault_dir.join("memory.sqlite"))
-                .unwrap()
+            open_vault_ledger(&vault_dir)
+                .await
                 .active_facts()
                 .await
                 .unwrap()
@@ -3939,8 +3832,8 @@ mod tests {
         assert!(manifest.stage_succeeded(MemoryStage::EmbedFacts));
         assert!(manifest.stage_succeeded(MemoryStage::Index));
         assert_eq!(
-            SqliteStore::open(vault_dir.join("memory.sqlite"))
-                .unwrap()
+            open_vault_ledger(&vault_dir)
+                .await
                 .active_facts()
                 .await
                 .unwrap()
@@ -3955,7 +3848,6 @@ mod tests {
         use symbiotic_memory::config::RecallPolicy;
         use symbiotic_memory::ingest::PassthroughDistiller;
         use symbiotic_memory::providers::{DisabledChatProvider, HashEmbeddingProvider};
-        use symbiotic_memory::storage::sqlite::SqliteStore;
 
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("hyps.jsonl");
@@ -3965,16 +3857,19 @@ mod tests {
             question: "How many pens did I buy?".to_string(),
             question_date: Some("2023/01/02 (Mon) 00:00".to_string()),
             answer: Some(serde_json::json!(4)),
+            answer_session_ids: Vec::new(),
             haystack_dates: vec!["2023/01/01 (Sun) 00:00".to_string()],
             haystack_session_ids: vec!["s1".to_string()],
             haystack_sessions: vec![vec![
                 LongMemEvalMessage {
                     role: "user".to_string(),
                     content: "I bought 4 pens.".to_string(),
+                    has_answer: false,
                 },
                 LongMemEvalMessage {
                     role: "assistant".to_string(),
                     content: "Great.".to_string(),
+                    has_answer: false,
                 },
             ]],
         };
@@ -4004,7 +3899,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(manifest.stage_succeeded(MemoryStage::WriteArchive));
-        let store = SqliteStore::open(vault_dir.join("memory.sqlite")).unwrap();
+        let store = open_vault_ledger(&vault_dir).await;
         let fact_count = store.active_facts().await.unwrap().len();
         let archive_count = std::fs::read_dir(vault_dir.join("archive").join("memories"))
             .unwrap()
@@ -4052,11 +3947,13 @@ mod tests {
             question: "How many pens did I buy?".to_string(),
             question_date: Some("2023/01/02 (Mon) 00:00".to_string()),
             answer: Some(serde_json::json!(4)),
+            answer_session_ids: Vec::new(),
             haystack_dates: vec!["2023/01/01 (Sun) 00:00".to_string()],
             haystack_session_ids: vec!["s1".to_string()],
             haystack_sessions: vec![vec![LongMemEvalMessage {
                 role: "user".to_string(),
                 content: "I bought 4 pens.".to_string(),
+                has_answer: false,
             }]],
         };
         let mut policy = RecallPolicy::default();
@@ -4129,7 +4026,6 @@ mod tests {
         use symbiotic_memory::config::RecallPolicy;
         use symbiotic_memory::ingest::PassthroughDistiller;
         use symbiotic_memory::providers::{DisabledChatProvider, HashEmbeddingProvider};
-        use symbiotic_memory::storage::sqlite::SqliteStore;
 
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("hyps.jsonl");
@@ -4139,11 +4035,13 @@ mod tests {
             question: "Where did I get the tennis racket?".to_string(),
             question_date: None,
             answer: Some(serde_json::json!("the sports store downtown")),
+            answer_session_ids: Vec::new(),
             haystack_dates: vec!["2023/01/01 (Sun) 00:00".to_string()],
             haystack_session_ids: vec!["s1".to_string()],
             haystack_sessions: vec![vec![LongMemEvalMessage {
                 role: "user".to_string(),
                 content: "I bought a tennis racket from the sports store downtown.".to_string(),
+                has_answer: false,
             }]],
         };
         let mut policy = RecallPolicy::default();
@@ -4176,8 +4074,8 @@ mod tests {
             manifest.stages[&MemoryStage::Consolidate].metrics["brief_count"],
             serde_json::json!(1)
         );
-        let active = SqliteStore::open(vault_dir.join("memory.sqlite"))
-            .unwrap()
+        let active = open_vault_ledger(&vault_dir)
+            .await
             .active_facts()
             .await
             .unwrap();
