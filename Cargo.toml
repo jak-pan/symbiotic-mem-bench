@@ -33,7 +33,7 @@ clap = { version = "4", features = ["derive"] }
 # Path dep per the standing "path deps until v1" policy — the baseline bench
 # must measure the LOCAL kit (Stage 2.6 access layer), not a GitHub pin.
 symbiotic-memory-config = { path = "../symbiotic-memory/config", optional = true }
-symbiotic-memory = { path = "../symbiotic-memory", default-features = false, features = ["sqlite", "http", "cli", "zvec"], optional = true }
+symbiotic-memory = { path = "../symbiotic-memory", default-features = false, features = ["http", "cli"], optional = true }
 async-trait = { version = "0.1", optional = true }
 futures = { version = "0.3", optional = true }
 hex = { version = "0.4", optional = true }

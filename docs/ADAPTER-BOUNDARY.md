@@ -32,19 +32,17 @@ Not allowed, with history:
   `SqliteStore | ZvecHybridIndexedSqliteStore` (removed; it holds the
   opaque `VaultStore`).
 
-## Known remaining debt (dies with the hybrid backend)
+## Known remaining debt (dies with the hybrid backend) — PAID 2026-07-07
 
 The index-cache logic (`ensure_recall_index`, the per-vault index manifest
-with the ledger sha) still *reasons about* a ledger/vector-index split even
-though it now speaks through backend-neutral facade calls
-(`has_vector_recall_index`, `rebuild_recall_index`, …). That concept is
-hybrid-specific: after the §12 phase A parity gate, the zvec single store
-has no ledger/index split — the collection IS the store — and consistency
-on open becomes the kit's own job. Plan: when `auto` flips to the zvec
-backend, delete the bench's cache-trust logic AND ask the kit to drop the
-maintenance surface with it. Per ROBUST-PLANE §12 step 3, do not invest in
-interim improvements to this logic — it is throwaway code on a dying
-backend.
+with the ledger sha) was DELETED in the §12 step-3 cutover, together with
+the kit's maintenance surface it spoke through: the sqlite and zvec-hybrid
+backends no longer exist, the collections ARE the store, and consistency on
+open is the kit's own job (retire journal + reconcile). `--store` accepts
+`zvec` (default) and `memory`; stale run markers naming a deleted backend
+refuse loudly. Vault staging copies every `*.zvec` collection directory —
+never symlinks them (the engine takes exclusive per-collection locks and may
+write on open) — and links only the read-only L0 archive.
 
 ## Redesign target (multi-system, multi-benchmark)
 

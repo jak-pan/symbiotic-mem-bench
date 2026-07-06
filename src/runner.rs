@@ -139,7 +139,7 @@ impl SymemRunPlan {
                 args.push("--embedder".to_string());
                 args.push(self.embedder.clone());
             }
-            if self.store != "zvec-hybrid" {
+            if self.store != "zvec" {
                 args.push("--store".to_string());
                 args.push(self.store.clone());
             }
@@ -480,10 +480,10 @@ pub fn symem_param_schema() -> Vec<ParamField> {
             "store",
             "Store",
             "enum",
-            json!("sqlite"),
-            &["sqlite"],
+            json!("zvec"),
+            &["zvec"],
             "Memory",
-            "Vector/state store.",
+            "Vector/state store (the kit's singular zvec store).",
             false,
         ),
         field(
@@ -646,7 +646,7 @@ pub fn plan_from_params(params: &Value, repo_root: &Path) -> SymemRunPlan {
         smoke: bool_field("smoke", false),
         distiller: str_field("distiller", "llm"),
         embedder: str_field("embedder", "gemini"),
-        store: str_field("store", "zvec-hybrid"),
+        store: str_field("store", "zvec"),
         prompt_dir: opt_path("prompt_dir"),
         distill_prompt: str_field("distill_prompt", "distill"),
         answerer: bool_field("answerer", true),
@@ -697,7 +697,7 @@ mod tests {
             sample: "stratified".to_string(),
             distiller: "heuristic".to_string(),
             embedder: "hash".to_string(),
-            store: "zvec-hybrid".to_string(),
+            store: "zvec".to_string(),
             prompt_dir: None,
             distill_prompt: "distill".to_string(),
             answerer: true,
