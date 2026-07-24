@@ -11,6 +11,7 @@ pub mod cost;
 pub mod jsonutil;
 pub mod leaderboard;
 pub mod live;
+pub mod proto;
 pub mod registry;
 pub mod runner;
 pub mod step_analytics;

@@ -29,4 +29,27 @@ fn main() {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=GIT_SHA={sha}");
+
+    compile_contract_protos();
+}
+
+/// Compiles the bench-owned contract schemas (proto/CONTRACTS.md) into
+/// `membench::proto::*` via prost. protoc comes from protoc-bin-vendored so a
+/// clean clone needs no system protobuf install.
+fn compile_contract_protos() {
+    let protoc = protoc_bin_vendored::protoc_bin_path().expect("vendored protoc");
+    // SAFETY: build scripts are single-threaded at this point and no reader of
+    // PROTOC runs concurrently; prost-build reads it when spawning protoc below.
+    unsafe { std::env::set_var("PROTOC", protoc) };
+    let files = [
+        "proto/membench/trace/v1/trace.proto",
+        "proto/membench/manifest/v1/manifest.proto",
+        "proto/membench/scorecard/v1/scorecard.proto",
+    ];
+    for file in files {
+        println!("cargo:rerun-if-changed={file}");
+    }
+    prost_build::Config::new()
+        .compile_protos(&files, &["proto"])
+        .expect("contract proto compilation failed");
 }

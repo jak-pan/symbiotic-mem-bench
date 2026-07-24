@@ -64,13 +64,17 @@ second capability dialect). membench is declared THE referee in both trees.
   census was scored on both sides of a change without exposing its items; the frozen hard set is
   never a tuning input.
 
-## Build wiring is deliberately NOT done
+## Build wiring (done)
 
-`build.rs`, `Cargo.toml`, `src/`, and the existing `proto/membench/dashboard/v1/` are owned by
-the in-flight **pb-migration** work in the working tree and were left untouched. These three files
-are validated against `protoc` directly but are **not** yet wired into the prost build — that
-integration belongs to the pb-migration owner, who decides how the generated types relate to the
-current `membench.dashboard.v1` view-mirror.
+`build.rs` compiles the three contract files into `membench::proto::{trace,manifest,scorecard}::v1`
+via `prost-build`, with `protoc` supplied by `protoc-bin-vendored` so a clean clone needs no system
+protobuf install. Generated code is NOT committed; the Rust build regenerates it on every build, so
+the `.proto` files are the single source of truth. Round-trip tests live in `src/proto.rs`.
+
+The pre-existing `membench/dashboard/v1/debugger.proto` was deleted in the OSS triage: it was the
+stringly view-mirror for the abandoned pb-migration, nothing in the repo consumed it (the server
+serves plain JSON), and the bake-in note marks it superseded by the envelope. It remains in git
+history (`git log -- proto/membench/dashboard`) if the migration is ever revived.
 
 ## Judgment calls made while authoring
 
