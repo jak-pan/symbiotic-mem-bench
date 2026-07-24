@@ -54,25 +54,15 @@
     return typeof v === "number" ? v : null;
   }
 
-  // Cross-run comparison: the named reference runs to line up beside the
-  // selected one. Resolved name → run_id against the registry, then each run's
-  // gold-eval.json is fetched and cached by run_id.
-  const COMPARE_RUN_NAMES = ["c500-coh-1", "nemo-rpmfix-500", "pplx-rpmfix-500"];
-
-  // Compact label for a run in the heatmap / tail rows (the task's `qwen · embed`
-  // shape). Explicit aliases for the named reference runs, else a trimmed tail.
-  const RUN_SHORT: Record<string, string> = {
-    "c500-coh-1": "qwen",
-    "nemo-rpmfix-500": "nemo",
-    "pplx-rpmfix-500": "pplx",
-  };
-  function shortRun(name: string): string {
-    return RUN_SHORT[name] ?? name.replace(/-rpmfix-\d+$|-\d+$/, "");
-  }
+  // Cross-run comparison: registry-driven. Any registry run advertising a
+  // `gold_eval` artifact can be lined up beside the one in view; the first few
+  // with data are pre-selected. Each selected run's gold-eval.json is fetched
+  // lazily and cached by run_id.
+  const MAX_DEFAULT_COMPARE = 3;
 
   type CompareRow = {
+    runId: string;
     name: string;
-    runId: string | null;
     rank: GoldEvalResponse["summary"]["gold_rank"] | null;
     // Per-question deepest-gold-turn ranks (raw-only), nulls dropped. Feed the
     // heatmap + tail percentiles, which the summary doesn't carry.
@@ -82,89 +72,102 @@
   };
 
   let runList = $state<RunSummary[]>([]);
-  let compareRows = $state<CompareRow[]>([]);
-  // Which runs are visible in the side-by-side (default: all that have data).
-  let selectedCompare = $state<Set<string>>(new Set(COMPARE_RUN_NAMES));
-  let compareLoading = $state(false);
+  let registryLoading = $state(true);
+  let compareCache = $state<Record<string, CompareRow>>({});
+  // Runs visible in the side-by-side, by run_id (default: first with data).
+  let selectedCompare = $state<Set<string>>(new Set());
+  let defaultsApplied = false;
 
-  function resolveRunId(name: string): string | null {
-    // Prefer an exact run_name match; fall back to a run_id whose last path
-    // segment is the name (registry ids are repo-relative paths).
-    const byName = runList.find((r) => r.run_name === name);
-    if (byName) return byName.run_id;
-    const byTail = runList.find((r) => r.run_id.split("/").pop() === name);
-    return byTail ? byTail.run_id : null;
-  }
+  // Comparable runs: registry entries that advertise a gold-eval artifact,
+  // minus the run already on screen.
+  const goldRuns = $derived(
+    runList.filter((r) => r.run_id !== id && r.artifacts_available.includes("gold_eval")),
+  );
 
-  // Load the registry once, then fetch each comparison run's gold-eval.
+  // Load the registry once.
   $effect(() => {
     let cancelled = false;
-    compareLoading = true;
     api
       .runs()
-      .then(async (runs) => {
+      .then((runs) => {
         if (cancelled) return;
         runList = runs;
-        const rows = await Promise.all(
-          COMPARE_RUN_NAMES.map(async (name): Promise<CompareRow> => {
-            const runId = resolveRunId(name);
-            if (!runId)
-              return {
-                name,
-                runId: null,
-                rank: null,
-                embedRanks: [],
-                rerankRanks: [],
-                error: "not in registry",
-              };
-            try {
-              const d = await api.goldEval(runId);
-              const qs = d.questions ?? [];
-              return {
-                name,
-                runId,
-                rank: d.summary.gold_rank ?? null,
-                embedRanks: qs
-                  .map((q) => q.gold_embed_rank)
-                  .filter((v): v is number => typeof v === "number"),
-                rerankRanks: qs
-                  .map((q) => q.gold_rerank_rank)
-                  .filter((v): v is number => typeof v === "number"),
-                error: null,
-              };
-            } catch (e) {
-              return {
-                name,
-                runId,
-                rank: null,
-                embedRanks: [],
-                rerankRanks: [],
-                error: e instanceof Error ? e.message : String(e),
-              };
-            }
-          }),
-        );
-        if (!cancelled) compareRows = rows;
+        registryLoading = false;
       })
       .catch(() => {
-        if (!cancelled) compareRows = [];
-      })
-      .finally(() => {
-        if (!cancelled) compareLoading = false;
+        if (!cancelled) registryLoading = false;
       });
     return () => {
       cancelled = true;
     };
   });
 
-  const visibleCompare = $derived(
-    compareRows.filter((r) => selectedCompare.has(r.name)),
-  );
+  // Pre-select the first runs with gold coverage once the registry arrives.
+  $effect(() => {
+    if (!defaultsApplied && goldRuns.length) {
+      defaultsApplied = true;
+      selectedCompare = new Set(goldRuns.slice(0, MAX_DEFAULT_COMPARE).map((r) => r.run_id));
+    }
+  });
 
-  function toggleCompare(name: string) {
+  // Lazily fetch gold-eval.json for selected runs not yet in the cache.
+  $effect(() => {
+    const wanted = [...selectedCompare].filter((rid) => !compareCache[rid]);
+    if (!wanted.length) return;
+    let cancelled = false;
+    Promise.all(
+      wanted.map(async (rid): Promise<CompareRow> => {
+        const name =
+          runList.find((r) => r.run_id === rid)?.run_name ?? rid.split("/").pop() ?? rid;
+        try {
+          const d = await api.goldEval(rid);
+          const qs = d.questions ?? [];
+          return {
+            runId: rid,
+            name,
+            rank: d.summary.gold_rank ?? null,
+            embedRanks: qs
+              .map((q) => q.gold_embed_rank)
+              .filter((v): v is number => typeof v === "number"),
+            rerankRanks: qs
+              .map((q) => q.gold_rerank_rank)
+              .filter((v): v is number => typeof v === "number"),
+            error: null,
+          };
+        } catch (e) {
+          return {
+            runId: rid,
+            name,
+            rank: null,
+            embedRanks: [],
+            rerankRanks: [],
+            error: e instanceof Error ? e.message : String(e),
+          };
+        }
+      }),
+    ).then((rows) => {
+      if (cancelled) return;
+      const next = { ...compareCache };
+      for (const r of rows) next[r.runId] = r;
+      compareCache = next;
+    });
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  const compareRows = $derived(
+    [...selectedCompare]
+      .map((rid) => compareCache[rid])
+      .filter((r): r is CompareRow => !!r && !r.error),
+  );
+  const visibleCompare = $derived(compareRows.filter((r) => r.rank));
+  const compareLoading = $derived([...selectedCompare].some((rid) => !compareCache[rid]));
+
+  function toggleCompare(runId: string) {
     const next = new Set(selectedCompare);
-    if (next.has(name)) next.delete(name);
-    else next.add(name);
+    if (next.has(runId)) next.delete(runId);
+    else next.add(runId);
     selectedCompare = next;
   }
 
