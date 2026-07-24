@@ -1,0 +1,93 @@
+{
+  "cohorts": [],
+  "generated_at": "2026-07-24T23:23:11Z",
+  "methodology": "docs/longmemeval-methodology.md",
+  "schema": "membench.leaderboard.v1",
+  "source": {
+    "git_sha": "a64867d",
+    "records_root": "records",
+    "run_count": 11
+  },
+  "unranked": [
+    {
+      "benchmark": "long-mem-eval",
+      "limit": 10,
+      "reason": "meta-record",
+      "run_id": "records/symbiotic-memory/long-mem-eval/10/target-10q-qwen1024-h2pool16x64-rawembed-20260623-174819",
+      "run_name": "target-10q-qwen1024-h2pool16x64-rawembed-20260623-174819"
+    },
+    {
+      "benchmark": "long-mem-eval",
+      "limit": 10,
+      "reason": "meta-record",
+      "run_id": "records/symbiotic-memory/long-mem-eval/10/target-10q-qwen1024-h2pool32x32-rawembed-20260623-181354",
+      "run_name": "target-10q-qwen1024-h2pool32x32-rawembed-20260623-181354"
+    },
+    {
+      "benchmark": "long-mem-eval",
+      "limit": 10,
+      "reason": "meta-record",
+      "run_id": "records/symbiotic-memory/long-mem-eval/10/target-10q-qwen1024-h2pool4x64-rawembed-no-zvec-batch-flush-20260623-173447",
+      "run_name": "target-10q-qwen1024-h2pool4x64-rawembed-no-zvec-batch-flush-20260623-173447"
+    },
+    {
+      "benchmark": "long-mem-eval",
+      "limit": 10,
+      "reason": "meta-record",
+      "run_id": "records/symbiotic-memory/long-mem-eval/10/target-10q-qwen1024-h2pool4x64-rawembed-repeat-20260623-173900",
+      "run_name": "target-10q-qwen1024-h2pool4x64-rawembed-repeat-20260623-173900"
+    },
+    {
+      "benchmark": "long-mem-eval",
+      "limit": 10,
+      "reason": "meta-record",
+      "run_id": "records/symbiotic-memory/long-mem-eval/10/target-10q-qwen1024-h2pool64x16-rawembed-20260623-180637",
+      "run_name": "target-10q-qwen1024-h2pool64x16-rawembed-20260623-180637"
+    },
+    {
+      "benchmark": "long-mem-eval",
+      "limit": 10,
+      "reason": "meta-record",
+      "run_id": "records/symbiotic-memory/long-mem-eval/10/target-10q-qwen1024-h2pool8x64-rawembed-20260623-174546",
+      "run_name": "target-10q-qwen1024-h2pool8x64-rawembed-20260623-174546"
+    },
+    {
+      "benchmark": "long-mem-eval",
+      "limit": 10,
+      "reason": "meta-record",
+      "run_id": "records/symbiotic-memory/long-mem-eval/10/target-10q-qwen1024-http1-pool16x64-rawembed-20260623-174942",
+      "run_name": "target-10q-qwen1024-http1-pool16x64-rawembed-20260623-174942"
+    },
+    {
+      "benchmark": "long-mem-eval",
+      "limit": 10,
+      "reason": "meta-record",
+      "run_id": "records/symbiotic-memory/long-mem-eval/10/target-10q-qwen1024-http1-pool32x32-rawembed-20260623-102020",
+      "run_name": "target-10q-qwen1024-http1-pool32x32-rawembed-20260623-102020"
+    },
+    {
+      "benchmark": "long-mem-eval",
+      "limit": 10,
+      "reason": "meta-record",
+      "run_id": "records/symbiotic-memory/long-mem-eval/10/target-10q-qwen1024-http1-pool64x16-rawembed-20260623-102400",
+      "run_name": "target-10q-qwen1024-http1-pool64x16-rawembed-20260623-102400"
+    },
+    {
+      "benchmark": "long-mem-eval",
+      "limit": 10,
+      "reason": "meta-record",
+      "run_id": "records/symbiotic-memory/long-mem-eval/10/target-10q-qwen1024-http1-rawembed-20260623-174255",
+      "run_name": "target-10q-qwen1024-http1-rawembed-20260623-174255"
+    },
+    {
+      "accuracy": 0.9,
+      "accuracy_correct": 45,
+      "accuracy_total": 50,
+      "benchmark": "long-mem-eval",
+      "limit": 50,
+      "reason": "meta-record",
+      "run_id": "records/symbiotic-memory/long-mem-eval/50/w50-count-zvec-filters",
+      "run_name": "w50-count-zvec-filters"
+    }
+  ]
+}

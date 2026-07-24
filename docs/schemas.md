@@ -173,6 +173,11 @@ consumers may display it as long as the `reason` label travels with the number.
 each row's `modified_ms` (a file mtime) so repeated exports over unchanged records are
 byte-identical. See `canary/` for the fixture-based smoke test wired into CI.
 
+The dashboard bundles a non-deterministic export (real provenance) at
+`dashboard/public/data/leaderboard.json`; the SPA falls back to it, labeled as a static
+snapshot, when no `/api` backend is present. Regenerate it with
+`scripts/export-leaderboard-snapshot.sh` whenever `records/` changes.
+
 ## Machine-readable Index
 
 ```bash

@@ -2,7 +2,14 @@
   import { onMount } from "svelte";
   import { api } from "../lib/api";
   import { router } from "../lib/router.svelte";
-  import { QTYPES, type Cohort, type RankedRow } from "../lib/types";
+  import {
+    QTYPES,
+    type Cohort,
+    type LeaderboardSnapshot,
+    type RankedRow,
+    type RowVerification,
+    type SnapshotRankedRow,
+  } from "../lib/types";
   import {
     pct,
     pctSign,
@@ -21,6 +28,9 @@
   import { trialBadge, runKindLabel, runKindChipClass } from "../lib/run";
 
   let cohorts = $state<Cohort[]>([]);
+  // Non-null when the live /api backend was unreachable and the page is
+  // showing the bundled `membench.leaderboard.v1` static export instead.
+  let snapshot = $state<LeaderboardSnapshot | null>(null);
   let activeId = $state<string>("");
   let loading = $state(true);
   let sortKey = $state<string>("rank");
@@ -33,10 +43,38 @@
   const SEL_COLORS = ["var(--amber)", "var(--cyan)", "var(--green)", "var(--violet)"];
 
   onMount(async () => {
-    cohorts = await api.leaderboard();
+    // Live registry first; on failure fall back to the bundled static export.
+    // The fallback is labeled as a snapshot — it must never masquerade as live
+    // data, and an empty verified field stays empty rather than being filled
+    // from unverified rows.
+    try {
+      cohorts = await api.leaderboard();
+    } catch {
+      try {
+        snapshot = await api.leaderboardSnapshot();
+        cohorts = snapshot.cohorts;
+      } catch {
+        // Neither live API nor snapshot — the empty state below says so.
+      }
+    }
     if (cohorts.length) activeId = cohorts[0].cohort_id;
     loading = false;
   });
+
+  function verification(r: RankedRow): RowVerification | null {
+    return (r as SnapshotRankedRow).verification ?? null;
+  }
+
+  function reasonHelp(reason: string): string {
+    switch (reason) {
+      case "meta-record":
+        return "Dashboard-safe rollup: timing/trace evidence is kept, but question-level scoring artifacts were deliberately omitted, so the score cannot be independently verified.";
+      case "unscored":
+        return "The record has no accuracy metric in its report.";
+      default:
+        return reason;
+    }
+  }
 
   const active = $derived(cohorts.find((c) => c.cohort_id === activeId));
   const hasLatency = $derived(active?.rows.some((r) => r.latency_ms_p50 != null) ?? false);
@@ -173,6 +211,16 @@
 
 <div class="lb">
   <div class="main">
+    {#if snapshot}
+      <div class="snapshot-note">
+        <b>STATIC SNAPSHOT</b> — no live registry backend. Showing the committed
+        <code>{snapshot.schema}</code> export of tracked records
+        (<code>{snapshot.source.records_root}</code>, {snapshot.source.run_count} run{snapshot.source.run_count === 1 ? "" : "s"} scanned,
+        exporter <code>{shortHash(snapshot.source.git_sha, 12)}</code>,
+        generated {snapshot.generated_at}).
+        Methodology: <code>{snapshot.methodology}</code>.
+      </div>
+    {/if}
     <!-- cohort selector -->
     <div class="cohort-strip">
       <span class="label" style="margin-right:4px">COHORT</span>
@@ -189,7 +237,18 @@
     {#if loading}
       <div class="empty">SCANNING REGISTRY…</div>
     {:else if !active}
-      <div class="empty">NO COHORTS</div>
+      {#if snapshot}
+        <div class="empty">
+          NO VERIFIED COHORTS<br />
+          <span class="empty-detail">
+            The tracked records tree holds no fully-attested scored runs to rank.
+            Runs excluded from ranking are listed below with the reason — their
+            scores are not fabricated into a ranking.
+          </span>
+        </div>
+      {:else}
+        <div class="empty">NO COHORTS</div>
+      {/if}
     {:else}
       {#if !active.strictly_comparable}
         <div class="integrity">
@@ -357,6 +416,18 @@
                 <td class="system-cell">
                   <button class="runlink" onclick={(e) => { e.stopPropagation(); router.openRun(r.run_id); }}>{r.run_name}</button>
                   {#if r.is_trial_run}<span class="trial-badge">{trialBadge(r)}</span>{/if}
+                  {#if r.is_meta_record}
+                    <span
+                      class="verif-badge"
+                      title="Meta record: dashboard-safe rollup without question-level scoring artifacts. Its score cannot be independently verified and is excluded from published leaderboard exports."
+                    >META</span>
+                  {/if}
+                  {#if verification(r)?.level === "partial"}
+                    <span
+                      class="verif-badge"
+                      title={`Scoring artifacts missing from the record: ${verification(r)?.missing_artifacts.join(", ")}. The score cannot be independently reproduced from the tracked artifacts.`}
+                    >PARTIAL EVIDENCE</span>
+                  {/if}
                   <span class="cfg">{r.config_label}</span>
                 </td>
                 <td><span class="chip {runKindChipClass(r.run_kind)}">{runKindLabel(r.run_kind)}</span></td>
@@ -379,6 +450,47 @@
             {/each}
           </tbody>
         </table>
+      </Panel>
+    {/if}
+
+    {#if snapshot && snapshot.unranked.length}
+      <Panel title="Unranked Records" tag="excluded from ranking" flush scroll>
+        <table class="grid unranked-table">
+          <thead>
+            <tr>
+              <th scope="col">Record</th>
+              <th scope="col">Benchmark</th>
+              <th scope="col">Why unranked</th>
+              <th class="num" scope="col">Reported score</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each snapshot.unranked as u (u.run_id)}
+              <tr>
+                <td class="system-cell">
+                  <span class="unranked-name" title={u.run_id}>{u.run_name}</span>
+                </td>
+                <td class="dim">{u.benchmark}{u.limit != null ? ` · ${u.limit}Q` : ""}</td>
+                <td>
+                  <span class="reason-badge" title={reasonHelp(u.reason)}>{u.reason.toUpperCase()}</span>
+                </td>
+                <td class="num mono-num dim">
+                  {#if u.accuracy != null}
+                    {pct(u.accuracy)}%{#if u.accuracy_correct != null && u.accuracy_total != null}&nbsp;({u.accuracy_correct}/{u.accuracy_total}){/if}
+                    <span class="faint"> unverified</span>
+                  {:else}
+                    —
+                  {/if}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+        <div class="unranked-footnote">
+          Unranked records are excluded from every cohort. A reported score shown
+          here comes from the record's own report and cannot be independently
+          reproduced from tracked question-level artifacts.
+        </div>
       </Panel>
     {/if}
   </div>
@@ -461,6 +573,86 @@
     color: var(--gold);
     font-size: 10.5px;
     letter-spacing: 0.03em;
+  }
+
+  .snapshot-note {
+    flex: none;
+    padding: 7px 10px;
+    background: rgba(80, 170, 255, 0.07);
+    border: 1px solid var(--cyan);
+    color: var(--text-dim);
+    font-size: 10.5px;
+    line-height: 1.5;
+    letter-spacing: 0.02em;
+  }
+  .snapshot-note b {
+    color: var(--cyan);
+    letter-spacing: 0.1em;
+  }
+  .snapshot-note code {
+    color: var(--text);
+    font-size: 10px;
+  }
+
+  .verif-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 5px;
+    border: 1px solid var(--gold);
+    background: rgba(232, 195, 74, 0.08);
+    color: var(--gold);
+    font-family: var(--sans);
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    vertical-align: 1px;
+  }
+
+  .unranked-table {
+    table-layout: fixed;
+    min-width: 640px;
+  }
+  .unranked-table th,
+  .unranked-table td {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+  .unranked-name {
+    display: block;
+    color: var(--text);
+    font-weight: 600;
+    font-size: 11.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .reason-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border: 1px solid var(--border-bright);
+    background: var(--bg-elev);
+    color: var(--text-dim);
+    font-family: var(--sans);
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+  .unranked-footnote {
+    padding: 6px 10px;
+    color: var(--text-faint);
+    font-size: 9.5px;
+    line-height: 1.5;
+  }
+
+  .empty-detail {
+    display: inline-block;
+    margin-top: 8px;
+    max-width: 520px;
+    color: var(--text-dim);
+    font-size: 10.5px;
+    letter-spacing: 0.02em;
+    line-height: 1.6;
+    text-transform: none;
   }
 
   .fold {

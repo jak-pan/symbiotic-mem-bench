@@ -81,6 +81,41 @@ export interface Cohort {
   rows: RankedRow[];
 }
 
+// `membench.leaderboard.v1` — the static, publishable leaderboard document
+// exported by `membench-leaderboard` (see docs/schemas.md). The SPA falls back
+// to a bundled copy at /data/leaderboard.json when no /api backend is present.
+
+export interface RowVerification {
+  /** `full` = scoring artifacts present, score independently reproducible;
+   *  `partial` = at least one of hypotheses/verdicts/scored is missing. */
+  level: "full" | "partial";
+  missing_artifacts: string[];
+}
+
+/** Ranked rows in the export carry an extra per-row verification object. */
+export type SnapshotRankedRow = RankedRow & { verification?: RowVerification };
+
+export interface UnrankedRecord {
+  run_id: string;
+  run_name: string;
+  /** `meta-record` (rollup without question-level artifacts) or `unscored`. */
+  reason: string;
+  benchmark: string;
+  limit?: number | null;
+  accuracy?: number | null;
+  accuracy_correct?: number | null;
+  accuracy_total?: number | null;
+}
+
+export interface LeaderboardSnapshot {
+  schema: string;
+  generated_at: string;
+  source: { records_root: string; git_sha: string; run_count: number };
+  methodology: string;
+  cohorts: Cohort[];
+  unranked: UnrankedRecord[];
+}
+
 export interface QuestionRow {
   question_id: string;
   question_type: string | null;

@@ -2,6 +2,7 @@ import type {
   Cohort,
   CompareResponse,
   GoldEvalResponse,
+  LeaderboardSnapshot,
   LiveResponse,
   PendingRun,
   QuestionDebug,
@@ -54,6 +55,18 @@ export const api = {
     return get<{ cohorts: Cohort[] }>(`/leaderboard${qs ? "?" + qs : ""}`).then(
       (r) => r.cohorts,
     );
+  },
+  leaderboardSnapshot: async () => {
+    // Static `membench.leaderboard.v1` export bundled into the SPA at build
+    // time (dashboard/public/data/leaderboard.json). Only used as a fallback
+    // when the live /api backend is unreachable — e.g. a static deploy.
+    const res = await fetch("/data/leaderboard.json", { cache: "no-store" });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    const doc = (await res.json()) as LeaderboardSnapshot;
+    if (doc.schema !== "membench.leaderboard.v1") {
+      throw new Error(`unexpected leaderboard schema: ${doc.schema}`);
+    }
+    return doc;
   },
   run: (id: string) => get<RunDetail>(`/run?id=${enc(id)}`),
   questions: (id: string) =>
