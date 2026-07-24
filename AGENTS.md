@@ -379,3 +379,9 @@ reranker moved the needle.** ALWAYS verify a lever FIRED (changed the prompt/evi
 - Evidence ledger (structured emission): `../symbiotic-memory/src/recall/evidence_ledger.rs`
 - k / recall profiles: `config/symbiotic-memory/longmemeval-raw-light.yaml`
 - Cleaned dataset: `runs/inputs/longmemeval-cleaned/longmemeval_s_cleaned.json` (gold = `answer`, gold sessions = `answer_session_ids`)
+
+<!-- mission-control:begin -->
+## Mission Control
+
+Read `.mission-control/AGENT.md` before agent work. It defines the code-blind reporting boundary, meaningful lifecycle commands, provider task synchronization, and the non-blocking failure rule. Read `.mission-control/project.json` for the configured task authority; never make the provider and a migration ledger writable at the same time.
+<!-- mission-control:end -->

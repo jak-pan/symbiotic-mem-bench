@@ -1,0 +1,34 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "_missionControl": {
+          "owner": "mission-control",
+          "version": "2.2.0"
+        },
+        "hooks": [
+          {
+            "type": "command",
+            "command": "MC_ENROLLMENT_TOOL=claude-code node \"$CLAUDE_PROJECT_DIR/.mission-control/lifecycle-hook.mjs\"",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "_missionControl": {
+          "owner": "mission-control",
+          "version": "2.2.0"
+        },
+        "hooks": [
+          {
+            "type": "command",
+            "command": "MC_ENROLLMENT_TOOL=claude-code node \"$CLAUDE_PROJECT_DIR/.mission-control/lifecycle-hook.mjs\"",
+            "timeout": 2
+          }
+        ]
+      }
+    ]
+  }
+}

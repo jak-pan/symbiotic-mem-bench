@@ -1,0 +1,17 @@
+{
+  "_missionControl": {
+    "owner": "mission-control",
+    "version": "2.2.0"
+  },
+  "mcpServers": {
+    "mission-control": {
+      "command": "node",
+      "args": [
+        ".mission-control/mcp.mjs"
+      ],
+      "env": {
+        "MC_ENROLLMENT_TOOL": "claude-code"
+      }
+    }
+  }
+}

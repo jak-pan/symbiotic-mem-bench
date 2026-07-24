@@ -1,0 +1,20 @@
+# mission-control:begin version=2.2.0
+[mcp_servers.mission-control]
+command = "node"
+args = [".mission-control/mcp.mjs"]
+[mcp_servers.mission-control.env]
+MC_ENROLLMENT_TOOL = "codex"
+
+[[hooks.SessionStart]]
+matcher = "startup|resume"
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "MC_ENROLLMENT_TOOL=codex node \"$(git rev-parse --show-toplevel)/.mission-control/lifecycle-hook.mjs\""
+timeout = 2
+
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "command"
+command = "MC_ENROLLMENT_TOOL=codex node \"$(git rev-parse --show-toplevel)/.mission-control/lifecycle-hook.mjs\""
+timeout = 2
+# mission-control:end

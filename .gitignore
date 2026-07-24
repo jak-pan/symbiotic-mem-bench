@@ -15,3 +15,7 @@
 
 .DS_Store
 /.cargo/
+
+# mission-control:begin version=2.2.0
+.mission-control/enrollments/*.local.json
+# mission-control:end

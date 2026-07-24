@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 2,
+  "kit": {
+    "owner": "mission-control",
+    "version": "2.2.0"
+  },
+  "taskAuthority": "legacy",
+  "projectId": "project:membench",
+  "projectName": "Membench",
+  "apiUrl": "https://mission-control.178-104-209-187.sslip.io/api",
+  "repository": {
+    "provider": "github",
+    "url": "https://github.com/jak-pan/symbiotic-mem-bench",
+    "owner": "jak-pan",
+    "name": "symbiotic-mem-bench",
+    "defaultBranch": "main",
+    "sync": {
+      "status": "attention",
+      "detail": "Repository is not visible to the configured GitHub App. Native Markdown task sync continues.",
+      "repairUrl": "https://github.com/settings/installations"
+    }
+  },
+  "project": {
+    "lead": {
+      "id": "github:jak-pan",
+      "kind": "human",
+      "displayName": "Jakub",
+      "identities": {
+        "github": {
+          "login": "jak-pan",
+          "url": "https://github.com/jak-pan"
+        }
+      }
+    },
+    "repository": {
+      "provider": "github",
+      "url": "https://github.com/jak-pan/symbiotic-mem-bench",
+      "owner": "jak-pan",
+      "name": "symbiotic-mem-bench",
+      "defaultBranch": "main",
+      "sync": {
+        "status": "attention",
+        "detail": "Repository is not visible to the configured GitHub App. Native Markdown task sync continues.",
+        "repairUrl": "https://github.com/settings/installations"
+      }
+    }
+  },
+  "registration": {
+    "company": {
+      "id": "company:membench",
+      "name": "Membench",
+      "code": "MBN",
+      "thesis": "Full OSS benchmark release with public leaderboard landing.",
+      "state": "active",
+      "lead": {
+        "id": "github:jak-pan",
+        "kind": "human",
+        "displayName": "Jakub",
+        "identities": {
+          "github": {
+            "login": "jak-pan",
+            "url": "https://github.com/jak-pan"
+          }
+        }
+      },
+      "provenance": {
+        "source": "mission-control",
+        "sourceId": "company:membench",
+        "sourceUrl": "https://github.com/jak-pan/symbiotic-mem-bench",
+        "syncedAt": "2026-07-24T22:35:53.288Z"
+      },
+      "updatedAt": "2026-07-24T22:35:53.288Z"
+    },
+    "project": {
+      "id": "project:membench",
+      "companyId": "company:membench",
+      "name": "Membench",
+      "code": "MBN",
+      "summary": "Full OSS benchmark release with public leaderboard landing.",
+      "state": "active",
+      "lead": {
+        "id": "github:jak-pan",
+        "kind": "human",
+        "displayName": "Jakub",
+        "identities": {
+          "github": {
+            "login": "jak-pan",
+            "url": "https://github.com/jak-pan"
+          }
+        }
+      },
+      "responsibilities": [],
+      "repository": {
+        "provider": "github",
+        "url": "https://github.com/jak-pan/symbiotic-mem-bench",
+        "owner": "jak-pan",
+        "name": "symbiotic-mem-bench",
+        "defaultBranch": "main",
+        "sync": {
+          "status": "attention",
+          "detail": "Repository is not visible to the configured GitHub App. Native Markdown task sync continues.",
+          "repairUrl": "https://github.com/settings/installations"
+        }
+      },
+      "provenance": {
+        "source": "mission-control",
+        "sourceId": "project:membench",
+        "sourceUrl": "https://github.com/jak-pan/symbiotic-mem-bench",
+        "syncedAt": "2026-07-24T22:35:53.288Z"
+      },
+      "updatedAt": "2026-07-24T22:35:53.288Z"
+    }
+  },
+  "taskProjection": {
+    "source": {
+      "system": "mission-control",
+      "instanceId": "mission-control:membench:tasks",
+      "label": "Membench task ledger"
+    },
+    "reporter": {
+      "id": "service:membench:task-projector",
+      "kind": "service",
+      "displayName": "Membench task projector"
+    }
+  },
+  "taskSources": []
+}
