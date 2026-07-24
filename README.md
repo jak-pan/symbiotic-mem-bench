@@ -6,13 +6,27 @@ This repository owns benchmark orchestration, run metadata, trace schemas, score
 portable run records. Memory implementation behavior stays inside the system under test, such as
 `symbiotic-memory`, `mem0`, or `HyMem`.
 
-## Quick Start
+## Quick Start (no secrets required)
 
-From this repository root:
+Everything in this section is local and network-free — no API keys. From this repository root:
 
 ```bash
 CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo test
 cargo run --bin membench -- explore
+```
+
+Export the static leaderboard document over the reproducible sample records (the CI canary
+fixtures — synthetic, clearly labeled, never real results):
+
+```bash
+cargo run --bin membench-leaderboard -- export --records-root canary/records --deterministic
+```
+
+Build and open the dashboard over the tracked records (needs Node 22, still no keys):
+
+```bash
+cd dashboard && npm ci && npm run build && cd ..
+cargo run --features server --bin membench-server   # http://localhost:8787
 ```
 
 For paid provider-backed runs, create the local env file in this repository:
@@ -449,9 +463,27 @@ Queue traces should preserve timestamps for queued, running, succeeded, and fail
 can derive queue wait time, run time, total time, attempts, and final status by grouping events by
 queue id and item id.
 
+## Leaderboard
+
+The publishable leaderboard is the `membench.leaderboard.v1` export over tracked `records/`
+(see `docs/schemas.md`). Every ranked row carries a verification level; runs whose scores
+cannot be independently reproduced from tracked artifacts are listed as unranked with the
+reason. The dashboard bundles a snapshot at `dashboard/public/data/leaderboard.json` and,
+when served statically without the API, renders it explicitly labeled as a static snapshot —
+verified cohorts stay empty until a record passes the review gate in
+`docs/longmemeval-methodology.md`, which also states the honest current result.
+
+## License
+
+Apache-2.0 (`LICENSE`). Contributions are welcome — see `CONTRIBUTING.md`; security reports
+via `SECURITY.md`; release process in `RELEASING.md`.
+
 ## More Docs
 
 - `AGENTS.md`: exact operating rules for coding agents.
+- `docs/longmemeval-methodology.md`: scoring methodology, honest current result, and the
+  leaderboard review gate.
+- `docs/oss-release-handoff.md`: external decisions/blockers for taking the repo public.
 - `docs/run-registry.md`: run layout and lifecycle reference.
 - `docs/symbiotic-memory/openrouter-qwen-embedding-tuning.md`: OpenRouter Qwen raw-embedding
   transport tuning evidence and reproduction scripts.
