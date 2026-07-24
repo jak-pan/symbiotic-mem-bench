@@ -325,15 +325,15 @@ fn pricing_for(operator: &str, operation: &str, model: &str) -> Option<Pricing> 
     }
     // OpenRouter-routed models: price from the cached OpenRouter /models catalog
     // (config/pricing/openrouter-pricing.json, refreshed by `scripts/refresh-pricing.sh`).
-    if operator == "openrouter" {
-        if let Some(&(input, output)) = openrouter_pricing_catalog().get(model) {
-            return Some(Pricing {
-                input_per_million_usd: Some(input),
-                cached_input_per_million_usd: None,
-                output_per_million_usd: Some(output),
-                source: PRICING_CATALOG_SOURCE,
-            });
-        }
+    if operator == "openrouter"
+        && let Some(&(input, output)) = openrouter_pricing_catalog().get(model)
+    {
+        return Some(Pricing {
+            input_per_million_usd: Some(input),
+            cached_input_per_million_usd: None,
+            output_per_million_usd: Some(output),
+            source: PRICING_CATALOG_SOURCE,
+        });
     }
     None
 }
@@ -492,10 +492,8 @@ pub fn rollup_model_trace_file(path: &Path) -> Option<ModelTraceRollup> {
             if cost_was_estimated {
                 estimated_any_cost = true;
             }
-            if cost_was_estimated {
-                if let Some(pricing) = pricing {
-                    pricing_sources.insert(pricing.source.to_string(), ());
-                }
+            if cost_was_estimated && let Some(pricing) = pricing {
+                pricing_sources.insert(pricing.source.to_string(), ());
             }
         }
 

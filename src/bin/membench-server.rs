@@ -18,6 +18,10 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use clap::Parser;
+use membench::{
+    BenchQueueEvent, artifacts, compare, cost, leaderboard, live, registry, runner,
+    summarize_queue_timing,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
@@ -25,10 +29,6 @@ use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
-use symbiotic_mem_bench::{
-    BenchQueueEvent, artifacts, compare, cost, leaderboard, live, registry, runner,
-    summarize_queue_timing,
-};
 use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -778,13 +778,12 @@ fn read_queue_events(run_root: &Path) -> Option<Vec<BenchQueueEvent>> {
 fn summarize_trace_events(
     memory_rows: &[Value],
     queue_events: &[BenchQueueEvent],
-    queue_timing: &[symbiotic_mem_bench::BenchTimingSummary],
+    queue_timing: &[membench::BenchTimingSummary],
 ) -> Value {
-    let queue_timing: HashMap<(String, String), &symbiotic_mem_bench::BenchTimingSummary> =
-        queue_timing
-            .iter()
-            .map(|row| ((row.queue_id.clone(), row.item_id.clone()), row))
-            .collect();
+    let queue_timing: HashMap<(String, String), &membench::BenchTimingSummary> = queue_timing
+        .iter()
+        .map(|row| ((row.queue_id.clone(), row.item_id.clone()), row))
+        .collect();
 
     let mut rows = Vec::new();
     for trace in memory_rows {
@@ -1258,6 +1257,7 @@ fn summarize_dependency_waterfall(memory_rows: &[Value]) -> Value {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_dependency_block(
     blocks: &mut Vec<Value>,
     timeline_start: DateTime<Utc>,
@@ -1282,6 +1282,7 @@ fn push_dependency_block(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_dependency_block_abs(
     blocks: &mut Vec<Value>,
     timeline_start: DateTime<Utc>,
@@ -1416,18 +1417,18 @@ fn provider_waterfall_blocks(events: &[BenchQueueEvent]) -> Vec<WaterfallBlock> 
         };
         let queued_at = group
             .iter()
-            .find(|event| event.status == symbiotic_mem_bench::BenchEventStatus::Queued)
+            .find(|event| event.status == membench::BenchEventStatus::Queued)
             .map(|event| event.timestamp);
         let running_at = group
             .iter()
-            .find(|event| event.status == symbiotic_mem_bench::BenchEventStatus::Running)
+            .find(|event| event.status == membench::BenchEventStatus::Running)
             .map(|event| event.timestamp);
         let terminal = group.iter().rev().find(|event| {
             matches!(
                 event.status,
-                symbiotic_mem_bench::BenchEventStatus::Succeeded
-                    | symbiotic_mem_bench::BenchEventStatus::Failed
-                    | symbiotic_mem_bench::BenchEventStatus::Dead
+                membench::BenchEventStatus::Succeeded
+                    | membench::BenchEventStatus::Failed
+                    | membench::BenchEventStatus::Dead
             )
         });
         let terminal_at = terminal.map(|event| event.timestamp);
@@ -1464,10 +1465,7 @@ fn provider_waterfall_blocks(events: &[BenchQueueEvent]) -> Vec<WaterfallBlock> 
                 lane_order,
                 kind: if matches!(
                     terminal.map(|event| event.status),
-                    Some(
-                        symbiotic_mem_bench::BenchEventStatus::Failed
-                            | symbiotic_mem_bench::BenchEventStatus::Dead
-                    )
+                    Some(membench::BenchEventStatus::Failed | membench::BenchEventStatus::Dead)
                 ) {
                     "provider_failed"
                 } else {
@@ -1512,13 +1510,13 @@ fn short_queue_id(id: &str) -> String {
         .to_string()
 }
 
-fn queue_status_name(status: symbiotic_mem_bench::BenchEventStatus) -> &'static str {
+fn queue_status_name(status: membench::BenchEventStatus) -> &'static str {
     match status {
-        symbiotic_mem_bench::BenchEventStatus::Queued => "queued",
-        symbiotic_mem_bench::BenchEventStatus::Running => "running",
-        symbiotic_mem_bench::BenchEventStatus::Succeeded => "succeeded",
-        symbiotic_mem_bench::BenchEventStatus::Failed => "failed",
-        symbiotic_mem_bench::BenchEventStatus::Dead => "dead",
+        membench::BenchEventStatus::Queued => "queued",
+        membench::BenchEventStatus::Running => "running",
+        membench::BenchEventStatus::Succeeded => "succeeded",
+        membench::BenchEventStatus::Failed => "failed",
+        membench::BenchEventStatus::Dead => "dead",
     }
 }
 
@@ -1601,12 +1599,12 @@ fn summarize_memory_stage_timing(rows: &[Value]) -> Vec<Value> {
         {
             if let Some(duration_ms) = trace.get("duration_ms").and_then(Value::as_u64) {
                 entry.cadence_ms.push(duration_ms);
-            } else if let Some(timestamp) = timestamp {
-                if let Some(previous) = anchors.get(&anchor_key) {
-                    entry
-                        .cadence_ms
-                        .push((timestamp - *previous).num_milliseconds().max(0) as u64);
-                }
+            } else if let Some(timestamp) = timestamp
+                && let Some(previous) = anchors.get(&anchor_key)
+            {
+                entry
+                    .cadence_ms
+                    .push((timestamp - *previous).num_milliseconds().max(0) as u64);
             }
         }
     }

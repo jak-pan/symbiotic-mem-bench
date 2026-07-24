@@ -509,7 +509,7 @@ fn summarize_error_categories(errors: &[LiveError]) -> Vec<ErrorCategory> {
     categories
 }
 
-fn metric_u64<'a>(metrics: &'a Value, keys: &[&str]) -> Option<(u64, &'static str)> {
+fn metric_u64(metrics: &Value, keys: &[&str]) -> Option<(u64, &'static str)> {
     for key in keys {
         if let Some(value) = metrics.get(*key).and_then(Value::as_u64) {
             let unit = match *key {
@@ -528,10 +528,10 @@ fn metric_u64<'a>(metrics: &'a Value, keys: &[&str]) -> Option<(u64, &'static st
 
 fn memory_item_count(trace: &Value) -> Option<(u64, &'static str)> {
     let metrics = trace.get("metrics").unwrap_or(&Value::Null);
-    if str_at(metrics, "kind") == Some("brief") {
-        if let Some(value) = metrics.get("fact_count").and_then(Value::as_u64) {
-            return Some((value, "briefs"));
-        }
+    if str_at(metrics, "kind") == Some("brief")
+        && let Some(value) = metrics.get("fact_count").and_then(Value::as_u64)
+    {
+        return Some((value, "briefs"));
     }
     metric_u64(
         metrics,
@@ -557,6 +557,7 @@ fn memory_item_count(trace: &Value) -> Option<(u64, &'static str)> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_activity(
     activity: &mut Vec<LiveActivity>,
     timestamp: Option<String>,
@@ -681,13 +682,13 @@ fn observed_queue_stats(events: &[Value]) -> BTreeMap<String, QueueObservedStats
                     queued_at.insert(item.to_string());
                     queued_units_at.insert(item.to_string(), request_units);
                 }
-            } else if is_terminal_status(status) {
-                if let Some(item) = str_at(event, "item_id") {
-                    running_at.remove(item);
-                    queued_at.remove(item);
-                    running_units_at.remove(item);
-                    queued_units_at.remove(item);
-                }
+            } else if is_terminal_status(status)
+                && let Some(item) = str_at(event, "item_id")
+            {
+                running_at.remove(item);
+                queued_at.remove(item);
+                running_units_at.remove(item);
+                queued_units_at.remove(item);
             }
         }
         starts.sort();
@@ -1042,15 +1043,14 @@ pub fn live_detail(run_root: &Path) -> LiveDetail {
         if matches!(
             event,
             "batch_succeeded" | "operation_succeeded" | "branch_joined"
-        ) {
-            if let Some((count, unit)) = memory_item_count(&trace) {
-                entry.item_unit = unit.to_string();
-                segment.item_succeeded += count;
-                if event == "batch_succeeded" {
-                    *batch_item_succeeded.entry(op.clone()).or_default() += count;
-                } else {
-                    *terminal_item_succeeded.entry(op.clone()).or_default() += count;
-                }
+        ) && let Some((count, unit)) = memory_item_count(&trace)
+        {
+            entry.item_unit = unit.to_string();
+            segment.item_succeeded += count;
+            if event == "batch_succeeded" {
+                *batch_item_succeeded.entry(op.clone()).or_default() += count;
+            } else {
+                *terminal_item_succeeded.entry(op.clone()).or_default() += count;
             }
         }
     }

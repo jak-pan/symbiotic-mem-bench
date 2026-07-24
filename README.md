@@ -63,15 +63,11 @@ CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run \
   --smoke
 ```
 
-`membench` does not auto-download Symbiotic Memory. In this workspace it uses the sibling local
-crate dependency declared in `Cargo.toml`:
-
-```toml
-symbiotic-memory = { path = "../symbiotic-memory", ... }
-```
-
-Only the cleaned LongMemEval dataset is auto-downloaded. A publishable adapter mode can later switch
-the memory dependency to a Git revision, crate release, or external adapter binary.
+The Symbiotic Memory adapter dependencies are pinned public git revisions in `Cargo.toml`, so the
+core crate and the dashboard server build from a clean clone. Building the
+`symbiotic-memory-adapter` feature currently requires overriding those pins to sibling checkouts
+via `.cargo/config.toml` — see `docs/environment.md` ("Dependency Sources") for the exact block
+and the upstream-publication blocker behind it.
 
 These local `--smoke` adapter runs map internally to deterministic no-network providers and no
 scorer. They are smoke tests, not benchmark records. By default they run under `runs/.tmp/` and

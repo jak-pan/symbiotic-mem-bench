@@ -2,8 +2,8 @@ use chrono::{DateTime, Local, NaiveDateTime, SecondsFormat, TimeZone, Utc};
 #[cfg(feature = "symbiotic-memory-adapter")]
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 #[cfg(feature = "symbiotic-memory-adapter")]
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -20,9 +20,7 @@ use std::time::{Duration, Instant};
 #[cfg(feature = "symbiotic-memory-adapter")]
 use symbiotic_core::{QueueId, QueueItemId};
 #[cfg(feature = "symbiotic-memory-adapter")]
-use symbiotic_memory::ingest::{
-    raw_unit_fingerprint,
-};
+use symbiotic_memory::ingest::raw_unit_fingerprint;
 use symbiotic_memory::ingest::{Distiller, IngestDiagnosticMode, IngestPipeline};
 #[cfg(feature = "symbiotic-memory-adapter")]
 use symbiotic_memory::manifest::{MemoryRunManifest, MemoryStage, stable_hash_json};
@@ -1250,14 +1248,9 @@ where
         step_started.elapsed(),
     );
 
-
     let step_started = Instant::now();
-    let (store, store_open_metrics) = open_store_with_metrics(
-        vault_dir.clone(),
-        store_backend.to_string(),
-        dimensions,
-    )
-    .await?;
+    let (store, store_open_metrics) =
+        open_store_with_metrics(vault_dir.clone(), store_backend.to_string(), dimensions).await?;
     insert_elapsed_ms(&mut setup_metrics, "store_open_ms", step_started.elapsed());
     setup_metrics.extend(store_open_metrics);
 
@@ -2480,7 +2473,6 @@ fn workflow_input_hash(
     ingest_diagnostic_mode: IngestDiagnosticMode,
     policy: &symbiotic_memory::config::RecallPolicy,
 ) -> String {
-    
     let mut hasher = Sha256::new();
     hasher.update(row.question_id.as_bytes());
     hasher.update(b"\0");
@@ -2529,7 +2521,12 @@ fn workflow_input_hash(
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
-fn effective_shape() -> (Option<symbiotic_memory::ingest::RawWindowConfig>, usize, usize, usize) {
+fn effective_shape() -> (
+    Option<symbiotic_memory::ingest::RawWindowConfig>,
+    usize,
+    usize,
+    usize,
+) {
     let distill = symbiotic_memory_config::DistillSection::default();
     let embed = symbiotic_memory_config::EmbedSection::default();
     let window = symbiotic_memory::ingest::RawWindowConfig::from_values(
@@ -2718,7 +2715,6 @@ fn score_artifact_hashes(
 
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn hash_file(path: &Path) -> anyhow::Result<String> {
-    
     let bytes = fs::read(path)?;
     let mut hasher = Sha256::new();
     hasher.update(bytes);

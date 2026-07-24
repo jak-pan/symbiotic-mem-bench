@@ -753,7 +753,9 @@ fn configured_model(params: &Value, role: &str) -> Option<String> {
 /// the Overview shows the rerank model as "none" even when it was configured.
 fn configured_rerank_model(params: &Value) -> Option<String> {
     for base in [
-        params.get("configured_models").and_then(|m| m.get("rerank")),
+        params
+            .get("configured_models")
+            .and_then(|m| m.get("rerank")),
         params.get("rerank"),
     ]
     .into_iter()
@@ -1059,10 +1061,9 @@ fn settings_label(params: &Value) -> String {
     }
     if let Some(thinking) = nested_string(params, &["thinking", "summary"])
         .or_else(|| thinking_summary_from_roles(params))
+        && !thinking.is_empty()
     {
-        if !thinking.is_empty() {
-            parts.push(thinking);
-        }
+        parts.push(thinking);
     }
     parts.join(" · ")
 }
@@ -1396,10 +1397,18 @@ mod tests {
             "configured_models": { "rerank": { "enabled": false, "model": null } },
             "rerank": { "enabled": false },
         });
-        assert!(models_with_param_fallback(Models::default(), &disabled, None).rerank.is_none());
+        assert!(
+            models_with_param_fallback(Models::default(), &disabled, None)
+                .rerank
+                .is_none()
+        );
 
         // Older runs recorded no rerank field at all → still None.
         let absent = json!({ "configured_models": { "answer": {"model": "deepseek-v4-flash"} } });
-        assert!(models_with_param_fallback(Models::default(), &absent, None).rerank.is_none());
+        assert!(
+            models_with_param_fallback(Models::default(), &absent, None)
+                .rerank
+                .is_none()
+        );
     }
 }

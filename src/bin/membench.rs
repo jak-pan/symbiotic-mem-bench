@@ -6,6 +6,9 @@ use chrono::Utc;
 use clap::{Parser, Subcommand};
 #[cfg(feature = "symbiotic-memory-adapter")]
 use futures::StreamExt;
+use membench::{
+    BenchQueueEvent, cost, registry, runner, step_analytics, summarize_queue_timing, trials,
+};
 #[cfg(feature = "symbiotic-memory-adapter")]
 use reqwest::Client;
 #[cfg(feature = "symbiotic-memory-adapter")]
@@ -24,9 +27,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(feature = "symbiotic-memory-adapter")]
 use std::time::{Duration, Instant};
-use symbiotic_mem_bench::{
-    BenchQueueEvent, cost, registry, runner, step_analytics, summarize_queue_timing, trials,
-};
 
 const LONGMEMEVAL_CLEANED_S_URL: &str = "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json";
 const LONGMEMEVAL_CLEANED_S_BYTES: u64 = 277_383_467;
@@ -634,7 +634,7 @@ struct PercentileSummary {
 async fn provider_embed_probe_async(cli: ProviderEmbedProbeCli) -> anyhow::Result<()> {
     let mode = ProbeHttpMode::parse(&cli.http_mode)?;
     let dataset = resolve_longmemeval_dataset(cli.dataset.clone())?;
-    let rows = symbiotic_mem_bench::symbiotic_memory_adapter::load_longmemeval(&dataset, None)?;
+    let rows = membench::symbiotic_memory_adapter::load_longmemeval(&dataset, None)?;
     let rows = select_longmemeval_rows(rows, cli.limit, &cli.sample)?;
     let groups = raw_embedding_text_groups(&rows);
     let pack_scope = parse_probe_pack_scope(&cli.pack_scope)?;
@@ -788,7 +788,7 @@ fn parse_probe_pack_scope(raw: &str) -> anyhow::Result<ProbePackScope> {
 
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn raw_embedding_text_groups(
-    rows: &[symbiotic_mem_bench::symbiotic_memory_adapter::LongMemEvalRecord],
+    rows: &[membench::symbiotic_memory_adapter::LongMemEvalRecord],
 ) -> Vec<(String, Vec<(String, String)>)> {
     // Effective shape now comes from the kit's config crate defaults (the
     // legacy env layer is gone); when the bench grows config-file plumbing
@@ -801,28 +801,28 @@ fn raw_embedding_text_groups(
     );
     rows.iter()
         .map(|row| {
-            let source = symbiotic_mem_bench::symbiotic_memory_adapter::longmemeval_to_source(row);
+            let source = membench::symbiotic_memory_adapter::longmemeval_to_source(row);
             let source_id = source.source_id.clone();
             let texts = symbiotic_memory::ingest::source_turns_with_derived_units(
                 &source,
                 raw_window,
                 distill.raw_unit_max_input_tokens,
             )
-                .into_iter()
-                .flat_map(move |turn| {
-                    let formatted = symbiotic_memory::ingest::format_turn_for_embedding(&turn);
-                    if symbiotic_memory::ingest::approx_tokens(&formatted) > max_input_tokens {
-                        symbiotic_memory::ingest::split_turn_by_text_budget(&turn, max_input_tokens)
-                    } else {
-                        vec![turn]
-                    }
-                })
-                .map(|turn| {
-                    let label = format!("turn={}", turn.turn_id);
-                    let text = symbiotic_memory::ingest::format_turn_for_embedding(&turn);
-                    (label, text)
-                })
-                .collect::<Vec<_>>();
+            .into_iter()
+            .flat_map(move |turn| {
+                let formatted = symbiotic_memory::ingest::format_turn_for_embedding(&turn);
+                if symbiotic_memory::ingest::approx_tokens(&formatted) > max_input_tokens {
+                    symbiotic_memory::ingest::split_turn_by_text_budget(&turn, max_input_tokens)
+                } else {
+                    vec![turn]
+                }
+            })
+            .map(|turn| {
+                let label = format!("turn={}", turn.turn_id);
+                let text = symbiotic_memory::ingest::format_turn_for_embedding(&turn);
+                (label, text)
+            })
+            .collect::<Vec<_>>();
             (source_id, texts)
         })
         .collect()
@@ -2594,7 +2594,7 @@ fn evidence_id_is_raw_turn(id: &str) -> bool {
 /// raw candidates are turn ids). `haystack_session_ids[sk]` names session `sk`
 /// and `haystack_sessions[sk][ti]` is its `ti`-th turn.
 fn gold_turn_ids(
-    record: &symbiotic_mem_bench::symbiotic_memory_adapter::LongMemEvalRecord,
+    record: &membench::symbiotic_memory_adapter::LongMemEvalRecord,
 ) -> BTreeSet<String> {
     let mut gold = BTreeSet::new();
     for (sk, session) in record.haystack_sessions.iter().enumerate() {
@@ -2749,15 +2749,14 @@ fn gold_eval(run: &str) -> anyhow::Result<()> {
         .and_then(|value| value.as_str())
         .ok_or_else(|| anyhow::anyhow!("run-params.json has no string `dataset` field"))?;
     let dataset_path = resolve_repo_path(Path::new(dataset_field));
-    let records =
-        symbiotic_mem_bench::symbiotic_memory_adapter::load_longmemeval(&dataset_path, None)
-            .with_context(|| format!("loading dataset {}", portable_path(&dataset_path)))?;
+    let records = membench::symbiotic_memory_adapter::load_longmemeval(&dataset_path, None)
+        .with_context(|| format!("loading dataset {}", portable_path(&dataset_path)))?;
 
     // Verdicts keyed by question id; correctness from the autoeval boolean (the
     // `label` string "incorrect" contains "correct" — never substring it).
     let mut correct_by_qid: BTreeMap<String, bool> = BTreeMap::new();
     let mut abstain_by_qid: BTreeMap<String, bool> = BTreeMap::new();
-    for verdict in symbiotic_mem_bench::artifacts::read_verdicts(&run_root) {
+    for verdict in membench::artifacts::read_verdicts(&run_root) {
         let correct = verdict
             .autoeval_label
             .as_ref()
@@ -3695,8 +3694,11 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
                 "SYMBIOTIC_MEMORY__TRANSPORT__HTTP1_ONLY",
                 run.embedder == "openrouter"
             ),
-            run_env_value(&run, "SYMBIOTIC_MEMORY__TRANSPORT__OPENROUTER_CLIENT_POOL_SIZE")
-                .as_deref(),
+            run_env_value(
+                &run,
+                "SYMBIOTIC_MEMORY__TRANSPORT__OPENROUTER_CLIENT_POOL_SIZE"
+            )
+            .as_deref(),
             run_env_value(&run, "SYMBIOTIC_MEMORY__TRANSPORT__POOL_MAX_IDLE_PER_HOST").as_deref(),
         ),
         transport_label(
@@ -3708,7 +3710,7 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
     );
 
     let provider_runtime = ProviderRuntime::new(&run, &config)?;
-    let rows = symbiotic_mem_bench::symbiotic_memory_adapter::load_longmemeval(&run.dataset, None)?;
+    let rows = membench::symbiotic_memory_adapter::load_longmemeval(&run.dataset, None)?;
     let rows = select_longmemeval_rows(rows, run.limit, &run.sample)?;
     // --rejudge: re-grade an existing run's stored hypotheses with the current judge, NO re-answer.
     // Reuses this run root's hypotheses.jsonl (fresh=false keeps it intact); score_prepared rewrites
@@ -3758,7 +3760,7 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
     // Guardrail: warn loudly when a tuning knob is set while its enabling gate is OFF, so a knob
     // never silently no-ops (which previously invalidated weeks of experiments).
     warn_inert_tuning_knobs(&run, redo_stage.as_deref());
-    symbiotic_mem_bench::symbiotic_memory_adapter::set_redo_stage(redo_stage);
+    membench::symbiotic_memory_adapter::set_redo_stage(redo_stage);
     // Supersession-detection post-pass (MEMBENCH_SUPERSESSION_DETECTION): the kit's deterministic
     // lifecycle-detection pass runs over each vault's active base facts BEFORE answering. It
     // MUTATES the vault ledger / the recall index / the archive, so it is only valid over vaults this
@@ -3776,9 +3778,7 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
             "[longmemeval] supersession-detection post-pass enabled (MEMBENCH_SUPERSESSION_DETECTION=1): vaults will be copied, not linked"
         );
     }
-    symbiotic_mem_bench::symbiotic_memory_adapter::set_supersession_detection(
-        supersession_detection,
-    );
+    membench::symbiotic_memory_adapter::set_supersession_detection(supersession_detection);
     // Resolve the kit's typed config (SYMBIOTIC_MEMORY__* from env-file/process) and install it —
     // the adapter stamps its sections on every engine it constructs. Overridden keys are echoed so
     // an arm's config surface is visible in the run log.
@@ -3791,7 +3791,7 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
             &kit_config.hash[..12]
         );
     }
-    symbiotic_mem_bench::symbiotic_memory_adapter::set_kit_config(kit_config.config.clone());
+    membench::symbiotic_memory_adapter::set_kit_config(kit_config.config.clone());
     if redo_active && run.answer_only {
         anyhow::bail!("a redo stage and --answer-only are mutually exclusive");
     }
@@ -3849,7 +3849,7 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
     if run.answer_unavailable_retry {
         policy.answer_unavailable_retry = true;
     }
-    symbiotic_mem_bench::symbiotic_memory_adapter::clear_score_artifacts(
+    membench::symbiotic_memory_adapter::clear_score_artifacts(
         &run.run_root,
         native_hypotheses_path(&run.run_root),
     )?;
@@ -3877,7 +3877,7 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
         let planner_factory = provider_runtime.query_planner_factory(&run)?;
         let reranker = provider_runtime.reranker(&run)?;
         runtime.block_on(
-            symbiotic_mem_bench::symbiotic_memory_adapter::run_longmemeval_vault_with_planner(
+            membench::symbiotic_memory_adapter::run_longmemeval_vault_with_planner(
                 &rows,
                 &run.run_root,
                 move || embedder_factory(),
@@ -3907,17 +3907,15 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
         let embedder_factory = provider_runtime.embedding_factory(&run)?;
         let distiller_factory = provider_runtime.distiller_factory(&run)?;
         let answer_factory = provider_runtime.answer_factory(&run)?;
-        runtime.block_on(
-            symbiotic_mem_bench::symbiotic_memory_adapter::run_longmemeval_slice(
-                &rows,
-                symbiotic_memory::storage::InMemoryStore::default,
-                move || embedder_factory(),
-                move || distiller_factory(),
-                move || answer_factory(),
-                policy,
-                hypotheses_path.clone(),
-            ),
-        )?;
+        runtime.block_on(membench::symbiotic_memory_adapter::run_longmemeval_slice(
+            &rows,
+            symbiotic_memory::storage::InMemoryStore::default,
+            move || embedder_factory(),
+            move || distiller_factory(),
+            move || answer_factory(),
+            policy,
+            hypotheses_path.clone(),
+        ))?;
     } else {
         anyhow::bail!(
             "unknown --store value: {} (sqlite and zvec-hybrid were deleted in the kit's §12 \
@@ -4142,7 +4140,7 @@ fn clear_answer_only_run_outputs(run_root: &Path) -> anyhow::Result<()> {
 fn prepare_re_embed_linked_vaults(
     run_root: &Path,
     source_vault_root: &Path,
-    rows: &[symbiotic_mem_bench::symbiotic_memory_adapter::LongMemEvalRecord],
+    rows: &[membench::symbiotic_memory_adapter::LongMemEvalRecord],
 ) -> anyhow::Result<()> {
     let source_vault_root = resolve_source_vault_root(source_vault_root);
     if !source_vault_root.is_dir() {
@@ -4169,7 +4167,7 @@ fn prepare_re_embed_linked_vaults(
 fn prepare_supersession_detection_vaults(
     run_root: &Path,
     source_vault_root: &Path,
-    rows: &[symbiotic_mem_bench::symbiotic_memory_adapter::LongMemEvalRecord],
+    rows: &[membench::symbiotic_memory_adapter::LongMemEvalRecord],
 ) -> anyhow::Result<()> {
     let source_vault_root = resolve_source_vault_root(source_vault_root);
     if !source_vault_root.is_dir() {
@@ -4197,7 +4195,7 @@ fn prepare_supersession_detection_vaults(
 fn prepare_answer_only_linked_vaults(
     run_root: &Path,
     source_vault_root: &Path,
-    rows: &[symbiotic_mem_bench::symbiotic_memory_adapter::LongMemEvalRecord],
+    rows: &[membench::symbiotic_memory_adapter::LongMemEvalRecord],
 ) -> anyhow::Result<()> {
     let source_vault_root = resolve_source_vault_root(source_vault_root);
     if !source_vault_root.is_dir() {
@@ -4360,8 +4358,8 @@ impl ProviderRuntime {
     fn debug_metadata(
         &self,
         run: &SymbioticMemoryCliRun,
-    ) -> symbiotic_mem_bench::symbiotic_memory_adapter::BenchDebugMetadata {
-        use symbiotic_mem_bench::symbiotic_memory_adapter::{
+    ) -> membench::symbiotic_memory_adapter::BenchDebugMetadata {
+        use membench::symbiotic_memory_adapter::{
             BenchDebugMetadata, BenchObservedCapabilities, BenchSupportedCapabilities,
             BenchTraceCapabilities,
         };
@@ -4440,7 +4438,7 @@ impl ProviderRuntime {
     fn model_debug_rows(
         &self,
         run: &SymbioticMemoryCliRun,
-    ) -> Vec<symbiotic_mem_bench::symbiotic_memory_adapter::BenchModelDebug> {
+    ) -> Vec<membench::symbiotic_memory_adapter::BenchModelDebug> {
         // Show the CONSOLIDATE (reweave) binding only when the consolidator is enabled, so the
         // dashboard surfaces that the post-distill consolidation pass is running and which model /
         // thinking / queue it uses (otherwise reweave is invisible behind the shared chat queue).
@@ -4474,8 +4472,8 @@ impl ProviderRuntime {
         &self,
         run: &SymbioticMemoryCliRun,
         role: &str,
-    ) -> Option<symbiotic_mem_bench::symbiotic_memory_adapter::BenchModelDebug> {
-        use symbiotic_mem_bench::symbiotic_memory_adapter::BenchModelDebug;
+    ) -> Option<membench::symbiotic_memory_adapter::BenchModelDebug> {
+        use membench::symbiotic_memory_adapter::BenchModelDebug;
         let base = match role {
             "DISTILL" => &self.config.providers.distill,
             "CONSOLIDATE" => &self.config.providers.distill,
@@ -4525,8 +4523,8 @@ impl ProviderRuntime {
     fn judge_model_debug_row(
         &self,
         run: &SymbioticMemoryCliRun,
-    ) -> symbiotic_mem_bench::symbiotic_memory_adapter::BenchModelDebug {
-        use symbiotic_mem_bench::symbiotic_memory_adapter::BenchModelDebug;
+    ) -> membench::symbiotic_memory_adapter::BenchModelDebug {
+        use membench::symbiotic_memory_adapter::BenchModelDebug;
         let judge = resolved_judge_params(run);
         let adapter =
             symbiotic_memory::ProviderAdapterConfig::new("chat", judge.operator, judge.model);
@@ -4697,8 +4695,9 @@ impl ProviderRuntime {
                 let prompt = load_memory_prompt(run, &run.distill_prompt)?;
                 let chat_factory =
                     self.chat_factory(run, "DISTILL", &self.config.providers.distill)?;
-                let kit_distill =
-                    symbiotic_mem_bench::symbiotic_memory_adapter::kit_config().distill.clone();
+                let kit_distill = membench::symbiotic_memory_adapter::kit_config()
+                    .distill
+                    .clone();
                 // Window size comes from the resolved kit config (`distill.turns_per_window`,
                 // overridable per arm via SYMBIOTIC_MEMORY__DISTILL__TURNS_PER_WINDOW).
                 // Semantic boundaries need an embedder; the caching layer plus the
@@ -4747,8 +4746,9 @@ impl ProviderRuntime {
         }
         let prompt = load_memory_prompt(run, "reweave")?;
         let chat_factory = self.chat_factory(run, "CONSOLIDATE", &self.config.providers.distill)?;
-        let kit_distill =
-            symbiotic_mem_bench::symbiotic_memory_adapter::kit_config().distill.clone();
+        let kit_distill = membench::symbiotic_memory_adapter::kit_config()
+            .distill
+            .clone();
         // Reweave window size comes from the resolved kit config
         // (`distill.consolidate_turns_per_window`; 0 = the bench default of 64).
         let turns_per_window = Some(kit_distill.consolidate_turns_per_window)
@@ -4804,7 +4804,7 @@ impl ProviderRuntime {
     fn reranker(
         &self,
         run: &SymbioticMemoryCliRun,
-    ) -> anyhow::Result<symbiotic_mem_bench::symbiotic_memory_adapter::RerankCascade> {
+    ) -> anyhow::Result<membench::symbiotic_memory_adapter::RerankCascade> {
         let enabled = run_env_value(run, "MEMBENCH_RERANK")
             .map(|value| {
                 matches!(
@@ -4843,13 +4843,11 @@ impl ProviderRuntime {
             _ => (None, 20),
         };
 
-        Ok(
-            symbiotic_mem_bench::symbiotic_memory_adapter::RerankCascade {
-                main,
-                stage1,
-                stage1_top_x,
-            },
-        )
+        Ok(membench::symbiotic_memory_adapter::RerankCascade {
+            main,
+            stage1,
+            stage1_top_x,
+        })
     }
 
     /// Builds a single queued `OpenRouterReranker` (Cohere-compatible `POST {base}/rerank`). The
@@ -5221,13 +5219,12 @@ struct NativeAutoEvalLabel {
 #[cfg(feature = "symbiotic-memory-adapter")]
 async fn score_longmemeval_native(
     run: &SymbioticMemoryCliRun,
-    rows: &[symbiotic_mem_bench::symbiotic_memory_adapter::LongMemEvalRecord],
+    rows: &[membench::symbiotic_memory_adapter::LongMemEvalRecord],
     hypotheses_path: &Path,
     judge_factory: Arc<dyn Fn() -> Arc<dyn symbiotic_memory::ChatProvider> + Send + Sync>,
 ) -> anyhow::Result<()> {
     let oracle = run.oracle.as_deref().unwrap_or(&run.dataset);
-    let oracle_rows =
-        symbiotic_mem_bench::symbiotic_memory_adapter::load_longmemeval(oracle, None)?;
+    let oracle_rows = membench::symbiotic_memory_adapter::load_longmemeval(oracle, None)?;
     let oracle_by_id = oracle_rows
         .into_iter()
         .map(|row| (row.question_id.clone(), row))
@@ -5590,7 +5587,7 @@ fn task_averaged_accuracy(per_question_type: &serde_json::Map<String, Value>) ->
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn read_native_hypotheses(
     path: &Path,
-) -> anyhow::Result<Vec<symbiotic_mem_bench::symbiotic_memory_adapter::BenchHypothesis>> {
+) -> anyhow::Result<Vec<membench::symbiotic_memory_adapter::BenchHypothesis>> {
     let values = read_jsonl_values(path, None)?;
     values
         .into_iter()
@@ -5601,10 +5598,10 @@ fn read_native_hypotheses(
 
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn select_longmemeval_rows(
-    rows: Vec<symbiotic_mem_bench::symbiotic_memory_adapter::LongMemEvalRecord>,
+    rows: Vec<membench::symbiotic_memory_adapter::LongMemEvalRecord>,
     limit: usize,
     sample: &str,
-) -> anyhow::Result<Vec<symbiotic_mem_bench::symbiotic_memory_adapter::LongMemEvalRecord>> {
+) -> anyhow::Result<Vec<membench::symbiotic_memory_adapter::LongMemEvalRecord>> {
     if limit >= rows.len() {
         return Ok(rows);
     }
@@ -5880,8 +5877,10 @@ fn symbiotic_memory_run_params(run: &SymbioticMemoryCliRun) -> serde_json::Value
         "SYMBIOTIC_MEMORY__TRANSPORT__HTTP1_ONLY",
         run.embedder == "openrouter",
     );
-    let openrouter_http_client_pool_size =
-        run_env_value(run, "SYMBIOTIC_MEMORY__TRANSPORT__OPENROUTER_CLIENT_POOL_SIZE");
+    let openrouter_http_client_pool_size = run_env_value(
+        run,
+        "SYMBIOTIC_MEMORY__TRANSPORT__OPENROUTER_CLIENT_POOL_SIZE",
+    );
     let openrouter_http_pool_max_idle_per_host =
         run_env_value(run, "SYMBIOTIC_MEMORY__TRANSPORT__POOL_MAX_IDLE_PER_HOST");
     let openrouter_http_connect_timeout_secs =
@@ -5897,7 +5896,8 @@ fn symbiotic_memory_run_params(run: &SymbioticMemoryCliRun) -> serde_json::Value
         run_env_value(run, "SYMBIOTIC_MEMORY__TRANSPORT__CONNECT_TIMEOUT_SECS");
     let chat_http_tcp_keepalive_secs =
         run_env_value(run, "SYMBIOTIC_MEMORY__TRANSPORT__TCP_KEEPALIVE_SECS");
-    let chat_http_timeout_secs = run_env_value(run, "SYMBIOTIC_MEMORY__TRANSPORT__CHAT_TIMEOUT_SECS");
+    let chat_http_timeout_secs =
+        run_env_value(run, "SYMBIOTIC_MEMORY__TRANSPORT__CHAT_TIMEOUT_SECS");
     let openrouter_embed_input_type = run_env_value(run, "SYMBIOTIC_MEMORY__EMBED__INPUT_TYPE");
     let openrouter_embed_send_default_input_type = run_env_bool(
         run,
@@ -6939,9 +6939,7 @@ mod tests {
 
     #[test]
     fn gold_turn_ids_uses_session_id_and_turn_index_of_answer_turns() {
-        use symbiotic_mem_bench::symbiotic_memory_adapter::{
-            LongMemEvalMessage, LongMemEvalRecord,
-        };
+        use membench::symbiotic_memory_adapter::{LongMemEvalMessage, LongMemEvalRecord};
         let msg = |has_answer: bool| LongMemEvalMessage {
             role: "user".to_string(),
             content: String::new(),
@@ -7135,9 +7133,7 @@ mod tests {
     #[cfg(all(feature = "symbiotic-memory-adapter", unix))]
     #[test]
     fn prepares_answer_only_vaults_with_copied_collections_and_linked_archive() {
-        use symbiotic_mem_bench::symbiotic_memory_adapter::{
-            LongMemEvalMessage, LongMemEvalRecord,
-        };
+        use membench::symbiotic_memory_adapter::{LongMemEvalMessage, LongMemEvalRecord};
         use symbiotic_memory::vault::VAULT_INDEX_DIR;
 
         let dir = tempfile::tempdir().unwrap();
@@ -7391,7 +7387,8 @@ mod tests {
             Some("run/raw/judge-cache-prewarm/model-traces.jsonl")
         );
         assert_eq!(
-            envs.get("MEMBENCH_QUEUE_TRACE_JSONL_PATH").map(String::as_str),
+            envs.get("MEMBENCH_QUEUE_TRACE_JSONL_PATH")
+                .map(String::as_str),
             Some("run/raw/judge-cache-prewarm/provider-queue/model-queue-traces.jsonl")
         );
     }
@@ -7439,8 +7436,8 @@ mod tests {
     #[cfg(feature = "symbiotic-memory-adapter")]
     #[test]
     fn stratified_longmemeval_sample_round_robins_question_types() {
+        use membench::symbiotic_memory_adapter::LongMemEvalRecord;
         use serde_json::Value;
-        use symbiotic_mem_bench::symbiotic_memory_adapter::LongMemEvalRecord;
 
         fn row(question_id: &str, question_type: &str) -> LongMemEvalRecord {
             LongMemEvalRecord {
@@ -7534,7 +7531,11 @@ mod tests {
         assert_eq!(cli.embedder, "openrouter");
         assert!(score);
         assert!(!is_ephemeral_native_smoke_run(
-            &cli, false, "llm", "openrouter", score
+            &cli,
+            false,
+            "llm",
+            "openrouter",
+            score
         ));
 
         let smoke = Cli::parse_from([
