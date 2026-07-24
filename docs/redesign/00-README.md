@@ -15,7 +15,7 @@ Read in this order:
 | 03 | [03-best-practices.md](03-best-practices.md) | Observability schema, transport, eval-product patterns, IA/UX |
 | 04 | [04-benchmark-multimodal-core.md](04-benchmark-multimodal-core.md) | BenchmarkManifest, (adapter × benchmark) matrix, Content spine |
 | 06 | [06-v2-multimodal-recall-experiment.md](06-v2-multimodal-recall-experiment.md) | **The experiment on 04's plumbing**: LongMemEval-v2 lanes (text-projection × native-image), cell matrix (A/B/C/D/E), locked free model slots, collapse rule, read-time router, phase ladder |
-| — | [.hermes/notes/redesign-requirements.md](../../.hermes/notes/redesign-requirements.md) | The hard requirements from the user |
+| — | [notes/redesign-requirements.md](notes/redesign-requirements.md) | The hard requirements from the user |
 
 Hi-fi prototypes live in [`prototype/`](prototype/) — a clickable terminal cockpit
 (`index.html`) plus per-screen files (`runs.html`, `leaderboard.html`, `lab.html`,

@@ -103,3 +103,24 @@ Previous headless browser JS heap readings (3-10 MB) undercount badly — they e
 - Iced→egui parity fixes (10 gaps, table visibility is blocker)
 - Flutter RAM from user Chrome Task Manager (8087 + 8089)
 - FRB visual verification by user on port 8089
+
+## Appendix: Flutter+FRB rebuild recipe (salvaged from the deleted spike)
+
+The `spikes/flutter-http-debugger/` code was removed during OSS triage (dead experiment; the
+recommendation above stands). What was worth keeping is the reproducible rebuild recipe and the
+caveats, recorded here:
+
+```bash
+# isolated codegen (do NOT clobber a global 2.12 install)
+cargo install --root /tmp/frb213-cargo flutter_rust_bridge_codegen --version 2.13.0-beta.4 --locked
+flutter pub get
+flutter_rust_bridge_codegen generate
+flutter_rust_bridge_codegen build-web --dart-root . --rust-root rust --output ../web --release
+flutter build web --release
+# serve with COOP/COEP headers — SharedArrayBuffer requires cross-origin isolation
+```
+
+Caveats measured at spike time (2026-07): frb 2.13.0-beta.4 is a prerelease; the smaller `--wasm`
+Flutter build is blocked by a Dart-WASM lint (`invalid_runtime_check_with_js_interop_types` in
+frb's `_web.dart`); ~8 deprecation warnings per page load; bundle ~954 KB + ~2.2 MB CanvasKit
+(~50× the Svelte bundle); live proof was against a stalled run, not an actively streaming one.

@@ -1,7 +1,3 @@
-The final version is written to `/Users/k/p/symbiotic-mem-bench/reranking-deep-dive.md`. Below is the published markdown.
-
----
-
 # Reranking, From Scratch: How We Matched Cohere Locally for Free
 
 *A companion deep-dive to Post 1. This is the specialized one — the story of building and tuning a local reranker that ties a bleeding-edge commercial API on accuracy, runs torch-free on a Mac, and stays swappable so we never get locked in. If you are new to retrieval, the early sections define every term as it shows up. If you are not, skip ahead to the MLX ports — that is where it gets weird.*
