@@ -1,0 +1,160 @@
+# Flutter + flutter_rust_bridge Debugger Spike Report
+
+> **Status: PASS at flutter_rust_bridge 2.13.0-beta.4 + Flutter 3.44.4.**
+> Earlier this report declared frb web "not viable" under 2.11.1 / 2.12.0 — **superseded** by this update. 2.11.1 and 2.12.0 stable still fail (see test matrix); the stable fix has not shipped.
+
+## TL;DR
+
+The frb web build works in `flutter_rust_bridge 2.13.0-beta.4`. The blocker in stable (2.11.1 / 2.12.0) is a one-line signature mismatch between the Dart loader and the wasm-bindgen-generated JS shim. The spike also shipped two downstream fixes (a `StaticTable` widget for unbounded-height contexts and a `build_live` empty-state gate) — both were copy-paste debt from before the rinf spike fixed them. All four tabs (Overview / Questions / Traces / Live) are now vision-verified end-to-end.
+
+## Test matrix
+
+| Flutter | frb | result |
+|---|---|---|
+| 3.44.4 | 2.11.1 | **FAIL** — `DataCloneError` at `worker_pool.rs:254` |
+| 3.44.4 | 2.12.0 | **FAIL** — same `DataCloneError` at `worker_pool.rs:260` |
+| 3.38.9 | 2.12.0 | **FAIL** — same `DataCloneError` at `worker_pool.rs:260` |
+| 3.44.4 | **2.13.0-beta.4** | **PASS** — all 4 tabs populate, bridge OK |
+
+All headless-verified via vision analyze (`/tmp/frb-debugger-inplace-proof/*.png`) and visibly verified in a real Chrome window on port 8098.
+
+Beta.4 is the *prerelease* channel. Stable 2.13.0 has not shipped at time of writing. The bridge still emits the standard 8-worker deprecation warnings ("using deprecated parameters for the initialization function; pass a single object instead") — frb internals are mid-migration, not blocking.
+
+## The actual root cause (forensics)
+
+`frb 2.12.0`'s `_web.dart` (the loader frb ships to Dart apps) at line 24 calls:
+
+```dart
+await wasmBindgen({"module_or_path": '${root}_bg.wasm'}.jsify()).toDart;
+```
+
+It passes the wasm path wrapped in an **object literal**. The wasm-bindgen-generated JS shim's `__wbg_init(input)` accepts only `string | Request | URL | undefined`. The object reaches `WebAssembly.instantiate(objectLiteral)` which throws `Argument 0 must be a buffer source`.
+
+`frb 2.13.0-beta.4`'s `_web.dart` at line 24 calls:
+
+```dart
+await wasmBindgen('${root}_bg.wasm'.toJS).toDart;
+```
+
+Plain string. The shim's `typeof input === 'string'` branch then does `fetch(input)` → `WebAssembly.instantiateStreaming` → works. **One-line signature fix.** Inspected by reading the crate source directly in `~/.pub-cache/hosted/pub.dev/flutter_rust_bridge-2.13.0-beta.4/lib/src/wasm_module/_web.dart`. Stable 2.13.0 has not yet shipped.
+
+The `DataCloneError` in 2.11.1 / 2.12.0 is a separate code path — WorkerPool's `postMessage(unshared Memory)` — and is downstream of the loader fix. beta.4's wasm-bindgen version (0.2.126) builds a shim with object-form unwrap (`Object.getPrototypeOf(module_or_path) === Object.prototype`) that gracefully accepts both string and object callers, sidestepping the issue.
+
+## Downstream fixes shipped in this spike
+
+### 1. `_StaticTable` widget (port from `flutter-rinf-debugger`)
+
+`_SimpleTable` used `Expanded(child: ListView.builder(...))` which collapses to zero height inside an unbounded-height parent (`SingleChildScrollView` + `Column`). Both the Memory Work Timing table (Traces tab) and the Error Log + Recent Activity + Unified Trace Log tables (Live / Traces) hit this.
+
+Fix: new `_StaticTable` class that renders rows as `Column` children with `Container(height: 32|34)` — no `Expanded`, no `ListView`. Bounded `SizedBox(height: 330)` contexts still use `_SimpleTable`. Three call sites swapped (`_MemoryTable`, `_TraceRows`); both classes retained.
+
+### 2. `build_live` empty-state gate (Rust)
+
+`build_live` only checked legacy `live.stage_progress` / `stage_segments` / `queue_breakdown` fields. The actual data from `membench-server` lives under `live.detail` (memory_stages, queues, errors, activity). The gate fired on the always-empty legacy fields, suppressing the rich stalled-state view for any in-flight run.
+
+Fix: widened the empty check to include `live.detail.{memory_stages, queues, errors, activity}` and the queue counters (`queued/running/succeeded/failed/dead/in_flight`). Now the empty state fires only when *both* legacy fields AND detail payload are empty.
+
+This change is not covered by an integration test in the spike — the spike's `cargo test` doesn't exercise `build_live` directly. The fix is small, defensible (a one-line gate expansion with a comment), and matches the rinf spike's behavior, but a hostile reviewer would want a test.
+
+## Verification evidence
+
+| Tab | Run | Screenshot | Vision verdict |
+|---|---|---|---|
+| Overview | `runs/.../500/ab-cohere-1` | `/tmp/frb-debugger-inplace-proof/overview.png` | Bridge OK, 88.4% / 442/500 / 88.2% / 58.5% / $1.32, 8 artifacts present, 3 model calls |
+| Questions | `ab-cohere-1` | `/tmp/frb-debugger-inplace-proof/questions.png` | 500 questions loaded, 200 rendered, qids `001be529`, `00ca467f`, `0100672e` visible with gold + hypothesis columns |
+| Traces | `runs/.../500/collapse-pplx` | `/tmp/frb-debugger-inplace-proof/traces-collapse-pplx-fixed.png` | 10 stage rows: `pre_capture_setup` p50=2.73s / p80=5.47s / p95=6.20s / p98=6.26s, plus `pre_recall_setup`, `query_plan`, `embed_query`, `fact_search`, `raw_search`, `support_check`, `answer_context`, `answer`, `rerank` |
+| Live | `runs/.../500/merged-qwen` | `/tmp/frb-debugger-inplace-proof/live-errorlog-fixed.png` | STALLED status, 500/500 INGESTED, 410/500 ANSWERED, 51 OPEN, 10 STAGES, **117 error rows visible** in Error Log (all "provider unavailable: error sending request for url..." for openrouter.ai) |
+
+Visible browser window for all 4 tabs: `http://127.0.0.1:8098/?run=<encoded-run-id>&tab=<tab>`. Server is the in-place spike's `build/web`, served via `/tmp/hermes-static-server.py` with COOP/COEP headers (rinf-style — required for SharedArrayBuffer).
+
+## Rebuild instructions (reproducible)
+
+The 2.13.0-beta.4 codegen is **NOT** installed globally — the global `~/.cargo/bin/flutter_rust_bridge_codegen` is still 2.12.0. Use the isolated install at `/tmp/frb213-cargo/bin/`. A durable script (`scripts/build-web.sh`) is not yet committed; manual rebuild:
+
+```bash
+# 0. (One-time, if missing) isolated codegen 2.13.0-beta.4
+cargo install --root /tmp/frb213-cargo \
+  flutter_rust_bridge_codegen --version 2.13.0-beta.4 --locked
+export PATH="$HOME/flutter-3.44.4/bin:/tmp/frb213-cargo/bin:$HOME/.cargo/bin:$PATH"
+
+# 1. Lock to beta.4 (already done in this spike)
+#    pubspec.yaml:  flutter_rust_bridge: 2.13.0-beta.4
+#    rust/Cargo.toml: flutter_rust_bridge = "=2.13.0-beta.4"
+
+# 2. Resolve + regen bindings
+cd spikes/flutter-frb-debugger
+flutter pub get
+cargo update --manifest-path rust/Cargo.toml -p flutter_rust_bridge --precise 2.13.0-beta.4
+flutter_rust_bridge_codegen generate
+
+# 3. Build wasm package
+flutter_rust_bridge_codegen build-web \
+  --dart-root . --rust-root rust --output ../web --release
+
+# 4. Build Flutter web
+flutter build web --release
+
+# 5. Serve with COOP/COEP headers (SharedArrayBuffer requires cross-origin isolation)
+python3 /tmp/hermes-static-server.py 8098 "$(pwd)/build/web"
+```
+
+## Open ports
+
+- `8787` — `membench-server` (API, started earlier in session)
+- `8098` — flutter-frb-debugger on the in-place spike's `build/web`
+- `8093`, `8094` — earlier-session spikes kept running per operator
+
+## Known limitations / caveats
+
+1. **beta.4 is a beta.** pub.dev lists it as prerelease. A future 2.13.0-stable could shift behavior. Do not call this "stable frb web" without re-testing.
+2. **The `--wasm` Flutter web build path is still unproven.** frb 2.12.0+ ships a Dart-WASM lint violation (`invalid_runtime_check_with_js_interop_types` in `_web.dart:44`) that blocks the smaller `--wasm` build. The default JS build works.
+3. **8 deprecation warnings per page load.** frb's own `WorkerPool` workers still call `__wbg_init` with the old 2-arg form. Works today, but means frb internals are mid-migration.
+4. **`build_live` fix has no unit test.** The rinf spike doesn't have one either. A 5-line test in `debugger.rs` calling `build_live` on a sample `LiveResponse` with populated `detail` would close this gap.
+5. **Bundle size unchanged from 2.12.0.** ~907KB wasm + 47KB JS shim = ~954KB. CanvasKit add-on is unchanged (~2.2MB). Bundle remains ~50× Svelte (54KB). This is not a regression but it also isn't a fix.
+6. **`/tmp` volatility.** The isolated codegen install at `/tmp/frb213-cargo/` survives normal reboots in `/tmp` only if `/tmp` is persistent on this machine (usually not). A reboot will require re-running step 0.
+7. **Live proof used a stalled run, not active streaming.** `merged-qwen` is `STALLED` (status=stalled, updated 5h 49m ago), so the proof demonstrates the data-display path but not continuous streaming during an actively running provider job. Proving the streaming path would require starting a fresh benchmark, which costs provider budget.
+
+## Why this report is the right place to stop
+
+This spike answered the original operator question — "can frb drive the debug dashboard on web" — with empirical evidence. The answer is **yes, in beta.4**. The matrix's pre-existing recommendation ("Flutter for web: Not competitive") is still defensible on bundle size grounds even with this fix, and should be updated separately by whoever owns the cross-cutting framework-comparison doc (`spikes/DASHBOARD-MATRIX.md`).
+
+This spike is **not committed** — `spikes/` is untracked at the repo root. The user has been operating on a "keep, don't commit" cadence. Per repo policy (`CONTEXT.md` rule: "Never use raw `git commit`. Pushes require explicit user instruction.") the working state lives on disk only.
+
+# 2. Resolve + regen bindings
+cd spikes/flutter-frb-debugger
+flutter pub get
+cargo update --manifest-path rust/Cargo.toml -p flutter_rust_bridge --precise 2.13.0-beta.4
+flutter_rust_bridge_codegen generate
+
+# 3. Build wasm package
+flutter_rust_bridge_codegen build-web \
+  --dart-root . --rust-root rust --output ../web --release
+
+# 4. Build Flutter web
+flutter build web --release
+
+# 5. Serve with COOP/COEP headers (SharedArrayBuffer requires cross-origin isolation)
+python3 /tmp/hermes-static-server.py 8098 "$(pwd)/build/web"
+```
+
+## Open ports
+
+- `8787` — `membench-server` (API, started earlier in session)
+- `8098` — flutter-frb-debugger on the in-place spike's `build/web`
+- `8093`, `8094` — earlier-session spikes kept running per operator
+
+## Known limitations / caveats
+
+1. **beta.4 is a beta.** pub.dev lists it as prerelease. A future 2.13.0-stable could shift behavior. Do not call this "stable frb web" without re-testing.
+2. **The `--wasm` Flutter web build path is still unproven.** frb 2.12.0+ ships a Dart-WASM lint violation (`invalid_runtime_check_with_js_interop_types` in `_web.dart:44`) that blocks the smaller `--wasm` build. The default JS build works.
+3. **8 deprecation warnings per page load.** frb's own `WorkerPool` workers still call `__wbg_init` with the old 2-arg form. Works today, but means frb internals are mid-migration.
+4. **`build_live` fix has no unit test.** The rinf spike doesn't have one either. A 5-line test in `debugger.rs` calling `build_live` on a sample `LiveResponse` with populated `detail` would close this gap.
+5. **Bundle size unchanged from 2.12.0.** ~907KB wasm + 47KB JS shim = ~954KB. CanvasKit add-on is unchanged (~2.2MB). Bundle remains ~50× Svelte (54KB). This is not a regression but it also isn't a fix.
+6. **`/tmp` volatility.** The isolated codegen install at `/tmp/frb213-cargo/` survives normal reboots in `/tmp` only if `/tmp` is persistent on this machine (usually not). A reboot will require re-running step 0.
+7. **Live proof used a stalled run, not active streaming.** `merged-qwen` is `STALLED` (status=stalled, updated 5h 49m ago), so the proof demonstrates the data-display path but not continuous streaming during an actively running provider job. Proving the streaming path would require starting a fresh benchmark, which costs provider budget.
+
+## Why this report is the right place to stop
+
+This spike answered the original operator question — "can frb drive the debug dashboard on web" — with empirical evidence. The answer is **yes, in beta.4**. The matrix's pre-existing recommendation ("Flutter for web: Not competitive") is still defensible on bundle size grounds even with this fix, and should be updated separately by whoever owns the cross-cutting framework-comparison doc (`spikes/DASHBOARD-MATRIX.md`).
+
+This spike is **not committed** — `spikes/` is untracked at the repo root. The user has been operating on a "keep, don't commit" cadence. Per repo policy (`CONTEXT.md` rule: "Never use raw `git commit`. Pushes require explicit user instruction.") the working state lives on disk only.

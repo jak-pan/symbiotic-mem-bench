@@ -1,0 +1,278 @@
+syntax = "proto3";
+
+// Seam S10 · Trace/event stream (StepEnvelope trace.v1 + ArchiveTraceSink).
+//
+// One typed, append-only, linkable step record for EVERY pipeline — ingest, recall,
+// bench run, agent run — the same record whether it is read statically or merged from a
+// live stream. This is the tap all learning drinks from; it exists to replace the four
+// drifting trace vocabularies (foundation ModelInvocationTrace → JSONL, engine
+// MemoryTraceEvent → memory-traces.jsonl, the stringly `membench.dashboard.v1` wire, and
+// the flat mock StepEvent) with ONE shape BEFORE membench v2 mints a fifth.
+//
+// Documented containment (convergence audit §4 S10):
+//   ModelInvocationTrace ⊂ ProviderCall
+//   MemoryTraceEvent     ⊂ RecallEvent / MemoryOpRef
+//
+// Consumers (mem-bench-2 docs/delivery/data-api.md §F — "THE #1 backend item"):
+//   tracesByAdapter, liveSteps  → StepEnvelope[] ledger read + server-stream
+//   TracesView, TraceWaterfall, TraceInspector, MemoryProvenance, StepFlow, Lab, Pulse
+// The mock StepEvent is a flat display row; this envelope is the generic append-only
+// source of truth the waterfall/inspector project FROM.
+//
+// Evolution rule: ADDITIVE-ONLY. New payload prongs = new field numbers; old readers skip
+// unknown prongs and render them neutrally (proven in the trace renderer). Never repurpose
+// or renumber a field. Reserved numbers/names below hold room for the known-future prongs.
+
+package membench.trace.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// ── Shared header vocabulary ────────────────────────────────────────────────
+// These mirror the ecosystem canon (Actor ~ S3/S12 author.kind; Sensitivity ~ S14
+// foundation 4-enum). They are declared locally so this file stays self-contained (the
+// three bench contracts import only google well-known types, never each other). They are
+// additive-only and MUST stay value-compatible with the canonical enums.
+
+// Actor.kind — who caused this step. Value set + NUMBERS are identical to memory-op.v1
+// Actor.Kind (S3) and action-envelope.v1 Actor.Kind (S15) so the three packages unify without
+// a renumber. Maps onto the kit's shipped Actor serde (symbiotic-memory/src/types.rs ~:36):
+// HUMAN→"human", SYSTEM→"system", every agent-family kind→"agent:<id>". Reserve, never renumber.
+enum ActorKind {
+  ACTOR_KIND_UNSPECIFIED = 0;
+  ACTOR_KIND_HUMAN = 1;
+  ACTOR_KIND_SYSTEM = 2;
+  ACTOR_KIND_AGENT = 3;
+  ACTOR_KIND_DISTILLER = 4;
+  ACTOR_KIND_DREAMER = 5;
+  ACTOR_KIND_REFEREE = 6;
+  ACTOR_KIND_EVOLUTION = 7; // reserved-in-use for the S20 loop closer
+}
+
+message Actor {
+  ActorKind kind = 1;
+  string id = 2;             // ULID/UUIDv7 — id-addressed, never a path (bake-in #1)
+  string capability_ref = 3; // S13 token that authorized the write (e.g. derivation.write)
+}
+
+// Sensitivity — foundation 4-enum (S14). Default T0 (SHAREABLE-floor); capture connectors
+// set higher. The Recall Gateway can only enforce what exists, so it is on the header.
+enum Sensitivity {
+  SENSITIVITY_UNSPECIFIED = 0;
+  SENSITIVITY_PUBLIC = 1;
+  SENSITIVITY_SHAREABLE = 2;
+  SENSITIVITY_PRIVATE = 3;   // "personal" is a documented Private alias (S14)
+  SENSITIVITY_RESTRICTED = 4;
+}
+
+enum Status {
+  STATUS_OK = 0;
+  STATUS_RUNNING = 1;
+  STATUS_PENDING = 2;
+  STATUS_FAILED = 3;
+  STATUS_CANCELLED = 4;
+}
+
+// Which typed payload family this step carries. Kept alongside the oneof so a reader can
+// branch on family before decoding, and so an unknown family still routes to a neutral lane.
+enum TraceFamily {
+  TRACE_FAMILY_UNSPECIFIED = 0;
+  TRACE_FAMILY_MEMORY = 1;
+  TRACE_FAMILY_PROVIDER = 2;
+  TRACE_FAMILY_RECALL = 3;
+  TRACE_FAMILY_GRAPH = 4;
+  TRACE_FAMILY_JUDGE = 5;
+  TRACE_FAMILY_RUNNER = 6;
+}
+
+// ── The Link DAG ────────────────────────────────────────────────────────────
+// The parent tree cannot express fan-out/fan-in/queue/retry relations; a Link carries the
+// causal edge a tree loses (this is where OTel itself landed — events are the atom).
+enum LinkRelation {
+  LINK_RELATION_UNSPECIFIED = 0;
+  LINK_RELATION_TRIGGERED_BY = 1;
+  LINK_RELATION_BATCH_MEMBER = 2;
+  LINK_RELATION_AGGREGATES = 3;
+  LINK_RELATION_FOLLOWS_FROM = 4;
+  LINK_RELATION_RETRY_OF = 5;
+  LINK_RELATION_COMPENSATES = 6;
+}
+
+message Link {
+  string ref = 1;        // target step_id
+  LinkRelation rel = 2;
+}
+
+// ── Timing ──────────────────────────────────────────────────────────────────
+// The wait fields are SCHEMA, not inferred (the measure-don't-reason lesson made a type).
+// budget_wait_ms and cooldown_wait_ms are split out from queue wait because conflating them
+// (`queued_ms`) is the exact opacity behind the 16-hour rpm incident (convergence §1 #10).
+message Timing {
+  optional int64 queued_ms = 1;        // time waiting for a queue slot
+  optional int64 budget_wait_ms = 2;   // time blocked on a rate/budget bucket
+  optional int64 cooldown_wait_ms = 3; // time blocked on a durable provider cooldown
+  optional int64 exec_ms = 4;          // actual work (e.g. HTTP round-trip)
+}
+
+// ── The envelope ────────────────────────────────────────────────────────────
+// One record type for static traces AND live streaming. Streaming is the SAME envelope
+// emitted incrementally and merged by step_id:
+//   StepStart  — ts_end unset, status RUNNING/PENDING
+//   StepUpdate — merge by step_id
+//   StepEnd    — ts_end set, terminal status
+// There is deliberately no separate Start/Update/End message: merge-by-step_id is the
+// contract (data-api.md §D/§F).
+message StepEnvelope {
+  // Header (bake-in irreversibles #2/#3/#5/#7): id · ts · actor · schema_version ·
+  // sensitivity, then typed payload, then links.
+  uint32 schema_version = 1;    // additive-only evolution; version negotiation is a feature
+  string step_id = 2;           // ULID/UUIDv7 — the merge key for streaming
+  string run_id = 3;
+  string trace_id = 4;          // one question/task
+  string parent_id = 5;         // tree parent; cross-tree causality goes on links
+  repeated Link links = 6;
+  string namespace = 7;         // user/session correlation (recall principal scoping)
+  Actor actor = 8;              // who caused this step (bake-in #5)
+  Sensitivity sensitivity = 9;  // default UNSPECIFIED == T0; connectors raise it (bake-in #7)
+
+  TraceFamily family = 10;      // routing hint; matches the payload prong
+  string kind = 11;             // taxonomy id from AdapterCapabilityManifest.steps (S16)
+  string lane = 12;             // manifest.trace_streams lane; unknown → neutral lane
+
+  google.protobuf.Timestamp ts_start = 13;
+  google.protobuf.Timestamp ts_end = 14; // unset ⇒ RUNNING (the streaming StepStart case)
+  Status status = 15;
+  uint32 attempt = 16;
+  Timing timing = 17;
+  optional int64 item_count = 18; // batch size / unit count for this step
+
+  oneof payload {
+    MemoryOpRef  memory   = 30;
+    ProviderCall provider = 31;
+    RecallEvent  recall   = 32;
+    GraphEvent   graph    = 33;
+    JudgeEvent   judge    = 34;
+    RunnerEvent  runner   = 35;
+    // Explicit Unknown passthrough: an unrecognized producer payload is stored, never
+    // rejected, so a fifth vocabulary degrades to neutral rendering instead of data loss.
+    UnknownPayload unknown = 49;
+  }
+
+  // x-<adapter>.* extension bag — host stores, never rejects (membench.* is host-owned).
+  map<string, string> ext = 40;
+
+  // Reserved payload prongs for the seams that land later — reserving costs nothing now and
+  // is a breaking change later. NUMBERS only, so the intended names stay addable additively:
+  //   36 action_envelope (S15) · 37 human_edit (S4) · 38 evolution (S20).
+  reserved 36, 37, 38;
+
+  // Reserved header room for multi-tenant / space / ACL evolution (S1/S6 do-now). NUMBERS
+  // only — the names stay free so the real fields can be added:
+  //   60 tenant_id · 61 space · 62 acl.
+  reserved 60, 61, 62;
+}
+
+// ── Typed payloads ──────────────────────────────────────────────────────────
+
+// MemoryTraceEvent ⊂ this. A reference to a memory-op (S3) that this step performed; the
+// full op lives in the memory-op.v1 journal, this is the trace-side pointer + summary.
+message MemoryOpRef {
+  // Mirrors memory-op.v1 kind (S3). ADD|UPDATE|DELETE|NOOP|MERGE|SUPERSEDE|EVICT|FORGET.
+  enum Op {
+    OP_UNSPECIFIED = 0;
+    OP_ADD = 1;
+    OP_UPDATE = 2;
+    OP_DELETE = 3;
+    OP_NOOP = 4;
+    OP_MERGE = 5;
+    OP_SUPERSEDE = 6;
+    OP_EVICT = 7;
+    OP_FORGET = 8;
+  }
+  Op op = 1;
+  string op_id = 2;                  // → memory-op.v1 journal entry
+  string target_memory_id = 3;
+  string slot_key = 4;
+  repeated string source_digests = 5; // sha256, lowercase hex (one digest vocabulary, S19)
+  string summary = 6;
+}
+
+// ModelInvocationTrace ⊂ this. One provider call with the timing that made the rpm bug
+// visible. charge_unit records what the rate bucket was charged (must be 1/request — the
+// contract text that keeps the overcharge bug class from recurring in a copy, S11).
+message ProviderCall {
+  string model = 1;                  // ModelIdentity operation:operator:model (foundation)
+  string operator = 2;
+  string operation = 3;
+  uint32 batch_size = 4;
+  string charge_unit = 5;            // "request" — NOT texts.len() (convergence §1 #10)
+  uint64 input_tokens = 6;
+  uint64 output_tokens = 7;
+  uint64 cached_input_tokens = 8;
+  optional int64 cost_micro_usd = 9;
+  bool cost_estimated = 10;
+}
+
+// RecallEvent — one retrieval step. The embed→rerank→gate cascade whose gold_rank powers
+// the coverage matrix and recall drop-out view (data-api.md §B/§F).
+message RecallEvent {
+  message Candidate {
+    string id = 1;       // turn id (s43:t18) or fact id — shared id space (S2 capture)
+    string corpus = 2;   // "facts" | "raw" | adapter-declared corpus
+    string mode = 3;     // "embed" | "rerank" | "bm25" | ...
+    double score = 4;
+    uint32 rank = 5;
+  }
+  repeated string corpora = 1;
+  repeated Candidate candidates = 2;
+  repeated Candidate rerank = 3;
+  uint32 dropped_by_gate = 4;   // items cut at the context budget (CONTEXT_CUT knob, S16)
+  optional uint32 gold_rank = 5;
+  optional uint32 gold_deepest_rank = 6;
+}
+
+// GraphEvent — temporal-graph adapters (zep). Extraction, entity resolution, edge
+// invalidation, traversal — carried so a graph adapter renders through the SAME envelope.
+message GraphEvent {
+  uint32 nodes_extracted = 1;
+  uint32 edges_extracted = 2;
+  uint32 resolutions = 3;
+  uint32 invalidations = 4;
+  uint32 traversal_hops = 5;
+}
+
+// JudgeEvent — the grading step. question/answer/gold are carried as plain text refs here;
+// the rich multimodal Content spine (redesign 2.2) lives in QuestionRunRecord, not on the
+// hot trace path.
+message JudgeEvent {
+  string question = 1;
+  string answer = 2;
+  string gold = 3;
+  string question_type = 4;     // from BenchmarkManifest.question_types (data-driven, S16)
+  repeated string support_ids = 5;
+  double support_score = 6;
+  string verdict = 7;           // judge label; is_abstention folded into RunnerEvent/record
+  string judge_model = 8;
+}
+
+// RunnerEvent — the run-level frame. concurrency{configured,observed} is the throughput
+// truth (measure VAULT concurrency from traces, not configured caps).
+message RunnerEvent {
+  string dataset = 1;
+  string dataset_fingerprint = 2;
+  uint32 concurrency_configured = 3;
+  uint32 concurrency_observed = 4;
+  uint32 questions_total = 5;
+  uint32 questions_done = 6;
+}
+
+// Explicit passthrough for an unrecognized producer payload — the same escape-hatch role as
+// memory-op.v1 UnknownOp and action-envelope.v1 OpaqueArtifact. Namespace rule (shared
+// ecosystem-wide): a third-party producer's `declared_kind` and any `attributes` keys are
+// namespaced `x-<component>` (membench.* is host-owned), the same x-<component> convention as
+// the `ext` maps above and OpaqueArtifact.namespace — the host stores it, never rejects it.
+message UnknownPayload {
+  string producer = 1;              // who emitted it (for triage)
+  string declared_kind = 2;         // the producer's own kind string; x-<component> if third-party
+  bytes raw = 3;                    // opaque original, preserved verbatim
+  map<string, string> attributes = 4;
+}

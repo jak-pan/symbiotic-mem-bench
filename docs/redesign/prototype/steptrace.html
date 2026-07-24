@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MEMBENCH v2 · Runs · Step Trace</title>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   MEMBENCH v2 — prototype design kit  (inlined in full)
+   ============================================================ */
+
+.mb-app {
+  /* surfaces */
+  --bg: #07080a;
+  --bg-panel: #0c0e12;
+  --bg-elev: #11141a;
+  --bg-row: #0a0c10;
+  --bg-row-alt: #0c0f14;
+  --bg-hover: #161b22;
+  --bg-sel: #1b2230;
+
+  /* lines */
+  --border: #191d25;
+  --border-bright: #262c37;
+  --grid: rgba(255, 255, 255, 0.028);
+
+  /* text */
+  --text: #ccd2db;
+  --text-dim: #828b98;
+  --text-faint: #4f5662;
+
+  /* signal palette */
+  --amber: #ffa524;
+  --amber-soft: #ffbf63;
+  --amber-dim: #9c6a1c;
+  --green: #2fcf7a;
+  --green-dim: #1d7a48;
+  --red: #ff5347;
+  --red-dim: #8f3029;
+  --cyan: #46a9ff;
+  --cyan-dim: #1f4a73;
+  --blue: #2f80ed;
+  --violet: #b285ff;
+  --violet-dim: #5b3f8a;
+  --gold: #e8c34a;
+  --gold-dim: #8a7328;
+  --teal: #2fd4c4;
+  --pink: #ff7ac2;
+
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --sans: "Archivo", system-ui, sans-serif;
+
+  --h-topbar: 40px;
+  --h-statusbar: 26px;
+
+  position: relative;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.mb-app *, .mb-app *::before, .mb-app *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* faint grid + vignette atmosphere */
+.mb-app::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 0;
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 44px 44px;
+}
+.mb-app::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 0;
+  background: radial-gradient(120% 80% at 50% -10%, rgba(255,165,36,0.05), transparent 60%);
+}
+.mb-app > * { position: relative; z-index: 1; }
+
+.mb-app h1, .mb-app h2, .mb-app h3, .mb-app h4 {
+  font-family: var(--sans); font-weight: 700; letter-spacing: 0.02em;
+}
+.mb-app a { color: var(--cyan); text-decoration: none; cursor: pointer; }
+.mb-app button, .mb-app input, .mb-app select, .mb-app textarea {
+  font-family: inherit; font-size: inherit; color: inherit;
+}
+.mb-app ::selection { background: rgba(255,165,36,0.28); color: #fff; }
+
+/* scrollbars */
+.mb-app *::-webkit-scrollbar { width: 9px; height: 9px; }
+.mb-app *::-webkit-scrollbar-track { background: transparent; }
+.mb-app *::-webkit-scrollbar-thumb { background: #20262f; border: 2px solid var(--bg); }
+.mb-app *::-webkit-scrollbar-thumb:hover { background: #2e3641; }
+
+/* ---------- typographic primitives ---------- */
+.mb-app .label {
+  font-family: var(--sans); font-size: 9.5px; font-weight: 700;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-faint);
+}
+.mb-app .mono-num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
+.mb-app .up { color: var(--green); } .mb-app .down { color: var(--red); }
+.mb-app .flat { color: var(--text-dim); } .mb-app .amber { color: var(--amber); }
+.mb-app .dim { color: var(--text-dim); } .mb-app .faint { color: var(--text-faint); }
+.mb-app .cyan { color: var(--cyan); } .mb-app .violet { color: var(--violet); }
+.mb-app .green { color: var(--green); } .mb-app .red { color: var(--red); }
+.mb-app .gold { color: var(--gold); } .mb-app .teal { color: var(--teal); }
+
+/* ---------- chips / tags ---------- */
+.mb-app .chip {
+  display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
+  border: 1px solid var(--border-bright); color: var(--text-dim); background: var(--bg-elev);
+  white-space: nowrap;
+}
+.mb-app .chip.amber { color: var(--amber); border-color: var(--amber-dim); background: rgba(255,165,36,0.07); }
+.mb-app .chip.green { color: var(--green); border-color: var(--green-dim); background: rgba(47,207,122,0.07); }
+.mb-app .chip.red { color: var(--red); border-color: var(--red-dim); background: rgba(255,83,71,0.07); }
+.mb-app .chip.cyan { color: var(--cyan); border-color: var(--cyan-dim); background: rgba(70,169,255,0.07); }
+.mb-app .chip.violet { color: var(--violet); border-color: var(--violet-dim); background: rgba(178,133,255,0.08); }
+.mb-app .chip.gold { color: var(--gold); border-color: var(--gold-dim); background: rgba(232,195,74,0.10); }
+.mb-app .chip.ghost { background: transparent; }
+.mb-app .chip.sm { font-size: 8.5px; padding: 0 4px; }
+
+/* removable filter chip */
+.mb-app .fchip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 2px 6px 2px 8px;
+  font-size: 10.5px; border: 1px solid var(--amber-dim); color: var(--amber);
+  background: rgba(255,165,36,0.08);
+}
+.mb-app .fchip b { font-weight: 700; }
+.mb-app .fchip .x { color: var(--amber-dim); cursor: pointer; font-weight: 700; }
+.mb-app .fchip .x:hover { color: var(--amber); }
+
+/* lane kind chip */
+.mb-app .bkind { border: 1px solid var(--border-bright); padding: 1px 5px; font-size: 8px; text-transform: uppercase; letter-spacing: 0.08em; }
+.mb-app .bkind.memory { color: var(--cyan); } .mb-app .bkind.provider { color: var(--amber); }
+.mb-app .bkind.recall { color: var(--violet); } .mb-app .bkind.judge { color: var(--gold); }
+.mb-app .bkind.runner { color: var(--teal); } .mb-app .bkind.graph { color: var(--pink); }
+
+/* ---------- panels ---------- */
+.mb-app .panel { background: var(--bg-panel); border: 1px solid var(--border); }
+.mb-app .panel-hd {
+  display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+  border-bottom: 1px solid var(--border); background: var(--bg-panel);
+}
+.mb-app .panel-hd h3, .mb-app .panel-hd .title {
+  font-family: var(--sans); font-size: 11px; font-weight: 700; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--text);
+}
+.mb-app .panel-hd .sub { font-size: 10px; color: var(--amber); letter-spacing: 0.08em; text-transform: uppercase; }
+.mb-app .panel-hd .spacer { flex: 1; }
+.mb-app .panel-bd { padding: 12px; }
+.mb-app .panel-bd.flush { padding: 0; }
+
+/* ---------- tables ---------- */
+.mb-app table.grid { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.mb-app table.grid th {
+  position: sticky; top: 0; z-index: 2; text-align: left;
+  font-family: var(--sans); font-size: 9.5px; font-weight: 700; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--text-faint); background: var(--bg-panel);
+  padding: 6px 10px; border-bottom: 1px solid var(--border-bright); white-space: nowrap; user-select: none;
+}
+.mb-app table.grid th.sortable { cursor: pointer; }
+.mb-app table.grid th.sortable:hover { color: var(--amber); }
+.mb-app table.grid th.num, .mb-app table.grid td.num { text-align: right; }
+.mb-app table.grid td { padding: 5px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.mb-app table.grid tbody tr { background: var(--bg-row); }
+.mb-app table.grid tbody tr:nth-child(even) { background: var(--bg-row-alt); }
+.mb-app table.grid tbody tr:hover { background: var(--bg-hover); }
+.mb-app table.grid tbody tr.selected { background: var(--bg-sel); box-shadow: inset 2px 0 0 var(--amber); }
+.mb-app table.grid tbody tr.clickable { cursor: pointer; }
+.mb-app td.truncate, .mb-app .truncate { max-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- buttons ---------- */
+.mb-app .btn {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px;
+  background: var(--bg-elev); border: 1px solid var(--border-bright); color: var(--text-dim);
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em; cursor: pointer; transition: all 0.1s ease;
+  white-space: nowrap;
+}
+.mb-app .btn:hover { border-color: var(--amber-dim); color: var(--amber); }
+.mb-app .btn.active { background: rgba(255,165,36,0.1); border-color: var(--amber-dim); color: var(--amber); }
+.mb-app .btn.sm { padding: 2px 8px; font-size: 10px; }
+.mb-app .btn.green:hover { border-color: var(--green-dim); color: var(--green); }
+.mb-app .btn.red:hover { border-color: var(--red-dim); color: var(--red); }
+.mb-app .btn.primary { background: rgba(255,165,36,0.12); border-color: var(--amber-dim); color: var(--amber); }
+.mb-app .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.mb-app input.field, .mb-app select.field, .mb-app textarea.field {
+  background: var(--bg); border: 1px solid var(--border-bright); color: var(--text);
+  padding: 4px 8px; font-size: 12px; width: 100%; outline: none;
+}
+.mb-app input.field:focus, .mb-app select.field:focus { border-color: var(--amber-dim); box-shadow: 0 0 0 1px rgba(255,165,36,0.25); }
+
+/* ---------- metric tiles ---------- */
+.mb-app .tiles { display: grid; gap: 1px; background: var(--border); }
+.mb-app .tile { background: var(--bg-panel); padding: 10px 12px; }
+.mb-app .tile .k { font-family: var(--sans); font-size: 9px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-faint); }
+.mb-app .tile .v { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; margin-top: 3px; font-variant-numeric: tabular-nums; }
+.mb-app .tile .v small { font-size: 12px; color: var(--text-dim); }
+.mb-app .tile.clickable { cursor: pointer; }
+.mb-app .tile.clickable:hover { background: var(--bg-hover); box-shadow: inset 0 -2px 0 var(--amber); }
+
+/* ---------- bars ---------- */
+.mb-app .bar-track { position: relative; height: 8px; background: var(--bg-elev); border: 1px solid var(--border); }
+.mb-app .bar-fill { position: absolute; inset: 0 auto 0 0; background: var(--amber); }
+.mb-app .bar-fill.green { background: var(--green); } .mb-app .bar-fill.red { background: var(--red); }
+.mb-app .bar-fill.cyan { background: var(--cyan); } .mb-app .bar-fill.violet { background: var(--violet); }
+
+/* diverging delta bar cell */
+.mb-app .dbar { position: relative; height: 12px; background: transparent; }
+.mb-app .dbar .mid { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--border-bright); }
+.mb-app .dbar .seg { position: absolute; top: 2px; bottom: 2px; }
+.mb-app .dbar .seg.pos { left: 50%; background: var(--green); }
+.mb-app .dbar .seg.neg { right: 50%; background: var(--red); }
+
+/* verdict marks */
+.mb-app .vmark { font-weight: 700; }
+.mb-app .vmark.ok { color: var(--green); } .mb-app .vmark.no { color: var(--red); }
+.mb-app .vmark.abs { color: var(--amber); } .mb-app .vmark.err { color: var(--violet); }
+
+/* status dot */
+.mb-app .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; }
+.mb-app .dot.live { background: var(--green); animation: mbpulse 1.4s ease infinite; }
+.mb-app .dot.warn { background: var(--amber); } .mb-app .dot.dead { background: var(--red); }
+.mb-app .dot.idle { background: var(--text-faint); }
+@keyframes mbpulse { 50% { opacity: 0.35; } }
+.mb-app .blink { animation: mbblink 1.1s steps(1) infinite; }
+@keyframes mbblink { 50% { opacity: 0; } }
+
+/* ---------- app shell ---------- */
+.mb-app .topbar {
+  height: var(--h-topbar); display: flex; align-items: center; gap: 0;
+  border-bottom: 1px solid var(--border-bright); background: var(--bg-panel); padding: 0 12px;
+}
+.mb-app .brand { display: flex; align-items: baseline; gap: 8px; padding-right: 16px; }
+.mb-app .brand .logo { font-family: var(--sans); font-weight: 800; letter-spacing: 0.16em; color: var(--amber); font-size: 14px; }
+.mb-app .brand .tag { font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-faint); }
+.mb-app .modes { display: flex; align-items: stretch; height: 100%; }
+.mb-app .mode {
+  display: flex; align-items: center; gap: 7px; padding: 0 14px; height: 100%; cursor: pointer;
+  font-family: var(--sans); font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--text-dim); border-bottom: 2px solid transparent;
+}
+.mb-app .mode .fk { font-size: 9px; color: var(--text-faint); border: 1px solid var(--border-bright); padding: 0 3px; }
+.mb-app .mode:hover { color: var(--text); }
+.mb-app .mode.active { color: var(--amber); border-bottom-color: var(--amber); background: rgba(255,165,36,0.05); }
+.mb-app .mode.active .fk { color: var(--amber); border-color: var(--amber-dim); }
+.mb-app .topbar .spacer { flex: 1; }
+.mb-app .selectors { display: flex; align-items: center; gap: 8px; }
+.mb-app .sel {
+  display: flex; align-items: center; gap: 6px; padding: 3px 8px; border: 1px solid var(--border-bright);
+  background: var(--bg-elev); font-size: 11px; cursor: pointer;
+}
+.mb-app .sel .lb { font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-faint); }
+.mb-app .sel:hover { border-color: var(--amber-dim); }
+.mb-app .clock { font-size: 11px; color: var(--text-dim); letter-spacing: 0.06em; padding-left: 8px; }
+
+.mb-app .statusbar {
+  height: var(--h-statusbar); display: flex; align-items: center; gap: 16px;
+  border-top: 1px solid var(--border-bright); background: var(--bg-panel); padding: 0 12px;
+  font-size: 10.5px; color: var(--text-dim);
+}
+.mb-app .statusbar .seg { display: flex; align-items: center; gap: 6px; }
+.mb-app .statusbar .seg b { color: var(--text); font-weight: 600; }
+.mb-app .statusbar .spacer { flex: 1; }
+
+/* left registry rail */
+.mb-app .rail { width: 250px; border-right: 1px solid var(--border); background: var(--bg-panel); overflow-y: auto; flex-shrink: 0; }
+.mb-app .rail-sec { border-bottom: 1px solid var(--border); }
+.mb-app .rail-hd {
+  display: flex; align-items: center; gap: 6px; padding: 7px 12px;
+  font-family: var(--sans); font-size: 9.5px; font-weight: 700; letter-spacing: 0.13em; text-transform: uppercase; color: var(--text-faint);
+}
+.mb-app .rail-hd .spacer { flex: 1; }
+.mb-app .rail-item {
+  display: flex; align-items: center; gap: 8px; padding: 4px 12px 4px 14px; cursor: pointer; font-size: 11.5px; color: var(--text-dim);
+}
+.mb-app .rail-item:hover { background: var(--bg-hover); color: var(--text); }
+.mb-app .rail-item.active { background: var(--bg-sel); color: var(--text); box-shadow: inset 2px 0 0 var(--amber); }
+.mb-app .rail-item .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mb-app .rail-item .mv { font-variant-numeric: tabular-nums; color: var(--text-faint); font-size: 10.5px; }
+
+/* generic layout helpers */
+.mb-app .row { display: flex; } .mb-app .col { display: flex; flex-direction: column; }
+.mb-app .gap4 { gap: 4px; } .mb-app .gap8 { gap: 8px; } .mb-app .gap12 { gap: 12px; } .mb-app .gap16 { gap: 16px; }
+.mb-app .aic { align-items: center; } .mb-app .jcsb { justify-content: space-between; } .mb-app .wrap { flex-wrap: wrap; }
+.mb-app .grow { flex: 1; } .mb-app .mt8 { margin-top: 8px; } .mb-app .mt12 { margin-top: 12px; } .mb-app .mb8 { margin-bottom: 8px; }
+.mb-app .scroll { overflow: auto; }
+
+/* coverage-matrix cell states (RUNS hero) */
+.mb-app .cov { display: inline-flex; align-items: center; justify-content: center; width: 100%; height: 22px; font-size: 10px; font-weight: 700; border: 1px solid var(--border); }
+.mb-app .cov.hit { background: rgba(47,207,122,0.16); color: var(--green); border-color: var(--green-dim); }
+.mb-app .cov.weak { background: rgba(255,165,36,0.14); color: var(--amber); border-color: var(--amber-dim); }
+.mb-app .cov.miss { background: rgba(255,83,71,0.13); color: var(--red); border-color: var(--red-dim); }
+.mb-app .cov.na { background: var(--bg-elev); color: var(--text-faint); }
+
+/* ---------- work area: sub-tabs + scroll ---------- */
+.mb-app .body { flex: 1; display: flex; overflow: hidden; position: relative; }
+.mb-app .work { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.mb-app .subtabs { display: flex; align-items: stretch; border-bottom: 1px solid var(--border); background: var(--bg-panel); padding: 0 6px; flex-shrink: 0; }
+.mb-app .subtab { padding: 8px 12px; font-family: var(--sans); font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim); cursor: pointer; border-bottom: 2px solid transparent; }
+.mb-app .subtab:hover { color: var(--text); }
+.mb-app .subtab.active { color: var(--amber); border-bottom-color: var(--amber); }
+.mb-app .worksc { flex: 1; overflow-y: auto; padding: 12px; }
+
+/* ---------- failure-taxonomy / drill tile row ---------- */
+.mb-app .tax { display: grid; gap: 1px; background: var(--border); }
+.mb-app .taxtile { background: var(--bg-panel); padding: 9px 11px; cursor: pointer; border-top: 2px solid transparent; }
+.mb-app .taxtile:hover { background: var(--bg-hover); }
+.mb-app .taxtile.on { background: var(--bg-sel); border-top-color: var(--amber); }
+.mb-app .taxtile .k { font-family: var(--sans); font-size: 8.5px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--text-faint); }
+.mb-app .taxtile .v { font-size: 19px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.mb-app .taxtile .d { font-size: 9px; margin-top: 1px; }
+
+/* ---------- horizontal pipeline funnel ---------- */
+.mb-app .funnel { display: flex; align-items: stretch; }
+.mb-app .stage { flex: 1; border: 1px solid var(--border); border-right: none; background: var(--bg-panel); padding: 9px 10px; position: relative; }
+.mb-app .stage:last-child { border-right: 1px solid var(--border); }
+.mb-app .stage .sk { font-family: var(--sans); font-size: 8.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint); }
+.mb-app .stage .sc { font-size: 17px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.mb-app .stage .sd { font-size: 9.5px; margin-top: 3px; color: var(--text-dim); }
+.mb-app .stage .arrow { position: absolute; right: -7px; top: 50%; transform: translateY(-50%); z-index: 2; color: var(--text-faint); font-size: 12px; background: var(--bg); }
+.mb-app .goldpin { display: inline-flex; align-items: center; gap: 4px; margin-top: 5px; padding: 1px 5px; font-size: 9px; border: 1px solid var(--gold-dim); color: var(--gold); background: rgba(232,195,74,0.08); }
+.mb-app .goldpin.dropped { border-color: var(--red-dim); color: var(--red); background: rgba(255,83,71,0.1); }
+
+/* ---------- key/value header grid ---------- */
+.mb-app .gh { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--border); border: 1px solid var(--border); }
+.mb-app .gh > div { background: var(--bg-panel); padding: 10px 12px; }
+.mb-app .gh .k { font-family: var(--sans); font-size: 8.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-faint); margin-bottom: 4px; }
+
+/* ---------- section header with rule ---------- */
+.mb-app .sechd { font-family: var(--sans); font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--amber); margin: 16px 0 8px; display: flex; align-items: center; gap: 8px; }
+.mb-app .sechd .ln { flex: 1; height: 1px; background: var(--border-bright); }
+.mb-app .sechd .note { color: var(--text-faint); font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.02em; text-transform: none; }
+
+/* ---------- capability / comparability matrix cell (CATALOG) ---------- */
+.mb-app .capcell { display: flex; align-items: center; justify-content: center; height: 30px; font-size: 10px; font-weight: 700; border: 1px solid var(--border); }
+.mb-app .capcell.ok { background: rgba(47,207,122,0.12); color: var(--green); }
+.mb-app .capcell.partial { background: rgba(255,165,36,0.12); color: var(--amber); }
+.mb-app .capcell.refused { background: rgba(255,83,71,0.10); color: var(--red); }
+.mb-app .capcell.self { background: var(--bg-elev); color: var(--text-faint); }
+
+/* ---------- sr-only ---------- */
+.mb-app .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+/* drawer */
+.mb-app .drawer-scrim { position: absolute; inset: 0; background: rgba(3,4,6,0.55); z-index: 40; }
+.mb-app .drawer {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 62%; min-width: 720px; background: var(--bg);
+  border-left: 1px solid var(--border-bright); z-index: 41; display: flex; flex-direction: column;
+  box-shadow: -24px 0 60px rgba(0,0,0,0.5);
+}
+.mb-app .drawer-hd { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border-bright); background: var(--bg-panel); }
+.mb-app .drawer-bd { flex: 1; overflow-y: auto; padding: 14px; }
+
+/* ============================================================
+   SCREEN-SCOPED — F2 · Runs · generic step-trace
+   (all selectors prefixed .stt- so nothing leaks)
+   ============================================================ */
+.mb-app { height: 780px; display: flex; flex-direction: column; overflow: hidden; width: 100%; }
+
+.mb-app .stt-toggle { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mb-app .stt-pill {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; cursor: pointer;
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+  border: 1px solid var(--border-bright); background: var(--bg-elev); color: var(--text-dim);
+}
+.mb-app .stt-pill:hover { border-color: var(--amber-dim); color: var(--text); }
+.mb-app .stt-pill.on { background: rgba(255,165,36,0.1); border-color: var(--amber-dim); color: var(--amber); }
+.mb-app .stt-pill .pd { width: 6px; height: 6px; border-radius: 50%; }
+.mb-app .stt-tognote { font-size: 9.5px; color: var(--text-faint); letter-spacing: 0.02em; }
+
+.mb-app .stt-wf { width: 100%; display: block; }
+.mb-app .stt-wf text { font-family: var(--mono); }
+.mb-app .stt-wf .barlbl { font-size: 9px; fill: #07080a; font-weight: 600; }
+.mb-app .stt-wf .barlbl.lt { fill: #ccd2db; }
+.mb-app .stt-wf .axlbl { font-size: 9px; fill: #4f5662; }
+.mb-app .stt-wf .lanelbl { font-size: 8.5px; }
+
+.mb-app .stt-legend { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.mb-app .stt-legcol { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mb-app .stt-swatch { display: inline-flex; align-items: center; gap: 5px; font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-dim); }
+.mb-app .stt-sw { width: 10px; height: 10px; border: 1px solid rgba(255,255,255,0.15); }
+.mb-app .stt-vln { width: 1px; align-self: stretch; background: var(--border-bright); }
+
+.mb-app .stt-two { display: grid; grid-template-columns: 1.35fr 1fr; gap: 12px; }
+.mb-app .stt-ledgerprev { opacity: 0.5; filter: grayscale(0.25); }
+.mb-app .stt-ledgerrow { display: grid; grid-template-columns: 66px 1fr auto; gap: 8px; align-items: center; padding: 5px 10px; border-bottom: 1px solid var(--border); font-size: 10.5px; }
+.mb-app .stt-op { font-family: var(--sans); font-size: 8.5px; font-weight: 700; letter-spacing: 0.08em; text-align: center; padding: 1px 0; border: 1px solid var(--border-bright); }
+.mb-app .stt-op.add { color: var(--green); border-color: var(--green-dim); }
+.mb-app .stt-op.upd { color: var(--amber); border-color: var(--amber-dim); }
+.mb-app .stt-op.noop { color: var(--text-faint); }
+.mb-app .stt-op.del { color: var(--red); border-color: var(--red-dim); }
+.mb-app .stt-foot { font-size: 9.5px; color: var(--text-faint); letter-spacing: 0.02em; padding: 8px 2px 2px; display: flex; align-items: center; gap: 8px; }
+.mb-app .stt-foot b { color: var(--text-dim); font-weight: 600; }
+.mb-app .stt-mini-k { font-family: var(--sans); font-size: 8px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-faint); }
+</style>
+</head>
+<body style="margin:0;background:#07080a">
+<div class="mb-app">
+  <h2 class="sr-only">Runs mode, Traces sub-tab: a generic StepEnvelope waterfall for question 1a8a66a6 of run collapse-pplx, showing one renderer drawing any adapter's pipeline lanes with batch fan-out, a retry, an unknown-kind span, and a capability-driven domain panel that swaps between symbiotic-memory's recall drop-out and mem0's memory ledger.</h2>
+
+  <!-- ===================== TOPBAR ===================== -->
+  <div class="topbar">
+    <div class="brand"><span class="logo">▮▮ MEMBENCH</span><span class="tag">v2 · memory-system cockpit</span></div>
+    <div class="modes">
+      <a class="mode" href="leaderboard.html" style="text-decoration:none"><span class="fk">F1</span>Leaderboard</a>
+      <a class="mode active" href="runs.html" style="text-decoration:none"><span class="fk">F2</span>Runs</a>
+      <a class="mode" href="lab.html" style="text-decoration:none"><span class="fk">F3</span>Lab</a>
+      <a class="mode" href="catalog.html" style="text-decoration:none"><span class="fk">F4</span>Catalog</a>
+    </div>
+    <div class="spacer"></div>
+    <div class="sel"><span class="lb">Adapter</span><b class="cyan">symbiotic-memory</b> ▾</div>
+    <div class="sel"><span class="lb">Bench</span><b>long-mem-eval</b> ▾</div>
+    <span class="clock mono-num">07:41:12 · 01 JUL</span>
+  </div>
+
+  <!-- ===================== BODY ===================== -->
+  <div class="body">
+
+    <!-- ---------- LEFT RAIL: runs list ---------- -->
+    <div class="rail">
+      <div class="rail-sec">
+        <div class="rail-hd">Runs <span class="spacer"></span><span class="mono-num faint">336</span></div>
+        <div class="rail-item active">
+          <span class="dot idle" style="background:var(--green)"></span>
+          <span class="nm">collapse-pplx</span><span class="mv">86.8</span>
+        </div>
+        <div class="rail-item">
+          <span class="dot idle"></span>
+          <span class="nm">collapse-nemo</span><span class="mv">85.4</span>
+        </div>
+        <div class="rail-item">
+          <span class="dot idle"></span>
+          <span class="nm">pplx-rpmfix-500</span><span class="mv">86.4</span>
+        </div>
+        <div class="rail-item">
+          <span class="dot idle"></span>
+          <span class="nm">factconsol-thinkon-500</span><span class="mv">86.2</span>
+        </div>
+        <div class="rail-item">
+          <span class="dot idle"></span>
+          <span class="nm">nemo-rpmfix-500</span><span class="mv">85.0</span>
+        </div>
+        <div class="rail-item">
+          <span class="dot live"></span>
+          <span class="nm">zep-graphiti-500</span><span class="mv">79.2</span>
+        </div>
+        <div class="rail-item">
+          <span class="dot idle"></span>
+          <span class="nm">mem0-hybrid-500</span><span class="mv">68.5</span>
+        </div>
+      </div>
+      <div class="rail-sec">
+        <div class="rail-hd">Active run <span class="spacer"></span></div>
+        <div style="padding:8px 12px 10px">
+          <div class="gh" style="grid-template-columns:1fr 1fr">
+            <div><div class="k">Adapter</div><span class="cyan">symbiotic-memory</span></div>
+            <div><div class="k">Paradigm</div><span class="dim">RAG_HYBRID</span></div>
+            <div><div class="k">Reader</div><span class="dim">deepseek-v4-flash</span></div>
+            <div><div class="k">Embed</div><span class="dim">pplx-embed-v1-4b</span></div>
+            <div><div class="k">Rerank</div><span class="dim">cohere/rerank-4-fast</span></div>
+            <div><div class="k">Cost</div><span class="mono-num amber">$1.94</span></div>
+          </div>
+          <div class="mt8 row wrap gap4">
+            <span class="chip green sm">DONE 500/500</span>
+            <span class="chip amber sm">ACC 86.8%</span>
+            <span class="chip sm">STEPS 21.4k</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- WORK AREA ---------- -->
+    <div class="work">
+      <div class="subtabs">
+        <div class="subtab">Overview</div>
+        <div class="subtab">Questions</div>
+        <div class="subtab active">Traces</div>
+        <div class="subtab">Coverage</div>
+        <div class="subtab">Cost</div>
+        <div class="subtab">Manifest</div>
+      </div>
+
+      <div class="worksc">
+
+        <!-- ===== ADAPTER-RENDER TOGGLE ===== -->
+        <div class="panel">
+          <div class="panel-hd">
+            <span class="title">Adapter render</span>
+            <div class="stt-toggle" style="margin-left:6px">
+              <span class="stt-pill on"><span class="pd" style="background:#46a9ff"></span>symbiotic-memory</span>
+              <span class="stt-pill"><span class="pd" style="background:#828b98"></span>mem0</span>
+            </div>
+            <span class="spacer"></span>
+            <span class="stt-tognote">same StepEnvelope renderer · lanes &amp; payloads come from each adapter's manifest — zero per-adapter UI code</span>
+          </div>
+        </div>
+
+        <!-- ===== (1) STEP WATERFALL ===== -->
+        <div class="panel mt12">
+          <div class="panel-hd">
+            <span class="title">Step waterfall</span>
+            <span class="sub">question 1a8a66a6</span>
+            <span class="spacer"></span>
+            <span class="chip cyan sm">SS-USER</span>
+            <span class="chip sm">42 STEPS</span>
+            <span class="chip sm mono-num">3.38s WALL</span>
+            <span class="chip green sm">✓ CORRECT</span>
+          </div>
+          <div class="panel-bd flush">
+            <!--
+              time axis: x=176 → x=1136  maps  0.0s → 3.4s   (960px / 3.4s = 282.35 px/s)
+              lanes (y band centres): RUNNER 40, PROVIDER 92, MEMORY 236, RECALL 300, JUDGE 356, unknown 404
+            -->
+            <svg class="stt-wf" viewBox="0 0 1160 452" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Step waterfall timeline for question 1a8a66a6">
+              <!-- gutter background -->
+              <rect x="0" y="0" width="170" height="452" fill="#0a0c10"/>
+              <line x1="170" y1="0" x2="170" y2="452" stroke="#262c37" stroke-width="1"/>
+
+              <!-- time axis gridlines 0..3.4 every 0.5s -->
+              <g>
+                <line x1="176"  y1="20" x2="176"  y2="440" stroke="#191d25"/>
+                <line x1="317"  y1="20" x2="317"  y2="440" stroke="#141821"/>
+                <line x1="458"  y1="20" x2="458"  y2="440" stroke="#141821"/>
+                <line x1="600"  y1="20" x2="600"  y2="440" stroke="#141821"/>
+                <line x1="741"  y1="20" x2="741"  y2="440" stroke="#141821"/>
+                <line x1="882"  y1="20" x2="882"  y2="440" stroke="#141821"/>
+                <line x1="1024" y1="20" x2="1024" y2="440" stroke="#141821"/>
+                <line x1="1136" y1="20" x2="1136" y2="440" stroke="#191d25"/>
+                <text class="axlbl" x="176"  y="14" text-anchor="middle">0.0s</text>
+                <text class="axlbl" x="317"  y="14" text-anchor="middle">0.5</text>
+                <text class="axlbl" x="458"  y="14" text-anchor="middle">1.0</text>
+                <text class="axlbl" x="600"  y="14" text-anchor="middle">1.5</text>
+                <text class="axlbl" x="741"  y="14" text-anchor="middle">2.0</text>
+                <text class="axlbl" x="882"  y="14" text-anchor="middle">2.5</text>
+                <text class="axlbl" x="1024" y="14" text-anchor="middle">3.0</text>
+                <text class="axlbl" x="1136" y="14" text-anchor="middle">3.4</text>
+              </g>
+
+              <!-- lane separators -->
+              <g stroke="#141821">
+                <line x1="0" y1="66"  x2="1160" y2="66"/>
+                <line x1="0" y1="216" x2="1160" y2="216"/>
+                <line x1="0" y1="280" x2="1160" y2="280"/>
+                <line x1="0" y1="336" x2="1160" y2="336"/>
+                <line x1="0" y1="382" x2="1160" y2="382"/>
+              </g>
+
+              <!-- lane labels (bkind chips drawn as svg) -->
+              <g>
+                <rect x="10" y="33" width="72" height="15" fill="none" stroke="#262c37"/>
+                <text class="lanelbl" x="16" y="43" fill="#2fd4c4">RUNNER</text>
+                <rect x="10" y="128" width="78" height="15" fill="none" stroke="#262c37"/>
+                <text class="lanelbl" x="16" y="138" fill="#ffa524">PROVIDER</text>
+                <rect x="10" y="228" width="70" height="15" fill="none" stroke="#262c37"/>
+                <text class="lanelbl" x="16" y="238" fill="#46a9ff">MEMORY</text>
+                <rect x="10" y="292" width="66" height="15" fill="none" stroke="#262c37"/>
+                <text class="lanelbl" x="16" y="302" fill="#b285ff">RECALL</text>
+                <rect x="10" y="348" width="56" height="15" fill="none" stroke="#262c37"/>
+                <text class="lanelbl" x="16" y="358" fill="#e8c34a">JUDGE</text>
+                <rect x="10" y="396" width="82" height="15" fill="none" stroke="#191d25"/>
+                <text class="lanelbl" x="16" y="406" fill="#4f5662">· UNKNOWN ·</text>
+              </g>
+
+              <!-- ============ RUNNER lane (teal) — whole question span ============ -->
+              <rect x="176" y="30" width="958" height="20" fill="rgba(47,212,196,0.16)" stroke="#2fd4c4"/>
+              <rect x="176" y="30" width="3" height="20" fill="#2fd4c4"/>
+              <text class="barlbl lt" x="184" y="44">runner.answer_question · q=1a8a66a6 · wall 3.38s</text>
+
+              <!-- ============ PROVIDER lane (amber) ============ -->
+              <!-- embed_query  0.02→0.19s -->
+              <rect x="182" y="74" width="48" height="14" fill="rgba(255,165,36,0.22)" stroke="#ffa524"/>
+              <text class="barlbl" x="234" y="84" fill="#828b98" style="font-size:8.5px">embed_query 168ms</text>
+
+              <!-- BATCH gather bar 0.22→0.95s (fan-out) -->
+              <rect x="238" y="74" width="206" height="14" fill="rgba(255,165,36,0.28)" stroke="#ffa524"/>
+              <text class="barlbl" x="242" y="84">embed.batch · AGGREGATES ×6</text>
+
+              <!-- 6 scatter member bars beneath, linked by faint connector lines -->
+              <!-- connectors from gather bottom (y=88) down to each member top -->
+              <g stroke="#9c6a1c" stroke-dasharray="1.5 2" opacity="0.7">
+                <line x1="250" y1="88" x2="250" y2="98"/>
+                <line x1="286" y1="88" x2="286" y2="112"/>
+                <line x1="322" y1="88" x2="322" y2="126"/>
+                <line x1="360" y1="88" x2="360" y2="98"/>
+                <line x1="398" y1="88" x2="398" y2="112"/>
+                <line x1="424" y1="88" x2="424" y2="126"/>
+              </g>
+              <!-- member bars (thin), staggered on 3 sub-rows y=98,112,126 -->
+              <rect x="250" y="98"  width="120" height="6" fill="rgba(255,165,36,0.5)"/>
+              <rect x="286" y="112" width="132" height="6" fill="rgba(255,165,36,0.5)"/>
+              <rect x="322" y="126" width="104" height="6" fill="rgba(255,165,36,0.5)"/>
+              <rect x="360" y="98"  width="70"  height="6" fill="rgba(255,165,36,0.5)"/>
+              <rect x="398" y="112" width="46"  height="6" fill="rgba(255,165,36,0.5)"/>
+              <rect x="424" y="126" width="20"  height="6" fill="rgba(255,165,36,0.5)"/>
+              <text class="barlbl" x="452" y="118" fill="#4f5662" style="font-size:8px">BATCH_MEMBER ×6 → embed.batch</text>
+
+              <!-- chat query_plan  0.30→0.62s -->
+              <rect x="261" y="140" width="90" height="14" fill="rgba(255,165,36,0.15)" stroke="#9c6a1c"/>
+              <text class="barlbl" x="265" y="150" fill="#ffbf63" style="font-size:8.5px">chat.query_plan</text>
+
+              <!-- RETRY: failed provider bar 0.66→0.83 (red) + second attempt 0.90→1.14 linked RETRY_OF -->
+              <rect x="362" y="156" width="48" height="14" fill="rgba(255,83,71,0.16)" stroke="#ff5347"/>
+              <text class="barlbl" x="366" y="166" fill="#ff5347" style="font-size:8px">rerank.call ✕ 429</text>
+              <!-- RETRY_OF connector -->
+              <path d="M410 163 C 428 163, 430 163, 430 156" fill="none" stroke="#8f3029" stroke-dasharray="2 2"/>
+              <line x1="410" y1="163" x2="430" y2="163" stroke="#8f3029" stroke-dasharray="2 2"/>
+              <rect x="430" y="156" width="74" height="14" fill="rgba(255,165,36,0.22)" stroke="#ffa524"/>
+              <text class="barlbl" x="434" y="166" style="font-size:8px">rerank.call ↺</text>
+              <text class="barlbl" x="510" y="166" fill="#4f5662" style="font-size:8px">RETRY_OF</text>
+
+              <!-- ============ MEMORY lane (cyan) — fact_search + raw_search overlapping ============ -->
+              <!-- fact_search 0.98→1.62 -->
+              <rect x="453" y="222" width="181" height="14" fill="rgba(70,169,255,0.24)" stroke="#46a9ff"/>
+              <text class="barlbl" x="457" y="232">fact_search · dense+sparse → 32</text>
+              <!-- raw_search 1.10→1.70 (overlaps, offset row within band) -->
+              <rect x="484" y="196" width="169" height="14" fill="rgba(70,169,255,0.16)" stroke="#1f4a73"/>
+              <text class="barlbl lt" x="488" y="206" style="font-size:8.5px">raw_search · turns → 24 (overlap)</text>
+
+              <!-- ============ RECALL lane (violet) — rerank + support_gate(red-edged, drops) ============ -->
+              <!-- rerank 1.70→2.42 -->
+              <rect x="656" y="290" width="203" height="14" fill="rgba(178,133,255,0.24)" stroke="#b285ff"/>
+              <text class="barlbl" x="660" y="300">rerank · cohere/rerank-4-fast · 56→ranked</text>
+              <!-- support_gate 2.44→2.78, red-edged, drops items -->
+              <rect x="861" y="290" width="96" height="14" fill="rgba(255,83,71,0.12)" stroke="#ff5347" stroke-dasharray="3 2"/>
+              <text class="barlbl" x="865" y="300" fill="#ff8078" style="font-size:8px">support_gate ⟂ −26</text>
+
+              <!-- ============ JUDGE lane (gold) — at the end ============ -->
+              <rect x="959" y="346" width="171" height="14" fill="rgba(232,195,74,0.2)" stroke="#e8c34a"/>
+              <text class="barlbl" x="963" y="356" fill="#07080a">judge.grade · deepseek-v4-flash ✓</text>
+
+              <!-- ============ UNKNOWN lane (grey) — undeclared kind, graceful degrade ============ -->
+              <rect x="600" y="394" width="120" height="14" fill="rgba(79,86,98,0.28)" stroke="#4f5662"/>
+              <text class="barlbl" x="604" y="404" fill="#828b98" style="font-size:8px">kind:"pref_bias_probe" · unrendered</text>
+              <text class="barlbl" x="726" y="404" fill="#4f5662" style="font-size:8px">drawn neutral — no manifest lane</text>
+            </svg>
+          </div>
+        </div>
+
+        <!-- ===== (2) LEGEND ROW ===== -->
+        <div class="panel mt12">
+          <div class="panel-bd" style="padding:9px 12px">
+            <div class="stt-legend">
+              <div class="stt-legcol">
+                <span class="stt-mini-k" style="margin-right:2px">Lanes</span>
+                <span class="stt-swatch"><span class="stt-sw" style="background:#2fd4c4"></span>runner</span>
+                <span class="stt-swatch"><span class="stt-sw" style="background:#ffa524"></span>provider</span>
+                <span class="stt-swatch"><span class="stt-sw" style="background:#46a9ff"></span>memory</span>
+                <span class="stt-swatch"><span class="stt-sw" style="background:#b285ff"></span>recall</span>
+                <span class="stt-swatch"><span class="stt-sw" style="background:#e8c34a"></span>judge</span>
+                <span class="stt-swatch"><span class="stt-sw" style="background:#4f5662"></span>unknown</span>
+              </div>
+              <div class="stt-vln"></div>
+              <div class="stt-legcol">
+                <span class="stt-mini-k" style="margin-right:2px">Link</span>
+                <span class="chip sm">TRIGGERED_BY</span>
+                <span class="chip amber sm">BATCH_MEMBER</span>
+                <span class="chip amber sm">AGGREGATES</span>
+                <span class="chip red sm">RETRY_OF</span>
+                <span class="chip sm">FOLLOWS_FROM</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== (3) CAPABILITY-DRIVEN PANEL ===== -->
+        <div class="panel mt12">
+          <div class="panel-hd">
+            <span class="title">Capability-driven panel</span>
+            <span class="sub">recall_dropout</span>
+            <span class="spacer"></span>
+            <span class="stt-tognote">rendered because <b class="cyan" style="font-weight:600">symbiotic-memory</b> declares <span class="chip violet sm">capability.recall_dropout</span></span>
+          </div>
+          <div class="panel-bd">
+            <div class="stt-two">
+
+              <!-- LEFT: symbiotic recall drop-out funnel (active) -->
+              <div>
+                <div class="stt-mini-k mb8">Recall drop-out · question 1a8a66a6</div>
+                <div class="funnel">
+                  <div class="stage">
+                    <div class="sk">Retrieve</div>
+                    <div class="sc cyan">32</div>
+                    <div class="sd">fact_search dense+sparse</div>
+                    <span class="arrow">▸</span>
+                  </div>
+                  <div class="stage">
+                    <div class="sk">Dedup</div>
+                    <div class="sc">18</div>
+                    <div class="sd">−14 near-dup facts</div>
+                    <span class="arrow">▸</span>
+                  </div>
+                  <div class="stage">
+                    <div class="sk">Rerank</div>
+                    <div class="sc violet">56→18</div>
+                    <div class="sd">+ raw turns, cohere-4-fast</div>
+                    <span class="arrow">▸</span>
+                  </div>
+                  <div class="stage">
+                    <div class="sk">Cut&nbsp;@30</div>
+                    <div class="sc amber">30</div>
+                    <div class="sd">context window</div>
+                    <span class="goldpin dropped">◆ gold #31 DROPPED</span>
+                  </div>
+                </div>
+                <div class="mt8 row wrap gap4">
+                  <span class="chip sm">gold turn <b class="gold" style="font-weight:600">t_0417</b></span>
+                  <span class="chip red sm">rank 31 · past cut</span>
+                  <span class="chip sm mono-num">Δ to cut −1</span>
+                </div>
+              </div>
+
+              <!-- RIGHT: greyed mem0 ledger preview (capability swap) -->
+              <div>
+                <div class="stt-mini-k mb8">→ toggle mem0 : panel is replaced by the <span class="cyan">MEMORY LEDGER</span></div>
+                <div class="panel stt-ledgerprev">
+                  <div class="panel-hd" style="padding:6px 10px">
+                    <span class="title" style="font-size:10px">Memory ledger</span>
+                    <span class="sub" style="color:var(--text-faint)">mem0 · EXTRACT_STORE</span>
+                    <span class="spacer"></span>
+                    <span class="chip sm">capability.memory_ledger</span>
+                  </div>
+                  <div class="panel-bd flush">
+                    <div class="stt-ledgerrow">
+                      <span class="stt-op add">ADD</span>
+                      <span class="truncate">user has 4 magazines</span>
+                      <span class="faint mono-num">m_0031</span>
+                    </div>
+                    <div class="stt-ledgerrow">
+                      <span class="stt-op upd">UPDATE</span>
+                      <span class="truncate">cancelled 1 → 4 magazines</span>
+                      <span class="faint mono-num">m_0031</span>
+                    </div>
+                    <div class="stt-ledgerrow" style="border-bottom:none">
+                      <span class="stt-op noop">NOOP</span>
+                      <span class="truncate dim">dup · "subscribes to magazines"</span>
+                      <span class="faint mono-num">—</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="mt8" style="font-size:9.5px;color:var(--text-faint)">
+                  mem0 declares no rank scoring → the funnel is meaningless for it; the manifest picks the ledger view instead. <b class="dim" style="font-weight:600">Same renderer, different capability.</b>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== (4) FOOTER ===== -->
+        <div class="stt-foot">
+          <span class="dot live"></span>
+          Live tailing and this static view are the <b>SAME renderer</b> over the same StepEnvelope frames (length-delimited protobuf) — <b>Connect server-stream</b> for live, <b>cursor-paged fetch</b> for history.
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== STATUSBAR ===================== -->
+  <div class="statusbar">
+    <span class="seg"><span class="dot live"></span> LIVE</span>
+    <span class="seg">RUNS <b>336</b></span>
+    <span class="seg">ADAPTERS <b>3</b></span>
+    <span class="seg">BENCHMARKS <b>2</b></span>
+    <span class="seg">PEAK ACC <b class="amber">86.8%</b></span>
+    <span class="spacer"></span>
+    <span class="seg">⌘K palette · j/k rows · esc drawer</span>
+    <span class="seg">SRV <b class="cyan">564d71</b></span>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,212 @@
+[
+  {
+    "area": "schema-bp",
+    "claim": "The repo already has a v1 dashboard protobuf schema, but it is a view/response schema (RunSummary, LiveResponse, TracesResponse, GoldEvalResponse) that is memory-benchmark-specific and heavily stringly-typed, not a generic source-of-truth trace model.",
+    "evidence": "/Users/k/p/symbiotic-mem-bench/proto/membench/dashboard/v1/debugger.proto lines 40-77, 367-534, 560-601"
+  },
+  {
+    "area": "schema-bp",
+    "claim": "The existing schema uses JSON-in-string escape hatches for structured data (report_json, params_json, roles_detail_json, answer_json, debug_artifact), which is the anti-pattern to avoid for query-critical fields.",
+    "evidence": "debugger.proto lines 190 (roles_detail_json), 214-215 (report_json/params_json), 578 (answer_json), 120 (debug_artifact)"
+  },
+  {
+    "area": "schema-bp",
+    "claim": "Closed-vocabulary fields are modeled as bare strings (kind, status, operation, severity, transition, final_status) instead of enums.",
+    "evidence": "debugger.proto lines 248 (transition), 339 (status), 364 (severity), 420 (final_status), 474-476/488 (kind/operation)"
+  },
+  {
+    "area": "schema-bp",
+    "claim": "OpenTelemetry is deprecating the Span Events API in 2026, consolidating on 'events are logs with names' emitted via the Logs API and correlated to spans by context; guidance is to prefer independent event records over attributes hung on a span.",
+    "evidence": "https://opentelemetry.io/blog/2026/deprecating-span-events/"
+  },
+  {
+    "area": "schema-bp",
+    "claim": "Span Links model non-hierarchical, multi-directional, cross-trace relationships and are the correct mechanism for fan-out, fan-in/batch, async messaging (producer/consumer), and retry — cases where a strict one-parent tree fails; OTel messaging conventions use links not parent-child.",
+    "evidence": "https://signoz.io/docs/traces-management/guides/span-links/ ; standard relations triggered_by/batch_member/aggregates/follows_from/retry_of/compensates"
+  },
+  {
+    "area": "schema-bp",
+    "claim": "Protobuf field numbers are identity: never change or reuse them; use `reserved` for deleted numbers/names; adding fields is always safe; adding an arm to an existing oneof is forward-incompatible.",
+    "evidence": "https://protobuf.dev/best-practices/dos-donts/ and https://protobuf.dev/programming-guides/proto3/"
+  },
+  {
+    "area": "schema-bp",
+    "claim": "Never put trace_id/span_id as metric attributes — it causes cardinality explosion and makes metrics unusable; correlation belongs on events, not aggregates.",
+    "evidence": "https://betterstack.com/community/guides/observability/opentelemetry-best-practices/"
+  },
+  {
+    "area": "schema-bp",
+    "claim": "Protobuf messages are not self-delimiting; the standard append-stream framing is a varint length prefix per message (writeDelimitedTo/parseDelimitedFrom; prost encode_length_delimited) — the typed structural analog of JSONL.",
+    "evidence": "https://eli.thegreenplace.net/2011/08/02/length-prefix-framing-for-protocol-buffers"
+  },
+  {
+    "area": "schema-bp",
+    "claim": "Connect-Web with protobuf-es is the current best browser choice for protobuf/gRPC, supports server-streaming via for-await, needs no translating proxy, and tree-shakes to small bundles; the repo already generates debugger_pb.ts via protobuf-es.",
+    "evidence": "https://buf.build/blog/connect-web-protobuf-grpc-in-the-browser ; /Users/k/p/symbiotic-mem-bench/dashboard/src/lib/gen/membench/dashboard/v1/debugger_pb.ts"
+  },
+  {
+    "area": "schema-bp",
+    "claim": "Event sourcing: append-only immutable events are source of truth; current state / views are projections (folds) rebuildable by replay — enabling new views over old runs with no re-execution.",
+    "evidence": "https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/event-sourcing.html and https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing"
+  },
+  {
+    "area": "schema-bp",
+    "claim": "The repo already has a source-hash staleness gate with an escape hatch (SYMEM_IGNORE_SOURCE_HASH), which generalizes into a first-class ArtifactProvenance header (source sha256, schema/version, complete flag, invalidated_by) with hash-based cache invalidation.",
+    "evidence": "project memory answer-only-local-rerank-rig: 'path->git dep refactor trips the answer-only manifest staleness gate -> need SYMEM_IGNORE_SOURCE_HASH=1'; debugger.proto truncated bools lines 409/494/447"
+  },
+  {
+    "area": "schema-bp",
+    "claim": "The existing schema already stores pre-computed durations (TraceWaterfallBlock start_ms/end_ms/duration_ms, QueueTiming wait_ms/run_ms/total_ms) which should instead be derived from matched start/end events with authoritative timestamps.",
+    "evidence": "debugger.proto lines 423-433 (TraceWaterfallBlock), 412-421 (QueueTiming)"
+  },
+  {
+    "area": "schema-bp",
+    "claim": "The existing schema already leans toward cursor-paged fetch for history (ArtifactResponse offset/limit/total, TraceEventStream truncated) which should be formalized as opaque-cursor pagination separated by record type.",
+    "evidence": "debugger.proto lines 608-615 (ArtifactResponse), 492-496 (TraceEventStream)"
+  },
+  {
+    "area": "schema-bp",
+    "claim": "The build already compiles the proto via prost_build with a versioned package path membench.dashboard.v1, so a parallel membench.trace.v1 package for the generic trace model fits the existing toolchain.",
+    "evidence": "/Users/k/p/symbiotic-mem-bench/build.rs (prost_build compile_protos on proto/membench/dashboard/v1/debugger.proto); src/dashboard_proto.rs module path membench.dashboard.v1"
+  },
+  {
+    "area": "product-bp",
+    "claim": "The observability tier converges on a 5-level object spine: Project → Dataset/Example(gold) → Experiment/Run → Trace → Span, with Score attachable at any level. An Experiment = the set of Traces (one per Example) plus the Scores over them.",
+    "evidence": "LangSmith 'An Experiment is a set of runs (one per example) plus feedback scores'; Langfuse 'For each DatasetItem a DatasetRunItem & a Trace are created' — docs.langchain.com/langsmith/manage-datasets, langfuse.com/docs/evaluation/experiments/data-model"
+  },
+  {
+    "area": "product-bp",
+    "claim": "Langfuse has the most explicit/typed data model: Trace → typed Observations (generation/span/event/tool-call/retrieval, nestable) → Session; Score attaches to trace/observation/session/dataset-run; DatasetItem→DatasetRun→DatasetRunItem joins item↔trace.",
+    "evidence": "langfuse.com/docs/observability/data-model and /evaluation/experiments/data-model; scores at langfuse.com/docs/evaluation/scores/data-model"
+  },
+  {
+    "area": "product-bp",
+    "claim": "Braintrust owns the best regression/comparison UX: select two experiments → Compare → side-by-side diff of improved/regressed/same vs a baseline, Diff-mode toggle, filter bar accepting natural language or BTQL, inline LLM-judge chain-of-thought per row. Experiments table = one row/run with score averages, error counts, duration, token usage, cost.",
+    "evidence": "braintrust.dev/foundations/comparing-experiments and /how-to-analyze-your-eval-results"
+  },
+  {
+    "area": "product-bp",
+    "claim": "LangSmith comparison view supports selecting any number of runs; 3 table modes (Compact/Full/Diff-vs-reference); per-score heatmap with user-set high/mid/low red-green threshold; Repetition Summary for variance; per-example columns for cost, token counts, latency, status.",
+    "evidence": "docs.langchain.com/langsmith/analyze-an-experiment; blog.langchain.com/regression-testing"
+  },
+  {
+    "area": "product-bp",
+    "claim": "W&B Weave has a first-class Leaderboard object: rows = models/versions, columns = (evaluation run × scoring fn × summary metric such as mean or true_fraction); shareable across org for regression tracking. Core objects: Op, Call/Trace, Dataset, Evaluation, Scorer, Model, Leaderboard.",
+    "evidence": "docs.wandb.ai/weave/guides/core-types/leaderboards"
+  },
+  {
+    "area": "product-bp",
+    "claim": "Phoenix data model is literally OpenTelemetry/OpenInference OTLP spans with semantic kinds (LLM, retriever, tool, chain); retriever spans expose retrieved documents + relevance, and Annotations (span_id, name, annotator_kind, result) attach to spans/traces. Closest existing model to retrieval-evidence.",
+    "evidence": "arize.com/docs/phoenix; annotations cookbook at arize.com/docs/phoenix/cookbook/tracing-and-annotations"
+  },
+  {
+    "area": "product-bp",
+    "claim": "Ragas is the only tool whose core objects are retrieval-evidence-shaped: each Sample = {question, retrieved_contexts, answer, ground_truth}, and its headline metrics are context precision, context recall, context entities recall, faithfulness, answer relevancy — presupposing a retrieved-vs-gold comparison. But these are aggregate numbers, not per-evidence-piece per-question coverage UI.",
+    "evidence": "docs.ragas.io/en/stable/concepts/metrics/available_metrics/"
+  },
+  {
+    "area": "product-bp",
+    "claim": "HELM separates per-instance metric stats (PerInstanceStats / per_instance_stats.json) from aggregates (stats.json) as first-class serialized artifacts, plus ScenarioState logging every request/response, enabling drill from leaderboard cell → per-instance → exact request. RunSpec = scenario + adapter + metrics.",
+    "evidence": "github.com/stanford-crfm/helm/blob/main/docs/code.md and docs/get_helm_rank.md"
+  },
+  {
+    "area": "product-bp",
+    "claim": "Inspect (UK AISI) models Task = {Dataset of Samples, Solver(s), Scorer}; Sample = input+target+metadata; Scorer declares metrics e.g. @scorer(metrics=[accuracy(), stderr()]). Log viewer shows per-sample transcript + chronological EVENTS (model call, tool call, scoring) not just a span tree. Run-vs-run comparison is dataframe-native (evals_df one row/run, samples_df cross-run per-sample).",
+    "evidence": "inspect.aisi.org.uk/tutorial.html"
+  },
+  {
+    "area": "product-bp",
+    "claim": "Humanloop uses immutable content-hashed Dataset Versions so every evaluation is provably tied to the exact set of Datapoints (inputs+messages+target); each Evaluation links to a specific Dataset Version. (Analogous to the project's existing source-hash gating.)",
+    "evidence": "humanloop.com/docs/explanation/datasets"
+  },
+  {
+    "area": "product-bp",
+    "claim": "OpenAI Evals is a thin registry/JSONL format (no OSS UI): eval YAML + samples.jsonl where each line is {input:[chat msgs], ideal:...}; naming <eval_name>.<split>.<version> groups comparable evals; CompletionFn is the system under test. Vercel AI SDK / Evalite is code-first eval-driven-development, evals as Vitest-style test files in-repo, model-agnostic via AI Gateway.",
+    "evidence": "github.com/openai/evals/blob/main/docs/build-eval.md; vercel.com/kb/guide/an-introduction-to-evals"
+  },
+  {
+    "area": "product-bp",
+    "claim": "Convergent cost surface: tokens+cost+latency are measured at the leaf (generation/span) and rolled up to trace then run; every observability-tier product shows per-run cost as a column (LangSmith, Braintrust, Langfuse, Weave, Opik).",
+    "evidence": "docs.langchain.com/langsmith/analyze-an-experiment (cost/token/latency columns); braintrust.dev/foundations/how-to-analyze-your-eval-results (token usage + cost per experiment)"
+  },
+  {
+    "area": "product-bp",
+    "claim": "Convergent trace drilldown = waterfall/tree of timed typed spans with model calls at the leaves; Langfuse renders the observation tree as a waterfall to show where time and tokens were spent.",
+    "evidence": "langfuse.com/docs/observability/overview; braintrust/phoenix/opik/weave all expose per-testcase span trees"
+  },
+  {
+    "area": "product-bp",
+    "claim": "For OUR memory benchmark, the differentiated view no competitor can render is a per-question gold-evidence coverage matrix (rows=gold evidence pieces; columns=retrieved?/rank/survived-rerank?/in-context?/cited?) plus a 4-lane (provider/memory/recall/judge) waterfall where the recall lane shows retrieve→dedup→rerank→context-cut with evidence dropping out at each stage — because competitors' core objects are not evidence-piece-shaped.",
+    "evidence": "Synthesis: Ragas gives only aggregate context precision/recall; Phoenix shows docs in a span but not per-evidence-piece per-question coverage — docs.ragas.io, arize.com/docs/phoenix"
+  },
+  {
+    "area": "ux-bp",
+    "claim": "Current top-level IA is already a 2-mode split (Leaderboard vs Debugger), toggled by F1/F2 and rendering exactly one at a time — recommend promoting to a 3-workspace spine (Leaderboard/Runs/Lab).",
+    "evidence": "dashboard/src/App.svelte:91-97 (nav), :117-121 (single-mode render)"
+  },
+  {
+    "area": "ux-bp",
+    "claim": "State is URL-addressed and shareable via hash router: #/debug/<run-id>/<subscreen>, and parse() is forgiving of subscreen order — this is the invariant that lets one object (a run) be viewed by all three personas.",
+    "evidence": "dashboard/src/lib/router.svelte.ts header comment + parse()"
+  },
+  {
+    "area": "ux-bp",
+    "claim": "The Debugger already implements master-detail: persistent 248px registry tree (master) + run-scoped tab bar (detail) for overview/questions/compare/traces/gold-coverage/live/tuner.",
+    "evidence": "dashboard/src/routes/Debugger.svelte:20-30, :39-40, :96-99"
+  },
+  {
+    "area": "ux-bp",
+    "claim": "Questions drilldown already does list+filters (verdict/qtype/search) + a lazy-loaded per-question debug drawer, but filter state is component-local $state (not in URL), so tiles can't deep-link into it and views aren't shareable.",
+    "evidence": "dashboard/src/sections/Questions.svelte:18-24 (local state), :57-75 (lazy debug artifact), :78-90 (filter logic)"
+  },
+  {
+    "area": "ux-bp",
+    "claim": "Every summary tile should become a filtered drilldown into Questions; verdict filters (correct/wrong/abstain/error) and per-qtype cells already exist as data (per_question_type on RunSummary) but are only reachable by manual chip clicks.",
+    "evidence": "dashboard/src/sections/Questions.svelte verdict/qtype filters; dashboard/src/lib/types.ts RunSummary.per_question_type; CategoryHeat.svelte"
+  },
+  {
+    "area": "ux-bp",
+    "claim": "N-way evaluator comparison is already well-built: select up to 4 runs with stable colors, auto-flip to comparison mode at >=2, metric matrix across ACC/T-AVG/ABST/COST/LAT + per-qtype.",
+    "evidence": "dashboard/src/routes/Leaderboard.svelte:74-82 ($effect mode flip), CORE_METRICS/COMPARE_METRICS, SEL_COLORS, toggle() with selected.length<4"
+  },
+  {
+    "area": "ux-bp",
+    "claim": "Data for a 2-way engineer regression diff already exists on the run model: TrialMarker carries improvements/regressions/unchanged_wrong/unchanged_correct and compared_to_run_id / original_baseline_run_id — enough for a 4-quadrant fixed/regressed/still-wrong/still-right diff and run lineage.",
+    "evidence": "dashboard/src/lib/types.ts TrialMarker interface"
+  },
+  {
+    "area": "ux-bp",
+    "claim": "Live monitoring (observe) is strong — 2s polling, queue segments (queued/running/succeeded/failed/dead), per-stage progress — but there is no act surface (no stop/pause/resume/retry); Tuner only previews a copyable script, so the operator loop is not closed.",
+    "evidence": "dashboard/src/sections/Live.svelte poll()/queueSegs; dashboard/src/sections/Tuner.svelte api.runnerPlan + copy(fullScript)"
+  },
+  {
+    "area": "ux-bp",
+    "claim": "A budget cap + pre-run cost estimate is a required operator control, not a nicety, because each paid run costs ~$0.4-2.7 (repo oracle/answerer skills); surface RunnerPreview cost and enforce an auto-pause cap.",
+    "evidence": "repo skills note (oracle-test/score-run) paid OpenRouter runs ~$0.4-2.7; dashboard/src/lib/types.ts RunnerPreview"
+  },
+  {
+    "area": "ux-bp",
+    "claim": "Existing keyboard shell (/ focuses command box, fuzzy run match, F1/F2, Esc) should be upgraded to a real Cmd+K palette (objects+actions+recents, two-column with preview) per Raycast/Linear pattern.",
+    "evidence": "dashboard/src/App.svelte:42-78 (onKey + runCommand fuzzy match)"
+  },
+  {
+    "area": "ux-bp",
+    "claim": "The status bar is already a global 'is-everything-ok' strip with an observe->act deep link: the 'N IN FLIGHT' button opens the live monitor of the first active run.",
+    "evidence": "dashboard/src/App.svelte:124-153, esp :136-141 inflight button -> router.openRun(active[0], 'live')"
+  },
+  {
+    "area": "ux-bp",
+    "claim": "Keep dense terminal aesthetic for Engineer/Operator (repeat expert users) but add a calm Report/Share projection for the Evaluator, using trust metadata already on the run (judge_model, judge_prompt_mode, dataset_fingerprint, oracle_gold).",
+    "evidence": "dashboard/src/lib/types.ts RunSummary.judge_model/judge_prompt_mode/dataset_fingerprint/oracle_gold; terminal styling in App.svelte <style>"
+  },
+  {
+    "area": "ux-bp",
+    "claim": "Trace waterfall components already exist (LangSmith-style run-tree/waterfall) and should be the level-4 leaf of the run->question->evidence->trace drilldown, opened full-page from a single failing question.",
+    "evidence": "dashboard/src/components/TraceWaterfall.svelte, TraceLog.svelte; imported in Debugger via Traces.svelte"
+  },
+  {
+    "area": "ux-bp",
+    "claim": "Failure taxonomy (retrieval-miss / rank-miss / reader-miss / abstain / harness-error) should be a first-class UI object; it maps to the retrieval-wall vs rank-wall vs reader-wall distinctions and is derivable from per-question gold-retrieved/gold-rank/in-context/verdict data.",
+    "evidence": "user memory retrieval-anatomy-merge-collapse.md (rank-31+ tail past ~30 cut) + longmemeval-clean-ceiling.md (reader wall); Questions.svelte has verdict + error fields"
+  }
+]
