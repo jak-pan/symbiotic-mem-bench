@@ -121,6 +121,58 @@ Legacy `adapter_call` rows without one of the typed setup stage names are ignore
 summaries and unified trace logs. Raw trace artifacts keep those rows for archeology, but old runs
 should not render a misleading generic adapter stage.
 
+## Leaderboard Export
+
+`membench.leaderboard.v1` is the static, publishable leaderboard document. The dashboard's
+`GET /api/leaderboard` serves cohorts from a live registry scan; this document is the
+exportable counterpart built from the tracked `records/` tree:
+
+```bash
+cargo run --bin membench-leaderboard -- export --records-root records --out leaderboard.json
+```
+
+Top-level fields:
+
+| Field | Meaning |
+|---|---|
+| `schema` | Schema id, currently `membench.leaderboard.v1`. |
+| `generated_at` | RFC3339 export timestamp. Fixed to `1970-01-01T00:00:00Z` under `--deterministic`. |
+| `source.records_root` | Records root that was scanned, as passed to the exporter (repo-relative). |
+| `source.git_sha` | Git sha baked into the exporting binary. Fixed to `deterministic` under `--deterministic`. |
+| `source.run_count` | Total runs scanned (ranked + unranked). |
+| `methodology` | Repo-relative pointer to the scoring methodology doc. |
+| `cohorts` | Cohorts from `build_cohorts`: one per `{benchmark}::{limit}`, rows ranked by accuracy descending. |
+| `unranked` | Scanned runs excluded from ranking, with the reason (see below). |
+
+Every ranked row is the serialized `RankedRow` (rank plus the flattened `RunSummary`) with one
+added object:
+
+```json
+"verification": {
+  "level": "full",
+  "missing_artifacts": []
+}
+```
+
+| Level | Meaning |
+|---|---|
+| `full` | None of the scoring artifacts (`hypotheses`, `verdicts`, `scored`) are in the row's `artifacts_missing`; the score can be independently reproduced from the record. |
+| `partial` | At least one scoring artifact is missing; `missing_artifacts` lists which of the three are absent. |
+
+`unranked` rows carry `run_id`, `run_name`, `reason`, `benchmark`, and `limit`. When the report
+has an accuracy, the row also carries `accuracy`, `accuracy_correct`, and `accuracy_total`: a meta
+record can hold a real measured score whose question-level artifacts were omitted on purpose, and
+consumers may display it as long as the `reason` label travels with the number.
+
+| Reason | Meaning |
+|---|---|
+| `meta-record` | The record is a dashboard-safe rollup (`meta_record` present) without question-level data. |
+| `unscored` | The report has no `metrics.accuracy.value`. |
+
+`--deterministic` exists for contract canaries: it pins `generated_at` and `git_sha` and nulls
+each row's `modified_ms` (a file mtime) so repeated exports over unchanged records are
+byte-identical. See `canary/` for the fixture-based smoke test wired into CI.
+
 ## Machine-readable Index
 
 ```bash

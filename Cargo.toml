@@ -69,3 +69,8 @@ required-features = ["symbiotic-memory-adapter"]
 name = "membench-server"
 path = "src/bin/membench-server.rs"
 required-features = ["server"]
+
+[[bin]]
+name = "membench-leaderboard"
+path = "src/bin/membench-leaderboard.rs"
+# Core-only (clap + lib): intentionally builds without any cargo features.

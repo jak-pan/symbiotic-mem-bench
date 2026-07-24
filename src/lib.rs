@@ -10,6 +10,7 @@ pub mod compare;
 pub mod cost;
 pub mod jsonutil;
 pub mod leaderboard;
+pub mod leaderboard_export;
 pub mod live;
 pub mod proto;
 pub mod registry;
