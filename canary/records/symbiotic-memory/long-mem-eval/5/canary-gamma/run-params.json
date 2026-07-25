@@ -1,0 +1,10 @@
+{
+  "schema": "membench.run_params.v1",
+  "fixture": true,
+  "fixture_note": "Synthetic canary fixture for the leaderboard export contract. Never a real benchmark result.",
+  "system": "symbiotic-memory",
+  "benchmark": "long-mem-eval",
+  "run_kind": "synthetic-fixture",
+  "run_name": "canary-gamma",
+  "limit": 5
+}

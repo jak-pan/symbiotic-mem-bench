@@ -1,0 +1,157 @@
+[
+  {
+    "area": "benchmark-coupling-today",
+    "claim": "There is no benchmark/dataset/scorer/judge abstraction trait or enum anywhere in src/; the only 'benchmark' abstraction is a String label carried through the registry.",
+    "evidence": "grep -rniE 'trait Benchmark|trait Dataset|trait Loader|trait Scorer|trait Judge|dyn Benchmark|enum Benchmark' over src/ returns zero matches. `benchmark: String` fields exist in src/registry.rs:39, src/runner.rs, src/trials.rs:53 only as labels for runs/{system}/{benchmark}/ paths and benchmark-report.json."
+  },
+  {
+    "area": "benchmark-coupling-today",
+    "claim": "Benchmark dispatch is a single match arm hardcoded to LongMemEval; any other benchmark value bails.",
+    "evidence": "src/bin/membench.rs:1363 `match (system.as_str(), benchmark.as_str())` has one real arm `(\"symbiotic-memory\", \"long-mem-eval\")` at line 1364; the fall-through at 1520 does `anyhow::bail!(\"unsupported benchmark selection: system={system}, benchmark={benchmark}\")`. `--benchmark` (membench.rs:54) is a free Option<String> with no value validation."
+  },
+  {
+    "area": "benchmark-coupling-today",
+    "claim": "The dataset is loaded directly into a concrete LongMemEvalRecord type with LongMemEval-specific fields; there is no generic record.",
+    "evidence": "src/symbiotic_memory_adapter.rs:108 `pub struct LongMemEvalRecord { question_id, question_type: Option<String>, question, answer, answer_session_ids, haystack_dates, haystack_session_ids, haystack_sessions }`; load_longmemeval at adapter.rs:251 does serde_json::from_str::<Vec<LongMemEvalRecord>>. Default dataset path/download hardcode longmemeval_s_cleaned.json (membench.rs:31, 1592, 1617)."
+  },
+  {
+    "area": "benchmark-coupling-today",
+    "claim": "question_type is a data-driven free string, but the judge and metrics hardcode LongMemEval's specific type values.",
+    "evidence": "adapter.rs:110 question_type is Option<String> (not an enum). judge_prompt at membench.rs:5401-5412 branches on literals 'temporal-reasoning','knowledge-update','single-session-preference'. per_question_type metrics group by the raw string (membench.rs:5289)."
+  },
+  {
+    "area": "benchmark-coupling-today",
+    "claim": "The gold/evidence model is entirely LongMemEval-specific: session ids, per-message has_answer flags, gold pieces, gold turns, and embed/rerank rank.",
+    "evidence": "gold_eval (membench.rs:2725) uses answer_session_ids + has_answer (adapter.rs:130) + haystack_sessions. Helpers gold_turn_ids (2585), gold_piece_of_turn parsing 'session:turn' ids (2570), deepest_gold_rank (2682), single_piece/multi_piece classification (2763). No analog for a non-session benchmark."
+  },
+  {
+    "area": "benchmark-coupling-today",
+    "claim": "The judge hardcodes the verbatim LongMemEval-paper per-question-type grader prompts and operates only on strings.",
+    "evidence": "judge_prompt (membench.rs:5384) comment cites arXiv:2410.10813 and switches on question_type to select per-type prompts (5401-5412). judge_one_longmemeval (5346) takes string question/answer/hypothesis via ChatProvider.chat."
+  },
+  {
+    "area": "benchmark-coupling-today",
+    "claim": "The metric set (overall/task_averaged/abstention accuracy, per_question_type) is LongMemEval-shaped and frozen into both benchmark-report.json and the dashboard protobuf wire schema.",
+    "evidence": "score_prepared_longmemeval_native computes these at membench.rs:5289-5314; written to report at 1764/2216; proto/membench/dashboard/v1/debugger.proto:19-71 has abstention_accuracy and map per_question_type; abstention detection is a hardcoded English keyword list is_abstention (membench.rs:5456)."
+  },
+  {
+    "area": "benchmark-coupling-today",
+    "claim": "The dashboard gold-eval wire format bakes LongMemEval gold concepts (single_piece/multi_piece/gold_pieces/gold_turns/gold_rank) directly into protobuf and TS types.",
+    "evidence": "proto/membench/dashboard/v1/debugger.proto:560-600 GoldEvalSummary{single_piece, multi_piece, gold_pieces_needed/covered, gold_rank}, GoldEvalQuestion{n_gold_pieces, gold_turns_in_set/total}, GoldRankSummary{embed,rerank}; mirrored in dashboard/src/lib/types.ts:641-688 and served by membench-server.rs:1214-1291."
+  },
+  {
+    "area": "benchmark-coupling-today",
+    "claim": "The registry/leaderboard/cohort/trials layer is already benchmark-parametric and would carry a new benchmark without code changes.",
+    "evidence": "registry.rs reduces runs by the benchmark field (39, 360, 459); cohort.rs:73 cohort_id(benchmark, limit, dataset_fp, judge, prompt_mode); leaderboard.rs:15 keys cohorts as {benchmark}::{limit}. These read benchmark-report.json generically."
+  },
+  {
+    "area": "benchmark-coupling-today",
+    "claim": "The runner always emits --symbiotic-memory --long-mem-eval and hardcodes the LongMemEval dataset filename and config defaults.",
+    "evidence": "src/runner.rs:100-104 membench_args() pushes '--symbiotic-memory' and '--long-mem-eval' unconditionally; is_default_dataset (runner.rs:96) hardcodes longmemeval_s_cleaned.json; base schema defaults (runner.rs:371-456) hardcode LongMemEval dataset and config/symbiotic-memory/longmemeval-raw-light.yaml."
+  },
+  {
+    "area": "benchmark-coupling-today",
+    "claim": "The config/*.yaml files are memory-engine tuning (recall/queue), not benchmark definitions; only named longmemeval-* by convention.",
+    "evidence": "config/symbiotic-memory/longmemeval-raw-light.yaml contains recall.fact_top_k/raw_turn_top_k/query_planner/preference_grounding and queue.defaults — engine knobs. Only LongMemEval-flavored key is profile_fact_top_k: {preference-raw-with-facts: 40} in fact40-raw10.yaml."
+  },
+  {
+    "area": "benchmark-coupling-today",
+    "claim": "There is zero notion of modality anywhere; the entire pipeline is text-only strings, and the wall is partly in the symbiotic-memory dependency.",
+    "evidence": "grep image|multimodal|modality|audio|video|base64|mime|attachment over src/ returns nothing. LongMemEvalMessage.content: String (adapter.rs:126) -> SourceTurn.text: String (../symbiotic-memory/src/types.rs:102). ChatProvider::chat(&self, system: &str, user: &str) has no media params (../symbiotic-memory/src/providers/chat.rs:29). Answer/hypothesis/judge I/O and oracle-gold context are all String (BenchHypothesis.hypothesis: String adapter.rs:138; build_gold_oracle_context formats msg.content adapter.rs:2713)."
+  },
+  {
+    "area": "benchmark-coupling-today",
+    "claim": "The engine's expected_answer_type routing is derived from question text at runtime in symbiotic-memory, independent of the dataset question_type label.",
+    "evidence": "../symbiotic-memory/src/recall/planner.rs:11 expected_answer_type; planner.rs:30 from_question(question, _intent). The membench dataset question_type only flows to hypotheses/verdicts/per-type-metrics/judge-prompt selection, not to engine routing."
+  },
+  {
+    "area": "benchmark-coupling-today",
+    "claim": "Answer generation collapses to a single string in/string out call, breaking multimodal at the answer boundary.",
+    "evidence": "adapter.rs:361 engine.answer_with_reference_date(&row.question, Some(reference_date)) takes &str and returns answer.text (String) stored as BenchHypothesis.hypothesis. gold_answer_to_string (membench.rs:5447) coerces the JSON answer to a String for judging."
+  },
+  {
+    "area": "benchmark-landscape-multimodal",
+    "claim": "LoCoMo has 50 multi-session conversations averaging ~300 turns / ~9K tokens / ~19 sessions (up to 35), includes multimodal dialogue and event graphs, with QA categories single/multi-hop/temporal/open-domain/adversarial, gold annotated as turn IDs, scored by F1/EM/ROUGE/LLM-judge and VQA exact-match for multimodal.",
+    "evidence": "WebSearch result: 'consists of 50 very long conversations, each with ~300 turns... spanning up to 35 sessions... averages 304.9 turns, 9,209.2 tokens, and 19.3 sessions'; 'five categories: Single-hop... Multi-hop... Temporal... Open-domain... Adversarial'; 'employs token-level F1, exact match, ROUGE-1/2/L, LLM-as-judge accuracy, and, for multimodal QA, VQA exact match... each QA sample is annotated with the turn IDs containing the answer.' (emergentmind.com/topics/locomo, themoonlight.io review of 2402.17753)"
+  },
+  {
+    "area": "benchmark-landscape-multimodal",
+    "claim": "MM-NIAH (NeurIPS 2024) concatenates interleaved image-text docs from OBELICS (1K-72K tokens) and injects text needles or image needles at varying depths, with three task types (retrieval, counting, reasoning); all MLLMs perform poorly on image needles and 'lost-in-the-middle' persists.",
+    "evidence": "WebSearch result: 'generates long multimodal documents by concatenating interleaved image-text sequences and injecting either text or image needles at varying depths... 1k to 72k image and text tokens... three data types: retrieval, counting, and reasoning... All MLLMs exhibit poor performance on image needles. Additionally, the Lost in the Middle problem also exists in MLLMs.' (arxiv.org/html/2406.07230v1, mm-niah.github.io)"
+  },
+  {
+    "area": "benchmark-landscape-multimodal",
+    "claim": "MMLongBench-Doc (NeurIPS 2024) has 1,062 expert questions over 130 long PDFs (~47-49 pages, ~21K tokens, 7 domains); evidence is typed as text/image/chart/table/layout, 33.2% questions are cross-page, and 22.5% are deliberately unanswerable to detect hallucination.",
+    "evidence": "WebSearch result: '1,062 expert-annotated questions, constructed upon 130 lengthy PDF-formatted documents with an average of 49.4 pages... Answers... rely on pieces of evidence from different sources (text, image, chart, table, and layout structure)... 33.2% of the questions are cross-page questions... 22.5% questions are designed to be unanswerable... detecting LVLMs hallucinations.' (arxiv.org/abs/2407.01523)"
+  },
+  {
+    "area": "benchmark-landscape-multimodal",
+    "claim": "MileBench (arXiv 2404.18532) is the first MLLM long-context benchmark: 6,440 samples from 21 datasets, avg 15.2 images + 422 words each, split into diagnostic (needle/retrieval) and realistic (temporal+semantic multi-image) sets; its image-needle task (N-2) renders the needle text inside an image to test OCR+retrieval.",
+    "evidence": "WebSearch result: 'gathers 6,440 multimodal long-context samples from 21... datasets, with an average of 15.2 images and 422.3 words each'; 'Image Needle In A Haystack (N-2): This changes the modality of the needle, inserting it as text within an image, and requires MLLMs to have not only good perceptual and retrieval abilities but also robust OCR capabilities.' (arxiv.org/pdf/2404.18532)"
+  },
+  {
+    "area": "benchmark-landscape-multimodal",
+    "claim": "RULER (COLM 2024) is a synthetic configurable-length benchmark with 13 tasks in 4 categories: retrieval (S/MK/MV/MQ-NIAH), multi-hop tracing (variable tracking as coreference proxy), aggregation (CWE/FWE word extraction as summarization proxy), and QA with injected distractors.",
+    "evidence": "WebSearch results: 'four task categories... retrieval... Single NIAH (S-NIAH), Multi-keys NIAH (MK-NIAH), Multi-values NIAH (MV-NIAH), and Multi-queries NIAH (MQ-NIAH)'; 'Variable tracking is a minimal proxy task for coreference chain resolution'; 'Common/frequent words extraction are proxy tasks for summarization'; 'Question Answering adds distracting information to... existing short context QA datasets'; '13 synthetic, needle-in-a-haystack-style tasks'. (arxiv.org/pdf/2404.06654)"
+  },
+  {
+    "area": "benchmark-landscape-multimodal",
+    "claim": "InfiniteBench/∞Bench (ACL 2024) is the first 100K+ bilingual (English/Chinese) benchmark with 12 tasks over novels, code, math, dialogue and retrieval, designed so simple passage retrieval is insufficient.",
+    "evidence": "WebSearch result: 'the first multi-domain bilingual benchmark for evaluating the ability to understand and reason over contexts surpassing 100K tokens... comprises 12 unique tasks... spans domains such as novels, code, mathematics, and dialogue... make simply retrieving a limited number of passages from contexts not sufficient.' (arxiv.org/html/2402.13718v3, aclanthology.org/2024.acl-long.814)"
+  },
+  {
+    "area": "benchmark-landscape-multimodal",
+    "claim": "MemBench (Findings of ACL 2025) evaluates agent memory on three dimensions — effectiveness (accuracy), efficiency (# memory operations), capacity (degradation as store grows) — across factual vs reflective memory and participation vs observation modes, contexts 1K-100K tokens.",
+    "evidence": "WebSearch result: 'evaluates the memory capability of LLM-based agents from multiple aspects, including their effectiveness, efficiency, and capacity... incorporates factual memory and reflective memory as different levels, and proposes participation and observation as various interactive scenarios... metrics spanning three dimensions: effectiveness (accuracy), efficiency (number of memory operations), and capacity (performance degradation as the memory store grows).' (aclanthology.org/2025.findings-acl.989, arxiv.org/abs/2506.21605)"
+  },
+  {
+    "area": "benchmark-landscape-multimodal",
+    "claim": "LongMemEval has 500 questions in a haystack of ~500 sessions (~1.5M tokens) testing five abilities (info extraction, multi-session reasoning, temporal reasoning, knowledge updates, abstention), where abstention requires answering 'I don't know' for information not in the history.",
+    "evidence": "WebSearch result: 'evaluates five core long-term memory abilities... information extraction, multi-session reasoning, temporal reasoning, knowledge updates, and abstention... Abstention (ABS): Ability to identify questions seeking unknown information... and answer I dont know'; '500 sessions (around 1.5 million tokens).' (arxiv.org/abs/2410.10813, xiaowu0162.github.io/long-mem-eval)"
+  },
+  {
+    "area": "benchmark-landscape-multimodal",
+    "claim": "lm-evaluation-harness models a task as a discoverable YAML (ConfigurableTask) decomposed into dataset loading (dataset_path/name/splits, process_docs), prompt formatting (doc_to_text/doc_to_target/doc_to_choice as Jinja2/string/callable), output_type (generate_until/loglikelihood/multiple_choice), metric_list (metric+aggregation+higher_is_better), and filter_list.",
+    "evidence": "WebFetch of docs/task_guide.md: enumerated dataset_path, dataset_name, training/validation/test_split, custom_dataset, process_docs; doc_to_text/doc_to_target/doc_to_choice ('Jinja2 template, string, or function'); output_type 'generate_until, loglikelihood, loglikelihood_rolling, or multiple_choice'; metric_list with aggregation and higher_is_better; filter_list ('Multiple filter pipelines operating on model outputs sequentially'). Tasks 'automatically discovered' by TaskManager; external via --include_path."
+  },
+  {
+    "area": "benchmark-landscape-multimodal",
+    "claim": "Inspect (UK AISI) decomposes an eval into Task = Dataset(Samples with input/target/choices/metadata/files) + Solver (produces answer, single generate to full agent) + Scorer (grades via match/includes/f1/choice/model_graded_qa/model_graded_fact etc.), producing a Score{value,answer,explanation,metadata}, with Metrics (accuracy/stderr, mean, grouped) attached to scorers and multiple scorers per task supported.",
+    "evidence": "WebFetch of inspect.aisi.org.uk and scorers.html: 'Components are the building blocks... tasks, datasets, solvers, and scorers'; Scorer produces Score with value/answer/explanation/metadata; built-ins match/includes/pattern/answer/choice/f1/math/model_graded_qa/model_graded_fact/perplexity; 'Most scorers report accuracy and stderr'; 'Inspect supports composing multiple scorers within a single task.'"
+  },
+  {
+    "area": "benchmark-landscape-multimodal",
+    "claim": "Inspect represents multimodal content as a per-message ordered list of typed content parts — ContentText, ContentImage, ContentAudio, ContentVideo, ContentDocument, ContentReasoning — where media is referenced by file path, URL, or base64 data URI and carries an explicit format (e.g. ContentAudio(audio='sample.mp3', format='mp3')).",
+    "evidence": "WebFetch of inspect.aisi.org.uk/multimodal.html: 'each ChatMessage contains a content list of distinct content parts'; classes ContentText/ContentImage/ContentAudio/ContentVideo/ContentDocument/ContentReasoning; example input = [ChatMessageUser(content=[ContentImage(image='picture.png'), ContentText(text='What is this a picture of?')])]; 'Media files can be specified through... File paths... URLs... Base64 data URIs'; 'ContentAudio(audio=\"sample.mp3\", format=\"mp3\"), requiring explicit format declaration.'"
+  },
+  {
+    "area": "benchmark-landscape-multimodal",
+    "claim": "HELM structures a benchmark as Scenario (Instances = input + references/gold) × Adapter (AdaptationSpec: turns Instances into model Requests with prompting, #in-context examples, temperature) × Metric, all pluggable via ObjectSpec (ScenarioSpec/MetricSpec) so any Python-discoverable class can be loaded.",
+    "evidence": "WebSearch result: 'core structural components are: Scenarios: Each scenario consists of a set of instances, each consisting of a textual input and references. Adapters: An Adapter (given by an AdaptationSpec) takes a list of Instances and adapts it to a set of Requests to the API... Metrics...'; 'HELM uses ObjectSpec for scenarios (ScenarioSpec) and metrics (MetricSpec), and ObjectSpec allows users to load any scenario or metric that is discoverable by Python.' (github.com/stanford-crfm/helm docs)"
+  },
+  {
+    "area": "benchmark-landscape-multimodal",
+    "claim": "OpenAI Evals defines an eval as a JSONL dataset plus an eval class declared in a registry YAML (name/id/description/metrics/class/args), with the system-under-test swappable via a separately-registered CompletionFn; template classes let basic and model-graded evals be built with no code.",
+    "evidence": "WebSearch result: 'At its core, an eval is a dataset and an eval class that is defined in a YAML file'; 'Register the eval by adding a file to evals/registry/evals/<eval_name>.yaml... include the eval name, id, description, metrics, class, and args'; 'we also register Completion Functions inside evals/registry/completion_fns as yaml files'; 'If you follow an existing eval template... you dont need to write any evaluation code at all.' (github.com/openai/evals docs/build-eval.md, completion-fns.md)"
+  },
+  {
+    "area": "benchmark-landscape-multimodal",
+    "claim": "BIG-bench exposes a framework-agnostic API with two task types: JSON tasks (~80%) as lists of {input,target} (multi-target allowed) or {input,target_scores:{answer:score}} for multiple-choice scored by ROUGE/exact-match/assigned-probability, and programmatic tasks (~20%) as Python that queries the model over multiple rounds with custom metrics.",
+    "evidence": "WebSearch result: 'BIG-bench supports two types of tasks: JSON and programmatic... About 80% of benchmark tasks are JSON tasks... a list of examples made up of inputs and targets'; multiple-choice form '{\"input\": ..., \"target_scores\": {answer_1: score_1, ...}}'; 'About 20%... are programmatic... written in Python and have the ability to interact directly with the model over multiple query rounds... measure performance using custom metrics.' (github.com/google/BIG-bench docs/doc.md)"
+  },
+  {
+    "area": "benchmark-landscape-multimodal",
+    "claim": "Multimodal/visual-document RAG benchmarks (2024-2026) — ColPali/ColQwen2 late-interaction page-image retrieval, VisRAG, M3DocRAG (with M3DocVQA, 3,000+ docs), and ViDoRe v1/v2/v3 (v3 = end-to-end RAG on visually-rich, multilingual corpora) — evaluate retrieval over page images, the retrieval half of a memory pipeline.",
+    "evidence": "WebSearch result: 'ViDoRe is a benchmark designed to evaluate document retrieval systems... ViDoRe V3, a benchmark designed for complex and realistic end-to-end RAG evaluation on visually rich document corpora'; 'M3DocRAG... introduces approximate indexing... establishes the benchmark M3DocVQA with over 3,000 documents'; 'ColPali and its ColQwen2 variant... encoding document-page images with a vision-language model and matching them with late interaction; VisRAG and M3DocRAG embed RAG pipelines around such page-image retrievers.' (arxiv.org/html/2510.15253v2, arxiv.org/html/2601.08620)"
+  },
+  {
+    "area": "benchmark-landscape-multimodal",
+    "claim": "Emerging 2025-2026 multimodal conversational-memory benchmarks include Mem-Gallery (multimodal long-term conversational memory for MLLM agents), MemEye (371 Qs / 221 sessions / 848 rounds / 438 images, visual-centric), and DMV-Bench / EMemBench (episodic VLM memory over game trajectories at multiple evidence granularities).",
+    "evidence": "WebSearch result: 'Mem-Gallery: A benchmark for evaluating multimodal long-term conversational memory in MLLM agents, featuring multi-session conversations grounded in both visual and textual information'; 'MemEye: Contains 371 questions across 221 sessions, 848 dialogue rounds, and 438 images'; 'EMemBench: A programmatic benchmark for evaluating long-term memory... generating questions from each agents own trajectory, covering both text and visual game environments'; 'DMV-Bench: Probes VLM episodic memory... at multiple levels of evidence granularity.' (arxiv.org/html/2601.03515v1, arxiv.org/html/2605.15128v1, arxiv.org/pdf/2601.16690)"
+  },
+  {
+    "area": "benchmark-landscape-multimodal",
+    "claim": "lm-evaluation-harness added prototype multimodal (text+image in, text out) support via hf-multimodal and vllm-vlm model types with the mmmu task, using a doc_to_messages function and model_args like max_images, interleave, and image_string/image_token_id; broader MM coverage lives in the lmms-eval fork.",
+    "evidence": "WebSearch result: 'As of September 2024, lm-evaluation-harness is prototyping support for text+image multimodal input, text output tasks, with the hf-multimodal and vllm-vlm model types and mmmu task'; 'max_images... interleave (bool)... image_token_id (int) or image_string (str)'; 'YAML configuration for tasks involves creating a config file with dataset path, splits, and a doc_to_messages function'; recommends 'lmms-eval... for a broader range of multimodal tasks.' (github.com/EleutherAI/lm-evaluation-harness README/releases)"
+  }
+]

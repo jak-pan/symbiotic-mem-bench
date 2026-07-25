@@ -1,0 +1,243 @@
+syntax = "proto3";
+
+// Seam S16 · Overlay/plugin manifest (adapters · benchmarks · occupants · packs) +
+// resolve(adapter × benchmark) + the caps_hash comparability rule.
+//
+// The one self-description any pluggable component ships. Two of these manifests are the
+// ENTIRE genericity thesis: the host hardcodes nothing — it reads declarations and
+// resolves. This file is `membench.manifest.v1` and carries BOTH the adapter and the
+// benchmark manifest plus the resolver. (Seam-shape judgment call: the seam catalog names
+// them adapter.v1 / benchmark.v1; the referee repo groups the plugin-API family into one
+// versioned file per the team-lead's file layout. Package/message names keep the S16
+// identities so the split can happen later without a wire change.)
+//
+// Consumers (data-api.md §A/§C/§K): adapters, benchmarks, adapterById, benchmarkById,
+// resolve, capCell, holds, gateCaps, knobsFor, cohorts, ablationDims — the Catalog matrix,
+// the Lab tuner, and the Leaderboard comparability partition.
+//
+// Reserved namespaces: `membench.*` is host-owned; `x-<id>.*` is adapter/benchmark-owned.
+// Unknown fields are STORED, never rejected. Evolution rule: ADDITIVE-ONLY; reserve now.
+
+package membench.manifest.v1;
+
+// ── Shared vocabulary ────────────────────────────────────────────────────────
+
+enum MemoryParadigm {
+  MEMORY_PARADIGM_UNSPECIFIED = 0;
+  MEMORY_PARADIGM_EXTRACT_STORE = 1;
+  MEMORY_PARADIGM_RAG_HYBRID = 2;
+  MEMORY_PARADIGM_TEMPORAL_GRAPH = 3;
+  MEMORY_PARADIGM_AGENTIC_SELFEDIT = 4;
+  MEMORY_PARADIGM_TIERED_OS = 5;
+  MEMORY_PARADIGM_NEURAL_PARAMETRIC = 6;
+}
+
+enum Modality {
+  MODALITY_UNSPECIFIED = 0;
+  MODALITY_TEXT = 1;   // default; every benchmark opts into the rest
+  MODALITY_IMAGE = 2;
+  MODALITY_AUDIO = 3;
+  MODALITY_VIDEO = 4;
+  MODALITY_DOCUMENT = 5;
+}
+
+// ── Adapter manifest (membench.adapter.v1 identity) ──────────────────────────
+
+message Capabilities {
+  // Typed feature flags → host gates tabs/panels. Open set: string capability ids
+  // (e.g. "image_content", "retrieval_ranks", "provider_queues", "memory_ops",
+  // "queue_telemetry"). Kept as declared ids, not a closed enum, so a third-party adapter
+  // (mem0/zep/letta) can declare capabilities the host has never seen.
+  repeated string ids = 1;
+}
+
+message AdapterCaps {
+  repeated Modality modalities = 1;
+  bool produces_retrieval_ranks = 2; // gates the rank columns in Runs/Leaderboard
+  bool exposes_memory_ops = 3;       // gates the memory-op journal view (S3)
+}
+
+message Knob {
+  string name = 1;
+  string label = 2;
+  string kind = 3;          // int|bool|enum|path|string|float
+  string default_json = 4;
+  repeated string options = 5;
+  string group = 6;
+  string help = 7;
+  bool required = 8;
+  string knob_class = 9;
+  // dependsOn: this knob is only live when `depends_on_knob` ∈ `depends_on_in`.
+  string depends_on_knob = 10;
+  repeated string depends_on_in = 11;
+}
+
+message KnobSchema {
+  repeated Knob knobs = 1;   // the "model card of settings" → the Lab tuner (ParamField++)
+}
+
+message Preset {
+  string id = 1;
+  string label = 2;
+  map<string, string> knob_diff = 3; // adapter-shipped named knob-diff
+}
+
+message StepTaxonomy {
+  repeated string step_ids = 1;      // pipeline vocabulary → StepEnvelope.kind (S10)
+}
+
+message TraceStream {
+  string lane = 1;                   // → StepEnvelope.lane; LANE_COLOR derives from here
+  string label = 2;
+  string color = 3;                  // view hint; the lane taxonomy owns the color (S10)
+}
+
+message ModelRole {
+  string role = 1;                   // e.g. "answerer", "reranker", "embedder"
+  string call_kind = 2;              // CHAT|EMBED|RERANK|REASON (S9)
+  string model_tier = 3;             // fast|balanced|deep (the one canon entry that held)
+  string queue_id = 4;               // ModelIdentity queue binding (shared queue infra)
+}
+
+message ViewHints {
+  repeated string printer_columns = 1; // Systems/Compare columns (CRD-style)
+}
+
+message AdapterCapabilityManifest {
+  string id = 1;
+  string version = 2;
+  uint32 schema_version = 3;         // additive-only evolution (bake-in #3)
+  MemoryParadigm paradigm = 4;
+
+  Capabilities capabilities = 10;
+  KnobSchema knobs = 11;
+  repeated Preset presets = 12;
+  StepTaxonomy steps = 13;
+  repeated TraceStream trace_streams = 14;
+  repeated ModelRole model_roles = 15;
+  AdapterCaps caps = 16;
+  ViewHints view = 17;
+
+  repeated string required_scopes = 18;      // S13 gatekeeper scopes install/run needs
+  RedactionContract redaction = 19;          // S14 — must ship or the pack refuses to install
+  map<string, string> ext = 20;              // x-<id>.* — host stores, never rejects
+
+  // Reserve room for the multi-tenant / space / ACL evolution and a caps_hash-algo pin so
+  // the comparability key can version its hashing without a breaking change. NUMBERS only —
+  // the intended names stay addable additively:
+  //   40 tenant_id · 41 space · 42 acl · 43 caps_hash_algo.
+  reserved 40, 41, 42, 43;
+}
+
+// S14 redaction declaration. A pack with no declaration does NOT install (fail-closed).
+message RedactionContract {
+  Sensitivity default_sensitivity = 1;       // default T0 if unset (bake-in #7)
+  repeated string redacted_fields = 2;
+  bool declared = 3;                          // must be true to install
+}
+
+enum Sensitivity {
+  SENSITIVITY_UNSPECIFIED = 0;
+  SENSITIVITY_PUBLIC = 1;
+  SENSITIVITY_SHAREABLE = 2;
+  SENSITIVITY_PRIVATE = 3;
+  SENSITIVITY_RESTRICTED = 4;
+}
+
+// ── Benchmark manifest (membench.benchmark.v1 identity) ──────────────────────
+
+message DatasetSpec {
+  string kind = 1;                   // "fixed_corpus" | "generator" (RULER/MM-NIAH)
+  string locator = 2;                // id-addressed; resolved by the host, never a raw path
+  string fingerprint = 3;            // dataset_fp — THE comparability anchor (data-api §I)
+  optional uint32 total = 4;
+  bool declared_only = 5;            // shape declared, corpus not yet ingested
+}
+
+message QuestionTypeDef {
+  string id = 1;                     // DATA-DRIVEN vocabulary, NOT a Rust enum
+  string short_label = 2;
+  string description = 3;
+}
+
+message GoldEvidenceSpec {
+  // Typed positional evidence refs; may be empty (abstention/no-gold benchmarks). The
+  // valid gold-eval method is turn-id positional, never substring (documented footgun).
+  repeated string evidence_kinds = 1; // e.g. "turn_id", "session_turn"
+  bool positional = 2;
+}
+
+message ScorerSpec {
+  string id = 1;
+  string kind = 2;
+}
+
+message JudgeSpec {
+  string model = 1;
+  string prompt_mode = 2;
+}
+
+message MetricSpec {
+  string id = 1;                     // open set → extensible report
+  string label = 2;
+  string unit = 3;
+}
+
+message KnobDeltas {
+  repeated Knob adds = 1;            // knobs the benchmark adds for a run
+  repeated string removes = 2;       // knob names it removes
+}
+
+message BenchmarkManifest {
+  string id = 1;
+  string version = 2;
+  uint32 schema_version = 3;         // additive-only evolution (bake-in #3)
+  string display_name = 4;
+
+  DatasetSpec dataset = 5;
+  repeated QuestionTypeDef question_types = 6;
+  GoldEvidenceSpec gold = 7;
+  repeated Modality modalities = 8;
+  repeated ScorerSpec scorers = 9;
+  JudgeSpec judge = 10;
+  repeated MetricSpec metrics = 11;
+  KnobDeltas knob_deltas = 12;
+  repeated string requires_adapter_caps = 13; // e.g. "image_content", "retrieval_ranks"
+  map<string, string> ext = 14;               // x-<id>.*
+
+  // NUMBERS only — the intended names stay addable additively: 40 tenant_id · 41 space · 42 acl.
+  reserved 40, 41, 42;
+}
+
+// ── The resolver — deterministic, fail-closed (data-api §A) ──────────────────
+
+enum CapVerdict {
+  CAP_VERDICT_UNSPECIFIED = 0;
+  CAP_VERDICT_OK = 1;
+  CAP_VERDICT_PARTIAL = 2;   // ran with dropped components (each with a reason)
+  CAP_VERDICT_REFUSED = 3;   // a required capability is missing — never silently ranked
+}
+
+message DroppedComponent {
+  string name = 1;
+  string why = 2;
+}
+
+// resolve(adapter × benchmark) → this decision table. The host computes it server-side so
+// the verdict is authoritative; capCell/holds/gateCaps are the same one rule set projected.
+message Resolution {
+  CapVerdict verdict = 1;
+  string refused_reason = 2;
+  repeated string active_components = 3;
+  repeated DroppedComponent dropped_components = 4;
+  repeated string active_metrics = 5;
+  bool rank_columns = 6;             // false when the adapter produces no retrieval ranks
+
+  // caps_hash — the comparability partition key is the RESOLVED capability set, NOT the
+  // adapter id (fixes the cohort-key contradiction, convergence §3 #10). Two runs are
+  // head-to-head comparable only when benchmark AND caps_hash match. Computed over the
+  // sorted resolved (active_components ∪ active_metrics ∪ resolved knob-defaults) under a
+  // pinned algorithm; see scorecard.v1 for where it keys the cohort.
+  string caps_hash = 7;
+  string caps_hash_algo = 8;         // pin so the key can version its hashing additively
+}

@@ -39,6 +39,29 @@ cargo run --features server --bin membench-server   # serves dist + /api
 
 Open http://localhost:8787.
 
+## Static deploy (leaderboard landing)
+
+The built SPA is also deployable to any static host with no Rust backend. When
+`/api` is unreachable, the Leaderboard route falls back to the committed
+`membench.leaderboard.v1` export bundled at `public/data/leaderboard.json`
+(copied into `dist/data/` by Vite) and labels everything it shows as a
+**STATIC SNAPSHOT** with its provenance (records root, exporter git sha,
+generation time). Verified cohorts stay empty unless tracked records contain
+fully-attested scored runs; unverified/meta records are listed separately with
+the reason they are unranked. The UI never fabricates ranked scores.
+
+Regenerate the snapshot after `records/` changes:
+
+```bash
+scripts/export-leaderboard-snapshot.sh   # from the repo root
+```
+
+Verify the static bundle locally by serving `dist/` without the API, e.g.:
+
+```bash
+cd dashboard && npm run build && python3 -m http.server 4174 -d dist
+```
+
 ## Server options
 
 ```text

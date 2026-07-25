@@ -1,7 +1,3 @@
-Here is the final polished version.
-
----
-
 # Building a Memory That Lasts: The Road to a Benchmark-Driven Agent Memory Stack
 
 *Post 1 of a series on Symbiotic Memory — the overview and the journey.*

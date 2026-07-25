@@ -285,12 +285,11 @@ impl SymemRunPlan {
         if self.smoke {
             return warnings;
         }
-        if self.score {
-            if let Some(oracle) = &self.oracle
-                && !oracle.exists()
-            {
-                warnings.push(format!("oracle not found: {}", path_string(oracle)));
-            }
+        if self.score
+            && let Some(oracle) = &self.oracle
+            && !oracle.exists()
+        {
+            warnings.push(format!("oracle not found: {}", path_string(oracle)));
         }
         if let Some(memory_config) = &self.memory_config
             && !memory_config.exists()

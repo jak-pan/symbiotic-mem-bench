@@ -1,0 +1,837 @@
+[
+  {
+    "area": "endpoints",
+    "claim": "All 27 routes are registered in one block nested under /api with permissive CORS; a ServeDir SPA fallback serves dashboard/dist for non-API paths",
+    "evidence": "src/bin/membench-server.rs:266-303"
+  },
+  {
+    "area": "endpoints",
+    "claim": "13 JSON routes are pre-existing (in HEAD c623000); all 14 .pb routes are uncommitted, added by the colleague's +1470-line diff",
+    "evidence": "git diff shows every added .route line is a .pb variant; git show HEAD lists only the 13 JSON routes"
+  },
+  {
+    "area": "endpoints",
+    "claim": "/run/gold-eval.pb is PB-only with no JSON twin; the only JSON path to gold-eval is /run/artifact?kind=gold_eval",
+    "evidence": "src/bin/membench-server.rs:285 is the sole gold-eval route; artifact_file maps gold_eval->gold-eval.json at :1732"
+  },
+  {
+    "area": "endpoints",
+    "claim": "The uncommitted dashboard client api.ts calls ONLY .pb endpoints — the SPA has fully cut over to protobuf, leaving JSON routes legacy",
+    "evidence": "dashboard/src/lib/api.ts:367-454 (getPb/postPb to /health.pb .. /runner/plan.pb)"
+  },
+  {
+    "area": "endpoints",
+    "claim": "pb alias resolves to messages generated from proto/membench/dashboard/v1/debugger.proto via OUT_DIR",
+    "evidence": "src/bin/membench-server.rs:28; src/dashboard_proto.rs:1-8; proto/membench/dashboard/v1/debugger.proto (653 lines, ~70 messages)"
+  },
+  {
+    "area": "endpoints",
+    "claim": "Registry data (runs/leaderboard/run/compare/runner-schema) is served from an mtime-keyed cached RegistrySnapshot rebuilt only on report/trial mtime change",
+    "evidence": "src/bin/membench-server.rs:132-175 registry_snapshot; report_sig/trial_sig invalidation"
+  },
+  {
+    "area": "endpoints",
+    "claim": "live_detail is cached with a 2.5s TTL keyed on trace-file mtimes; used by /run/live and /run/live.pb",
+    "evidence": "src/bin/membench-server.rs:189-219, LIVE_CACHE_TTL=2500ms :89, live::live_detail src/live.rs:739"
+  },
+  {
+    "area": "endpoints",
+    "claim": "/run/traces[.pb] is the heaviest request-time derivation and is NOT cached: rebuilds dependency waterfall (277 lines), trace waterfall, 12000-cap event stream, queue timing, cost rollup, and opens queue.sqlite per request",
+    "evidence": "src/bin/membench-server.rs:1810-1862, summarize_dependency_waterfall :2091-2367, summarize_trace_events :1884, read_workflow_queue :2890; TRACE_ROW_CAP 4000 / TRACE_EVENT_CAP 12000 :1807-1808"
+  },
+  {
+    "area": "endpoints",
+    "claim": "/run[.pb] recompute cost rollup and cohort fields on every request (no cache), re-reading model-traces.jsonl",
+    "evidence": "src/bin/membench-server.rs:1593-1605 run_detail; cost::rollup_model_traces src/cost.rs:377"
+  },
+  {
+    "area": "endpoints",
+    "claim": "/pending[.pb] re-scan roots on every request with no cache (registry::scan_pending)",
+    "evidence": "src/bin/membench-server.rs:182-184 pending(); scan_pending"
+  },
+  {
+    "area": "endpoints",
+    "claim": "leaderboard.pb double-converts: build_cohorts -> serde Value -> cohort_pb (avoidable round-trip)",
+    "evidence": "src/bin/membench-server.rs:3168-3172"
+  },
+  {
+    "area": "endpoints",
+    "claim": ".pb artifact/question-debug responses do not type the payload — they re-stringify JSON into a string field via json_text_value, so PB gains nothing there",
+    "evidence": "src/bin/membench-server.rs:3296 (question_debug), 3323/3336 (artifact rows_json/json)"
+  },
+  {
+    "area": "endpoints",
+    "claim": "run_artifact serves 10 whitelisted artifact kinds; JSONL kinds are paged lazily with offset/limit capped at 2000",
+    "evidence": "src/bin/membench-server.rs:1721-1734 artifact_file; read_jsonl_values :1777; limit .min(2000) :1762"
+  },
+  {
+    "area": "endpoints",
+    "claim": "gold-eval.json is pre-materialized by the membench scorer (not computed by the server)",
+    "evidence": "src/bin/membench.rs:3065 out_path gold-eval.json; :3898 keeps it fresh after scored runs"
+  },
+  {
+    "area": "endpoints",
+    "claim": "question-debug path is path-traversal-hardened: must be run-relative, end in question-debug.json, and canonicalize inside run root",
+    "evidence": "src/bin/membench-server.rs:1674-1710 question_debug_path + tests :3519-3541"
+  },
+  {
+    "area": "endpoints",
+    "claim": "runner/plan[.pb] is POST, reads no run-dir files, builds a command preview purely from POSTed params",
+    "evidence": "src/bin/membench-server.rs:3140-3149 runner_plan; runner::plan_from_params"
+  },
+  {
+    "area": "endpoints",
+    "claim": "proto_response encodes any prost::Message with content-type application/x-protobuf",
+    "evidence": "src/bin/membench-server.rs:349-353"
+  },
+  {
+    "area": "screens",
+    "claim": "App has exactly two top-level modes toggled by F1 (leaderboard) and F2 (debug); default is leaderboard",
+    "evidence": "dashboard/src/App.svelte:54-59, :117-121"
+  },
+  {
+    "area": "screens",
+    "claim": "Routing is a hand-rolled hash-based rune singleton, not a router library; routes are #/, #/debug, #/debug/<run>/<subscreen>",
+    "evidence": "dashboard/src/lib/router.svelte.ts:1-93"
+  },
+  {
+    "area": "screens",
+    "claim": "Debug subscreens are a fixed set: overview, questions, compare, traces, gold-coverage, live, tuner",
+    "evidence": "dashboard/src/lib/router.svelte.ts:7-24"
+  },
+  {
+    "area": "screens",
+    "claim": "Debugger tabs are dynamic: LIVE tab only appears when native_state_available; pending runs collapse to a single forced LIVE MONITOR",
+    "evidence": "dashboard/src/routes/Debugger.svelte:20-36, :58-72"
+  },
+  {
+    "area": "screens",
+    "claim": "API transport is protobuf-first with JSON fallback per endpoint",
+    "evidence": "dashboard/src/lib/api.ts:27-35, :365-457"
+  },
+  {
+    "area": "screens",
+    "claim": "Leaderboard fetches api.leaderboard() once; all sorting/selection is client-side; comparison capped at 4 selections",
+    "evidence": "dashboard/src/routes/Leaderboard.svelte:35-39, :117-124"
+  },
+  {
+    "area": "screens",
+    "claim": "Leaderboard main table is table-layout:fixed with min-width 980px so it horizontally scrolls on narrow viewports",
+    "evidence": "dashboard/src/routes/Leaderboard.svelte:767-773"
+  },
+  {
+    "area": "screens",
+    "claim": "Questions table caps rendering at 200 rows with a SHOW 200 MORE button and debounced search",
+    "evidence": "dashboard/src/sections/Questions.svelte:34-42, :94, :248-253"
+  },
+  {
+    "area": "screens",
+    "claim": "Questions drawer is a fixed aria-modal dialog with lazy per-path api.questionDebug fetch, Esc-close and focus trap",
+    "evidence": "dashboard/src/sections/Questions.svelte:61-76, :97-99, :176, :257-429"
+  },
+  {
+    "area": "screens",
+    "claim": "Compare fetches api.compare(baseId,id); baseline picker splits same-cohort vs other; renders 6 count buckets + DeltaBars + changed-verdict table",
+    "evidence": "dashboard/src/sections/Compare.svelte:25-36, :44-109"
+  },
+  {
+    "area": "screens",
+    "claim": "Traces renders 7 conditional panels and recomputes queue percentiles client-side from raw queue_timing; Provider Queue Summary is collapsed by default",
+    "evidence": "dashboard/src/sections/Traces.svelte:34-67, :274-298"
+  },
+  {
+    "area": "screens",
+    "claim": "GoldCoverage hard-codes three reference run names (c500-coh-1, nemo-rpmfix-500, pplx-rpmfix-500) and fetches their gold-eval for cross-run comparison",
+    "evidence": "dashboard/src/sections/GoldCoverage.svelte:60, :100-158"
+  },
+  {
+    "area": "screens",
+    "claim": "Live polls api.live every 2s gated on tab visibility, with distinct running vs complete metric variants",
+    "evidence": "dashboard/src/sections/Live.svelte:28-46, :207-254"
+  },
+  {
+    "area": "screens",
+    "claim": "Tuner is preview-only: api.runnerPlan debounced 220ms, copy buttons, and a disabled SPAWN RUN placeholder + empty Runs/Status panel",
+    "evidence": "dashboard/src/sections/Tuner.svelte:30-42, :141-155"
+  },
+  {
+    "area": "screens",
+    "claim": "RegistryTree is the debugger left rail; self-contained, owns kind/source filters and score/newest/oldest sort, groups runs into tuning/trials/benchmark",
+    "evidence": "dashboard/src/components/RegistryTree.svelte:11, :61-83, :156-171"
+  },
+  {
+    "area": "screens",
+    "claim": "TraceWaterfall is one component with variant='trace'|'dependency' driving lanes/blocks and all block-color CSS by kind/status",
+    "evidence": "dashboard/src/components/TraceWaterfall.svelte:34-52, :183-231"
+  },
+  {
+    "area": "screens",
+    "claim": "Panel is the universal container with title+tag+actions snippet and flush/scroll flags",
+    "evidence": "dashboard/src/components/Panel.svelte:3-25"
+  },
+  {
+    "area": "screens",
+    "claim": "RingGauge renders a 270-degree SVG arc gauge; Radar renders a spider chart with min=0.5 floor to amplify accuracy diffs",
+    "evidence": "dashboard/src/components/RingGauge.svelte:16-20; dashboard/src/components/Radar.svelte:13, :19-22"
+  },
+  {
+    "area": "screens",
+    "claim": "CategoryHeat renders 6 fixed qtype cells colored by heatColor red->amber->green",
+    "evidence": "dashboard/src/components/CategoryHeat.svelte:13-26; dashboard/src/lib/format.ts:99-116"
+  },
+  {
+    "area": "screens",
+    "claim": "Each async section runs its own fetch $effect with an id-race guard; createAsyncData only holds the data+loading runes",
+    "evidence": "dashboard/src/lib/async.svelte.ts:5-27; dashboard/src/sections/Overview.svelte:12-19"
+  },
+  {
+    "area": "screens",
+    "claim": "Overview artifact list is a hard-coded ALL_KINDS set, not driven by the server manifest",
+    "evidence": "dashboard/src/sections/Overview.svelte:28, :134-150"
+  },
+  {
+    "area": "screens",
+    "claim": "Store is a rune-backed singleton polled from App every 15s (visibility-gated) exposing runs/pending and derived systems/benchmarks/bestAccuracy/active",
+    "evidence": "dashboard/src/lib/store.svelte.ts:7-80; dashboard/src/App.svelte:28-34"
+  },
+  {
+    "area": "screens",
+    "claim": "Only two route files exist (Leaderboard, Debugger); seven sections and ten components as enumerated",
+    "evidence": "dashboard/src/routes, dashboard/src/sections, dashboard/src/components directory listing"
+  },
+  {
+    "area": "contract",
+    "claim": "types.ts contains only hand-written DTOs that mirror the Rust server's JSON shapes; it imports nothing generated",
+    "evidence": "dashboard/src/lib/types.ts:1-2 comment 'DTOs mirroring the Rust server's JSON shapes'"
+  },
+  {
+    "area": "contract",
+    "claim": "debugger_pb.ts is generated by protoc-gen-es v2.12.1 from membench/dashboard/v1/debugger.proto and exports 61 message *Schema descriptors",
+    "evidence": "dashboard/src/lib/gen/membench/dashboard/v1/debugger_pb.ts:1-2; grep of '^export const .*Schema' returns 61 entries"
+  },
+  {
+    "area": "contract",
+    "claim": "api.ts imports the generated protobuf module as `* as Pb` and the @bufbuild/protobuf fromBinary decoder",
+    "evidence": "dashboard/src/lib/api.ts:1-2"
+  },
+  {
+    "area": "contract",
+    "claim": "Every api method except uiVersion is protobuf-primary with a JSON fallback via .catch(); no method is protobuf-only",
+    "evidence": "dashboard/src/lib/api.ts:366-457, e.g. runs at 375-378 getPb(...).catch(()=>get(...))"
+  },
+  {
+    "area": "contract",
+    "claim": "getPb sends Accept: application/x-protobuf and decodes response bytes with fromBinary; get parses res.json()",
+    "evidence": "dashboard/src/lib/api.ts:27-35 (getPb), :18-25 (get)"
+  },
+  {
+    "area": "contract",
+    "claim": "POST bodies are always JSON even on the .pb variant; only the response is protobuf",
+    "evidence": "dashboard/src/lib/api.ts:47-56 postPb sends content-type application/json, reads arrayBuffer response"
+  },
+  {
+    "area": "contract",
+    "claim": "uiVersion is the only JSON-only method and the only one with no /api prefix, hitting /version.json",
+    "evidence": "dashboard/src/lib/api.ts:370-374"
+  },
+  {
+    "area": "contract",
+    "claim": "goldEval's JSON fallback hits a different endpoint and shape than its protobuf primary",
+    "evidence": "dashboard/src/lib/api.ts:437-444: primary /run/gold-eval.pb vs fallback /run/artifact?kind=gold_eval returning {kind,json}"
+  },
+  {
+    "area": "contract",
+    "claim": "questionDebug's protobuf response is a JSON-string envelope; the entire QuestionDebug tree is parsed from Pb.QuestionDebugResponse.json",
+    "evidence": "dashboard/src/lib/api.ts:320-322 mapQuestionDebug -> parseJson(d.json,{})"
+  },
+  {
+    "area": "contract",
+    "claim": "Several protobuf messages carry embedded JSON strings re-parsed by the mapper: report_json, params_json, answer_json, default_json, artifact json/rows_json",
+    "evidence": "dashboard/src/lib/api.ts:223-224, 295, 331, 343"
+  },
+  {
+    "area": "contract",
+    "claim": "Mappers use snakeKeys(), a recursive camelCase->snake_case converter that also coerces bigint->number and strips $-prefixed keys, for RunDetail/Live/Traces/Compare/GoldEval subtrees",
+    "evidence": "dashboard/src/lib/api.ts:71-84 snakeKeys; used at 225,226,269,281-286,260-261,291"
+  },
+  {
+    "area": "contract",
+    "claim": "Proto QTypeScore has a `total` field that the mapper drops, so the DTO QTypeScore has only accuracy/n/correct",
+    "evidence": "debugger_pb.ts:73 uint32 total; api.ts:112 maps only accuracy,n,correct; types.ts:64-68"
+  },
+  {
+    "area": "contract",
+    "claim": "Proto Cohort has judge_prompt_modes and proto ModelStat/ModelRollup have cache-hit + failed_calls fields absent from the types.ts DTOs",
+    "evidence": "debugger_pb.ts:682 judgePromptModes; :764-796 ModelStat cache fields; :871-903 ModelRollup cache fields + rolesDetailJson; types.ts:72-82,196-222"
+  },
+  {
+    "area": "contract",
+    "claim": "QueueSummaryRow exists in types.ts but has no protobuf message and is not produced by any api.ts method",
+    "evidence": "types.ts:342-358; no QueueSummaryRow in debugger_pb.ts schema list; not referenced in api.ts"
+  },
+  {
+    "area": "contract",
+    "claim": "The colleague migration is +402/-25 lines; pre-migration api.ts was 79 lines with one-line JSON get/post per method",
+    "evidence": "git diff --numstat dashboard/src/lib/api.ts = 402 25; git show HEAD:dashboard/src/lib/api.ts:37-79 shows single-line JSON methods"
+  },
+  {
+    "area": "contract",
+    "claim": "The migration added getPb/postPb transports, null-coalesce/parseJson/snakeKeys helpers, and 14 map* translator functions but did not change the types.ts DTOs",
+    "evidence": "dashboard/src/lib/api.ts:27-56 (transports), 59-84 (helpers), 86-363 (mappers); types.ts unmodified in git status"
+  },
+  {
+    "area": "contract",
+    "claim": "RankedRow is a type alias (RunSummary & {rank}) not an interface; QTYPES is a const string tuple; GoldClass is a string union",
+    "evidence": "types.ts:70 (RankedRow), :629-636 (QTYPES), :639 (GoldClass)"
+  },
+  {
+    "area": "contract",
+    "claim": "AnswererCallDebug is defined in types.ts but not referenced by any other type in the file",
+    "evidence": "types.ts:151-162; no usages elsewhere in types.ts"
+  },
+  {
+    "area": "streams",
+    "claim": "memory-traces rows have exactly 24 top-level keys matching MemoryTraceEvent (schema_version, trace_id, parent_trace_id, source_system, instrumentation, run_id, question_id, source_id, operation, stage, event, attempt, timestamp, started_at, finished_at, duration_ms, input_hash, output_hash, item_count, model_trace_ids, queue_item_ids, metrics, error_class, error) — prior 24-key finding CONFIRMED",
+    "evidence": "src/lib.rs:236-262; head -1 artifacts/memory-traces.jsonl → 24 keys"
+  },
+  {
+    "area": "streams",
+    "claim": "artifacts/memory-traces.jsonl is byte-identical to traces/memory-events.jsonl — CONFIRMED",
+    "evidence": "cmp -s → IDENTICAL; both 76849446 bytes, 63897 rows"
+  },
+  {
+    "area": "streams",
+    "claim": "artifacts/model-traces.jsonl is byte-identical to provider-queue/model-queue-traces.jsonl — CONFIRMED",
+    "evidence": "cmp -s → IDENTICAL; both 46636499 bytes, 134183 rows"
+  },
+  {
+    "area": "streams",
+    "claim": "model-queue-trace rows are queue lifecycle events (queued/running/succeeded/failed), NOT terminal calls — CONFIRMED; ~3 rows per request",
+    "evidence": "status counts: embedding 26593 queued/26596 running/26593 succeeded/3 failed; chat 18130/18134/18130/4"
+  },
+  {
+    "area": "streams",
+    "claim": "model-queue-trace on-disk row shape is not BenchQueueEvent and varies by status: base keys queue_id/item_id/operation/status/attempt/timestamp/request_units/input_units/input_hash; running adds queue_wait_ms+throttle_wait_ms; succeeded adds run_ms (chat also usage{cache_hit_tokens,cache_miss_tokens,completion_tokens,prompt_tokens}); failed adds error",
+    "evidence": "distinct key-sets over 134183 rows; BenchQueueEvent reader at src/lib.rs:169-188 aliases kind→operation and pending→queued"
+  },
+  {
+    "area": "streams",
+    "claim": "memory-traces operation/stage values on disk exceed the MemoryTraceOperation enum in lib.rs (observed: consolidate, fact_search, raw_search, query_plan, embed_query, support_check, answer_context) — the engine emits free-form strings, enum is not authoritative",
+    "evidence": "src/lib.rs:207-225 enum lacks these; operation histogram over memory-traces.jsonl shows them"
+  },
+  {
+    "area": "streams",
+    "claim": "verdicts.jsonl and partial-verdicts.jsonl are NOT byte-identical but have identical content per question_id (0 differing rows over 500 qids); the only difference is row order (partial = completion/stream order, verdicts = final sorted)",
+    "evidence": "cmp → DIFFER; python per-qid compare → qids 500, differing rows 0"
+  },
+  {
+    "area": "streams",
+    "claim": "raw/ is the native writer dir; hypotheses/verdicts/partial-verdicts/provenance/scored/score-summary are written to raw/ then copied byte-identically into artifacts/ via copy_artifact",
+    "evidence": "native_raw_dir=run_root/raw src/bin/membench.rs:1921; copy_artifact src/bin/membench.rs:1992-2007; cmp raw==artifacts IDENTICAL for all 6"
+  },
+  {
+    "area": "streams",
+    "claim": "raw/model-traces.jsonl and raw/memory-traces.jsonl do NOT exist in native runs; those paths are fallback READ locations for the external-import path only",
+    "evidence": "ls → No such file for both; fallback reads at src/cost.rs:383, src/live.rs:894/1147, src/registry.rs:977-978"
+  },
+  {
+    "area": "streams",
+    "claim": "workflow/longmemeval/queue.sqlite is a separate per-question WORKFLOW queue: queue_items (500 = one longmemeval.row per question), queue_events (3239), queue_cooldowns (0)",
+    "evidence": "sqlite3 .schema + counts; idempotency_key=<qid>:<hash>; distinct queue_id=workflow:longmemeval kind=longmemeval.row"
+  },
+  {
+    "area": "streams",
+    "claim": "There is no model_queue.sqlite on disk; only workflow queue.sqlite and per-vault memory.sqlite exist despite a model_queue_sqlite trace-artifact key in code",
+    "evidence": "find *.sqlite → only workflow/.../queue.sqlite + vaults/*/memory.sqlite; key referenced at src/symbiotic_memory_adapter.rs:2093 but absent in trace_artifacts"
+  },
+  {
+    "area": "streams",
+    "claim": "provider-queue/responses/ is a per-request LLM/embedding response cache keyed by input hash, row shape {text,usage,finish_reason}, ~18081 chat files",
+    "evidence": "find count=18081; sample file keys ['text','usage','finish_reason']"
+  },
+  {
+    "area": "streams",
+    "claim": "provenance.jsonl has 23 top-level keys (schema membench.provenance.v1) including memory_trace_ids[] linking a question to its stage traces; reader Provenance only parses 4 of them",
+    "evidence": "head row 23 keys; reader src/artifacts.rs:69-79"
+  },
+  {
+    "area": "streams",
+    "claim": "hypotheses.jsonl has 8 keys (question_id, question_type, question, hypothesis, debug_artifact, router_initial, router_final, router_reason); 500 rows",
+    "evidence": "head -1; reader Hypothesis src/artifacts.rs:53-67"
+  },
+  {
+    "area": "streams",
+    "claim": "gold-eval.json is a post-hoc single JSON {dataset_path,questions[],run_name,schema_version,summary}; questions[] rows have 18 keys incl gold_embed_rank/gold_rerank_rank/gold_deepest_rank; absent from the 500 reference run",
+    "evidence": "gold_eval subcommand src/bin/membench.rs:459/283; sampled from runs/.../50/verify-refactor-50/artifacts/gold-eval.json"
+  },
+  {
+    "area": "streams",
+    "claim": "question-debug.json is written twice per vault (debug/question-debug.json + debug/hypotheses/<run_id>/question-debug.json) with 11 top-level keys incl recall(13), hypothesis(8), gold_positions(5), provider_trace_artifacts back-pointers",
+    "evidence": "writer src/symbiotic_memory_adapter.rs:2103-2160 write_json_atomic to both paths; python key dump of vaults/001be529/debug/question-debug.json"
+  },
+  {
+    "area": "streams",
+    "claim": "step-analytics.json is a derived rollup (top keys generated_at, memory, model, question_debug, schema, sources), built by reading artifacts/memory-traces.jsonl + artifacts/model-traces.jsonl + per-vault question-debug.json — not a raw stream",
+    "evidence": "src/step_analytics.rs:65-66 and :361; write at write_step_analytics_artifact"
+  },
+  {
+    "area": "streams",
+    "claim": "The big trace streams are produced by external libraries (symbiotic-memory engine writes memory-events via MemoryTraceSink; symbiotic-foundation writes model-queue-traces); the bench crate reads and mirrors them into artifacts/",
+    "evidence": "MemoryTraceSink imported src/symbiotic_memory_adapter.rs:38; trace_artifacts point at provider-queue/model-queue-traces.jsonl written by foundation queue"
+  },
+  {
+    "area": "artifacts",
+    "claim": "Cohort/cost identity is persisted into benchmark-report.json via enrich_report_with_cohort at report finalize (dataset_fingerprint, judge, models, config_signature, cost, latency, cache block, roles)",
+    "evidence": "src/bin/membench.rs:1821-1858"
+  },
+  {
+    "area": "artifacts",
+    "claim": "compute_cohort_fields wraps cost::rollup_model_traces + cohort fingerprints; shared by report writer (persist) and server (request-time)",
+    "evidence": "src/registry.rs:671-713"
+  },
+  {
+    "area": "artifacts",
+    "claim": "cost::rollup_model_traces builds ModelTraceRollup (calls, tokens, cache hits, cost_micro_usd, p50/p95 latency, per-model ModelStat, per-role RoleStat, roles map) from model-traces.jsonl or provider-queue fallback",
+    "evidence": "src/cost.rs:131-154, 377-655"
+  },
+  {
+    "area": "artifacts",
+    "claim": "step-analytics.json (schema membench.step_analytics.v1) is a post-run persisted percentile rollup of memory+model traces + hashed question-debug",
+    "evidence": "src/step_analytics.rs:64-96; src/bin/membench.rs:2009-2020"
+  },
+  {
+    "area": "artifacts",
+    "claim": "step-analytics memory section: per-op started/succeeded/failed + duration/item/worst-case summaries + per-question summary block",
+    "evidence": "src/step_analytics.rs:98-170,396-444"
+  },
+  {
+    "area": "artifacts",
+    "claim": "step-analytics model section: items{total,terminal,failed} + by_queue/by_role/by_model queue+timing summaries",
+    "evidence": "src/step_analytics.rs:208-323,446-471"
+  },
+  {
+    "area": "artifacts",
+    "claim": "step-analytics is written at run finalize (2197), at import (1797), and via standalone re-derive (2383)",
+    "evidence": "src/bin/membench.rs:2197,1797,2383"
+  },
+  {
+    "area": "artifacts",
+    "claim": "gold-eval.json is a post-run persisted file with summary{coverage_by_source, class_counts, gold_rank{embed,rerank distributions}} and per-question gold_embed_rank/gold_rerank_rank",
+    "evidence": "src/bin/membench.rs:2725-3089,3052-3058,2965-2983"
+  },
+  {
+    "area": "artifacts",
+    "claim": "gold-eval.json is auto-refreshed after every scored run and after --rejudge",
+    "evidence": "src/bin/membench.rs:3901-3905,3725-3727"
+  },
+  {
+    "area": "artifacts",
+    "claim": "gold rank distributions {n, within_10/20/50/100, mean} are computed in the rank_distribution closure",
+    "evidence": "src/bin/membench.rs:2996-3019"
+  },
+  {
+    "area": "artifacts",
+    "claim": "Trial ledgers (trial-stack.json, trials.jsonl, trial-question-deltas.jsonl) are post-run persisted, written on-demand by derive_trial",
+    "evidence": "src/trials.rs:119-153"
+  },
+  {
+    "area": "artifacts",
+    "claim": "TrialStack carries failure_buckets{both_wrong, comparison_wrong_original_right, original_wrong_comparison_right, both_right}, sample_policy band, question_types histogram",
+    "evidence": "src/trials.rs:155-225,304-332"
+  },
+  {
+    "area": "artifacts",
+    "claim": "TrialRow outcomes bucket improvements/regressions/unchanged_wrong/unchanged_correct/regressions_from_original_baseline; append-or-replace by run_id",
+    "evidence": "src/trials.rs:227-302,560-580"
+  },
+  {
+    "area": "artifacts",
+    "claim": "LiveDetail is computed live-during-run by tailing trace files (TAIL_BYTES=1.2MB, PROVIDER_FULL_CAP=80MB, MEMORY_FULL_CAP=40MB)",
+    "evidence": "src/live.rs:17-27,211,739-1110"
+  },
+  {
+    "area": "artifacts",
+    "claim": "QueueBreakdown includes time-weighted avg running/queued and observed-peak/starts-per-minute stats computed in observed_queue_stats",
+    "evidence": "src/live.rs:44-91,611-736"
+  },
+  {
+    "area": "artifacts",
+    "claim": "StageProgress/StageSegment give per-memory-op cumulative progress ordered by canonical STAGE_ORDER, with recovered-failure handling",
+    "evidence": "src/live.rs:104-206,416-457,927-1099"
+  },
+  {
+    "area": "artifacts",
+    "claim": "scan_pending derives in-flight/stalled PendingRun cards from file mtimes (RUNNING 180s / STALLED 300s) + vault/hypothesis counts",
+    "evidence": "src/registry.rs:942-1035,827-828"
+  },
+  {
+    "area": "artifacts",
+    "claim": "leaderboard::build_cohorts groups RunSummary into {benchmark}::{limit} cohorts, ranks by accuracy, flags strictly_comparable; served request-time by /leaderboard",
+    "evidence": "src/leaderboard.rs:52-134; src/bin/membench-server.rs:1549-1567"
+  },
+  {
+    "area": "artifacts",
+    "claim": "/run recomputes cost rollup + cohort fields request-time rather than reading persisted report.cohort",
+    "evidence": "src/bin/membench-server.rs:1574-1610"
+  },
+  {
+    "area": "artifacts",
+    "claim": "/run/traces recomputes memory_stage_timing, queue_timing, trace_waterfall, dependency_waterfall, trace_events, workflow_queue, model_rollup per request; none persisted",
+    "evidence": "src/bin/membench-server.rs:1810-1862"
+  },
+  {
+    "area": "artifacts",
+    "claim": "summarize_memory_stage_timing produces per-op cadence percentiles work_ms_p50/p80/p95/p98 from batch cadence, ordered by stage_order",
+    "evidence": "src/bin/membench-server.rs:2645-2753"
+  },
+  {
+    "area": "artifacts",
+    "claim": "summarize_queue_timing yields per-item BenchTimingSummary {attempts, wait_ms, run_ms, total_ms, final_status}",
+    "evidence": "src/lib.rs:336-400"
+  },
+  {
+    "area": "artifacts",
+    "claim": "summarize_dependency_waterfall builds per-source critical-path lanes with blocked_distill/blocked_raw stall blocks and per-lane wait_ms/setup_ms",
+    "evidence": "src/bin/membench-server.rs:2091-2365,2067-2089"
+  },
+  {
+    "area": "artifacts",
+    "claim": "read_workflow_queue_db rolls up workflow queue.sqlite into items_by_status, events_by_status, queues, retried_items, max_attempt, recent_errors/events",
+    "evidence": "src/bin/membench-server.rs:2921-2959"
+  },
+  {
+    "area": "artifacts",
+    "claim": "compare::compare_runs builds request-time CompareResult with CompareCounts transition buckets, per_type TypeDelta, changed ChangedRow flips",
+    "evidence": "src/compare.rs:13-64,82-177; src/bin/membench-server.rs:3040-3078"
+  },
+  {
+    "area": "artifacts",
+    "claim": "artifacts::question_rows merges verdicts+hypotheses+provenance into per-qid rows request-time; feeds /run/questions, compare, trials",
+    "evidence": "src/artifacts.rs:239-299"
+  },
+  {
+    "area": "artifacts",
+    "claim": "Radar and category-heat matrix are client-derived in the dashboard off RunSummary.per_question_type",
+    "evidence": "dashboard/src/routes/Leaderboard.svelte:126-127,225-243,274-278,372"
+  },
+  {
+    "area": "artifacts",
+    "claim": "Gold rank heatmap + tail percentiles are client-derived from persisted gold-eval per-question gold_embed_rank/gold_rerank_rank arrays",
+    "evidence": "dashboard/src/sections/GoldCoverage.svelte:121-200"
+  },
+  {
+    "area": "artifacts",
+    "claim": "per_question_type on RunSummary is lifted from scored.json (source for client radar/heat)",
+    "evidence": "src/registry.rs:407-409,484"
+  },
+  {
+    "area": "artifacts",
+    "claim": "Every JSON endpoint has a .pb twin that runs the same derivation then encodes via *_pb mappers (e.g. gold_eval_pb, queue_timing_pb)",
+    "evidence": "src/bin/membench-server.rs:1214-1296,1048"
+  },
+  {
+    "area": "question-model",
+    "claim": "The canonical join key is question_id, which is also the vault directory name: vault_dir = run_root/vaults/{question_id}",
+    "evidence": "src/symbiotic_memory_adapter.rs:1518,2210,2430"
+  },
+  {
+    "area": "question-model",
+    "claim": "QuestionRow is the explicit flattened per-question join struct (question_id, gold_answer, hypothesis, label, is_abstention, judge_raw/system/user prompts, judge_model, router/initial/final picks, debug_artifact, error)",
+    "evidence": "src/artifacts.rs:82-101"
+  },
+  {
+    "area": "question-model",
+    "claim": "question_rows() LEFT-joins verdicts.jsonl + hypotheses.jsonl + provenance.jsonl on question_id into QuestionRow; it does NOT open the debug bundle or gold-eval",
+    "evidence": "src/artifacts.rs:239-299"
+  },
+  {
+    "area": "question-model",
+    "claim": "write_question_debug emits top-level keys: schema_version, question, source, workflow, ingest, runtime, recall, hypothesis, provider_trace_artifacts, scoring(null)",
+    "evidence": "src/symbiotic_memory_adapter.rs:2104-2138"
+  },
+  {
+    "area": "question-model",
+    "claim": "The debug bundle is written to two paths: vaults/{qid}/debug/question-debug.json (latest) and vaults/{qid}/debug/hypotheses/{debug_run_id}/question-debug.json (snapshot)",
+    "evidence": "src/symbiotic_memory_adapter.rs:2139-2160"
+  },
+  {
+    "area": "question-model",
+    "claim": "scoring is null at write time and back-filled by update_question_debug_score with {scorer, scored_artifact, verdicts_artifact, verdict:ScoreVerdict}",
+    "evidence": "src/symbiotic_memory_adapter.rs:2137,2508-2543"
+  },
+  {
+    "area": "question-model",
+    "claim": "ScoreVerdict written into the bundle is {question_id, question_type, label(bool), error}; the richer verdicts.jsonl Verdict adds judge_raw, judge_system_prompt, judge_user_prompt, autoeval_label{model,label}, is_abstention, answer, hypothesis",
+    "evidence": "src/symbiotic_memory_adapter.rs:2937-2945; src/artifacts.rs:20-51"
+  },
+  {
+    "area": "question-model",
+    "claim": "recall.rerank_trace[] entries carry candidate_type, top_k_target, candidates_submitted, and candidates[]{candidate_id, embedding_rank, embedding_score, final_rank, rerank_score, text}",
+    "evidence": "verified in runs/.../50/n50-coh-3/vaults/6aeb4375/debug/question-debug.json recall.rerank_trace[0]"
+  },
+  {
+    "area": "question-model",
+    "claim": "recall.initial_profile.facts[].fact.source_refs[] carry turn_id/source_id/receipt_id linking a distilled fact (memory_id mem-…) back to a raw turn; facts[].score is the fact ranking used by gold-eval",
+    "evidence": "verified in question-debug.json recall.initial_profile.facts[0]; consumed at src/bin/membench.rs:2807-2825"
+  },
+  {
+    "area": "question-model",
+    "claim": "recall.final_answer = {text, support, evidence_ids[]} where evidence_ids mix mem-/brief-/raw-turn ids",
+    "evidence": "verified in question-debug.json recall.final_answer (evidence_ids of len 30 mixing mem-/brief-)"
+  },
+  {
+    "area": "question-model",
+    "claim": "recall.query_plan.expected_answer_type is the live router signal (count/etc); recall.query_planner_call holds the planner system/user prompt, response, parsed_plan, usage",
+    "evidence": "verified in question-debug.json recall.query_plan and recall.query_planner_call"
+  },
+  {
+    "area": "question-model",
+    "claim": "gold-eval.json top-level: schema_version, run_name, dataset_path, summary{...}, questions[]; written to artifacts/gold-eval.json",
+    "evidence": "src/bin/membench.rs:3033-3068; verified in runs/.../500/collapse-nemo/artifacts/gold-eval.json"
+  },
+  {
+    "area": "question-model",
+    "claim": "Gold pieces = record.answer_session_ids (session-level); refined to turn-level gold_turn_ids as {session_id}:{turn_index} for every message with has_answer==true",
+    "evidence": "src/symbiotic_memory_adapter.rs:117; src/bin/membench.rs:2585-2600"
+  },
+  {
+    "area": "question-model",
+    "claim": "gold_piece_of_turn maps a turn id back to its session piece by splitting on ':' and taking the head — the turn->session join for coverage",
+    "evidence": "src/bin/membench.rs:2570-2572"
+  },
+  {
+    "area": "question-model",
+    "claim": "Coverage axis both/fact/raw/none per gold piece: fact-covered = a kept fact's source_refs turn maps to the piece (drives class); raw-covered = piece in final_answer.evidence_ids or raw_turn rerank candidates",
+    "evidence": "src/bin/membench.rs:2807-2859,2914-2935"
+  },
+  {
+    "area": "question-model",
+    "claim": "Rank fields: gold_top_rank/gold_deepest_rank rank gold among kept facts by .score desc; gold_embed_rank/gold_rerank_rank rank deepest gold TURN among raw-turn candidates re-ranked by embedding_score / rerank_score",
+    "evidence": "src/bin/membench.rs:2878-2907,2620-2674,2682"
+  },
+  {
+    "area": "question-model",
+    "claim": "Questions are addressed both by question_id (real key: vault dir, join key, queue idempotency key) and by a redundant run-root-relative path string debug_artifact = vaults/{qid}/debug/hypotheses/{debug_run_id}/question-debug.json",
+    "evidence": "src/symbiotic_memory_adapter.rs:2025-2032,2566; stored on BenchHypothesis/Provenance/QuestionRow"
+  },
+  {
+    "area": "question-model",
+    "claim": "gold_eval reconstructs the debug path from question_id (vaults/{qid}/debug/question-debug.json) and ignores the stored debug_artifact pointer",
+    "evidence": "src/bin/membench.rs:2785-2789"
+  },
+  {
+    "area": "question-model",
+    "claim": "provenance.jsonl (schema membench.provenance.v1) carries per-question memory_trace_ids (keys into memory-traces.jsonl) plus initial_pick/final_pick/judge_model/embedder/distiller/store/memory_config/query_planner",
+    "evidence": "src/bin/membench.rs:2049-2076; verified in runs/.../500/collapse-nemo/artifacts/provenance.jsonl"
+  },
+  {
+    "area": "question-model",
+    "claim": "provider trace ids live in the bundle under provider_trace_artifacts: model_traces_jsonl, model_queue_traces_jsonl, model_queue_sqlite, response_cache_dir",
+    "evidence": "src/symbiotic_memory_adapter.rs:2090-2103,2136"
+  },
+  {
+    "area": "question-model",
+    "claim": "The older sampled bundle carries a top-level gold_positions key the current writer no longer emits, despite both being schema_version 1 (schema drift)",
+    "evidence": "runs/.../50/n50-coh-3/vaults/6aeb4375/debug/question-debug.json top-level keys include gold_positions; absent in write_question_debug at src/symbiotic_memory_adapter.rs:2104-2138"
+  },
+  {
+    "area": "question-model",
+    "claim": "gold-eval.json is auto-refreshed after every scored run and after --rejudge, failure only logs",
+    "evidence": "src/bin/membench.rs:3725-3728,3898-3903"
+  },
+  {
+    "area": "pb-migration",
+    "claim": "Single proto file, proto3, package membench.dashboard.v1, 60 messages, zero RPC services (messages-only DTO schema; transport stays plain HTTP not gRPC)",
+    "evidence": "proto/membench/dashboard/v1/debugger.proto:1-3; grep for '^service '/'rpc X(' returns none"
+  },
+  {
+    "area": "pb-migration",
+    "claim": "Rust compiles proto via prost-build in build.rs (no tonic, no buf)",
+    "evidence": "build.rs:33-38 prost_build::Config::new().compile_protos; src/dashboard_proto.rs:4 include!(OUT_DIR/membench.dashboard.v1.rs)"
+  },
+  {
+    "area": "pb-migration",
+    "claim": "Cargo adds prost 0.14 (server feature) + prost-build 0.14 build-dep; tonic absent",
+    "evidence": "git diff Cargo.toml: +dep:prost in server feature, +prost=0.14, +[build-dependencies] prost-build=0.14; Cargo.lock grep tonic count=0, prost/prost-build/prost-types present"
+  },
+  {
+    "area": "pb-migration",
+    "claim": "TS side uses protobuf-es (@bufbuild) via npm proto:gen + system protoc (not ts-proto)",
+    "evidence": "package.json diff adds @bufbuild/protobuf@2.12.1 + @bufbuild/protoc-gen-es@2.12.1 and proto:gen script calling protoc --plugin protoc-gen-es --es_opt=target=ts; debugger_pb.ts:1 header 'protoc-gen-es v2.12.1'"
+  },
+  {
+    "area": "pb-migration",
+    "claim": "Every endpoint is dual-served: 14 .pb routes parallel to 27 JSON routes, all under the server feature",
+    "evidence": "src/bin/membench-server.rs:267-293 route table pairs /x and /x.pb; proto_response sets content-type application/x-protobuf at 349-353"
+  },
+  {
+    "area": "pb-migration",
+    "claim": "Svelte dashboard consumes PB-first with a JSON .catch fallback on every call; PB is decoded then re-mapped to JSON-shaped types",
+    "evidence": "dashboard/src/lib/api.ts:365-457 getPb(...).then(mapX).catch(()=>get(json)); mapRunSummary/snakeKeys at 71-153,266-288 convert prost back to snake_case"
+  },
+  {
+    "area": "pb-migration",
+    "claim": "PB handlers double-encode: serialize native to serde_json::Value then re-read field-by-field into prost, even for native-typed inputs",
+    "evidence": "run_summary_pb calls value_obj(summary)=serde_json::to_value then str_field/opt_f64_field (membench-server.rs:449-503); run_detail_pb 3203-3208, run_live_pb 3269-3271, run_traces_pb 3388-3398 all go via serde_json::to_value/json!"
+  },
+  {
+    "area": "pb-migration",
+    "claim": "Proto is a flat DTO mirror of the JSON, not an envelope+typed-payload model: no shared envelope, no oneof, no error type, no enums",
+    "evidence": "proto messages are per-response *Response types; TraceEventRow kind/status/event are bare strings (proto lines 474-490); errors returned as JSON at membench-server.rs:326"
+  },
+  {
+    "area": "pb-migration",
+    "claim": "8 opaque *_json string fields tunnel whole JSON blobs through protobuf, defeating typing; client re-JSON.parses them",
+    "evidence": "proto lines 190,214,215,578,606,610,611,621 (roles_detail_json, report_json, params_json, answer_json, json, rows_json, default_json); api.ts:223-224,295,321,331,343 parseJson"
+  },
+  {
+    "area": "pb-migration",
+    "claim": "All proto scaffolding is uncommitted/untracked; only api.ts/types.ts/Live.svelte modified; Debugger.svelte & Leaderboard.svelte are already tracked (separate feature)",
+    "evidence": "git status: ?? proto/, src/dashboard_proto.rs, src/bin/trace_pb_bench.rs, dashboard/src/lib/gen/; M api.ts/types.ts/Live.svelte; git ls-files lists routes/*.svelte as tracked"
+  },
+  {
+    "area": "pb-migration",
+    "claim": "trace_pb_bench.rs is a throwaway transport micro-benchmark measuring the PB decode + JSON re-materialization cost",
+    "evidence": "src/bin/trace_pb_bench.rs:19-66 materialize_trace_events rebuilds serde_json::Map per row; 106-147 loops decode/encode/materialize printing medians"
+  },
+  {
+    "area": "pb-migration",
+    "claim": "No buf tooling, no CI codegen check; Flutter/Dart gen exists only inside the spike",
+    "evidence": "find for buf*.yaml returns nothing; gen-proto.sh only at spikes/flutter-http-debugger/scripts/gen-proto.sh; proto:gen is a manual npm script"
+  },
+  {
+    "area": "pb-migration",
+    "claim": "Framework spike verdict: Svelte stays production (54KB, 0 bugs) vs iced/egui ~1.3-1.5MB and Flutter ~2-2.8MB; Flutter kept mobile-native only",
+    "evidence": "spikes/DASHBOARD-MATRIX.md:33-42 bundle table, 93-101 recommendation; iced 4 critical bugs at line 89"
+  },
+  {
+    "area": "pb-migration",
+    "claim": "Flutter-HTTP spike dropped frontend Rust/FRB: the FRB layer had only 7 thin HTTP-loader functions and no engine, so Dart calls backend directly",
+    "evidence": "spikes/flutter-http-debugger/README.md:21-45 lists 7 functions and 'Flutter UI -> Dart HTTP -> membench-server'"
+  },
+  {
+    "area": "pb-migration",
+    "claim": "Transport conclusion: one shared protobuf schema (prost / protobuf-es / Dart protoc) over HTTP, PB-first with JSON fallback; do not reintroduce frontend Rust",
+    "evidence": "spikes/flutter-http-debugger/README.md:293-324 'API contract is now the shared Protobuf schema', generation paths, PB-first for health/runs/pending/questions"
+  },
+  {
+    "area": "pb-migration",
+    "claim": "Flutter --wasm no-Rust bundle is 2.06MB (31.9x Svelte); Dart protobuf client added only ~15KB; not committed per keep-don't-commit policy",
+    "evidence": "spikes/flutter-http-debugger/README.md:191-249,282-291 size tables and ratios; REPORT.md:52 'not committed, spikes/ untracked'"
+  },
+  {
+    "area": "on-disk",
+    "claim": "Run registry layout is runs/{system}/{benchmark}/{limit}/{run_name}/ (on disk runs/symbiotic-memory/long-mem-eval/{N}/{name}/); a parallel git-tracked artifact-only registry lives at records/{...}",
+    "evidence": "records/README.md:7-13,21-34"
+  },
+  {
+    "area": "on-disk",
+    "claim": "Canonical native-state dir set is code-defined as PRUNE_DIRS = [vaults, workflow, provider-queue, raw, artifacts]; walker prunes them and does not follow symlinks",
+    "evidence": "src/registry.rs:125-132"
+  },
+  {
+    "area": "on-disk",
+    "claim": "Each run root has: run-params.json, benchmark-report.json, .store-zvec, and dirs artifacts/ traces/ provider-queue/ workflow/ vaults/ raw/ (verified in two runs)",
+    "evidence": "runs/symbiotic-memory/long-mem-eval/500/f500-gate-1 root ls -la; same in .../10/stage0-h1-64x32-distill"
+  },
+  {
+    "area": "on-disk",
+    "claim": "artifacts/memory-traces.jsonl is a byte-identical independent copy (different inode, not hardlink) of traces/memory-events.jsonl",
+    "evidence": "sha256-16 17698bcdf28c17bf both (f500-gate-1); 304ddbb6da248e14 both (stage0); inodes 349740331 vs 349739027 differ"
+  },
+  {
+    "area": "on-disk",
+    "claim": "artifacts/model-traces.jsonl is byte-identical to provider-queue/model-queue-traces.jsonl",
+    "evidence": "sha256-16 0ae4d46cc6993305 both (f500-gate-1); d5be85e7fe314099 both (stage0)"
+  },
+  {
+    "area": "on-disk",
+    "claim": "All six raw-layer files (hypotheses, verdicts, partial-verdicts, provenance, scored, score-summary) are byte-identical to their artifacts/ copies",
+    "evidence": "sha256-16 pairs match: ca5c560d1c4531ac, 89233c03359d31d4, 587f8d40cccb7617, 950978dfba49b1df, 1c643bb8b34ac7dc, 98b55f4cb5d11cd2 (f500-gate-1)"
+  },
+  {
+    "area": "on-disk",
+    "claim": "Only step-analytics.json (11780990 B) is unique to artifacts/ (a derived rollup, no duplicate found in the run)",
+    "evidence": "find f500-gate-1 -size 11780990c returns only artifacts/step-analytics.json; docs/schemas.md:291"
+  },
+  {
+    "area": "on-disk",
+    "claim": "The byte-identical copies are produced by std::fs::copy via copy_artifact()",
+    "evidence": "src/bin/membench.rs:1992-2002 (copy_artifact uses std::fs::copy)"
+  },
+  {
+    "area": "on-disk",
+    "claim": "Duplication is a load-bearing lookup fallback: server and live monitor try provider-queue/ then artifacts/ then raw/ then traces/ for the same logical trace file",
+    "evidence": "src/bin/membench-server.rs:226-231; src/live.rs:935-941"
+  },
+  {
+    "area": "on-disk",
+    "claim": "A third duplication is inside each vault: debug/question-debug.json == debug/hypotheses/hypotheses/question-debug.json (both 270288 B)",
+    "evidence": "sha256-16 31667b66cabcd2d6 for both files in vaults/001be529"
+  },
+  {
+    "area": "on-disk",
+    "claim": "run-params.json is the run manifest, schema membench.run_params.v1, records run_kind:native, answer_only, source_vault_root, configured vs runtime models, role_settings, workflow max_in_flight",
+    "evidence": "runs/.../f500-gate-1/run-params.json fields schema, run_kind, source_vault_root; docs/schemas.md:9-42"
+  },
+  {
+    "area": "on-disk",
+    "claim": "benchmark-report.json is the index (schema membench.report.v1) carrying artifact_manifest (available/missing/native_state_available) and per-artifact {bytes,non_empty_lines,sha256,path}",
+    "evidence": "runs/.../f500-gate-1/benchmark-report.json artifact_manifest + artifacts blocks; docs/schemas.md:44-64,244-335"
+  },
+  {
+    "area": "on-disk",
+    "claim": "workflow/ holds a durable SQLite work queue at workflow/longmemeval/queue.sqlite (655360 B); it records row-level work states, not model calls",
+    "evidence": "find f500-gate-1/workflow -> workflow/longmemeval/queue.sqlite; docs/schemas.md:411-414"
+  },
+  {
+    "area": "on-disk",
+    "claim": "provider-queue/responses/ caches raw provider response bodies as {sha256}.json under {queue-label}/chat/ (1500 files for chat-deepseek-deepseek-v4-flash in f500-gate-1)",
+    "evidence": "find f500-gate-1/provider-queue/responses; 1500 file count"
+  },
+  {
+    "area": "on-disk",
+    "claim": "Answer-only reruns symlink the immutable vault substrate: archive, memory.sqlite, zvec-hybrid point to source_vault_root run; only answer.json, manifest.json, debug/ are real",
+    "evidence": "runs/.../f500-gate-1/vaults/001be529 ls (symlinks to factconsol-thinkon-500-20260624); 1500 symlinks, 0 real memory.sqlite, 500 real manifest.json; docs/schemas.md:276-279"
+  },
+  {
+    "area": "on-disk",
+    "claim": "Fresh ingest runs have a real (non-symlink) memory.sqlite and real archive/ dir, vault shape varies by config (no zvec-hybrid/debug in stage0)",
+    "evidence": "runs/.../10/stage0-h1-64x32-distill/vaults/06878be2 has real memory.sqlite 45056 B + archive/, no symlinks"
+  },
+  {
+    "area": "on-disk",
+    "claim": "Per-run disk footprint: vaults dominate (315.7 MB real files, 1500 symlinks) vs 53.2 MB for all non-vault layers combined; whole f500 run 374 MB",
+    "evidence": "du: vaults real 315.7 MB; artifacts 29M traces 13M provider-queue 9.0M workflow 688K raw 2.0M; du -sh run = 374M"
+  },
+  {
+    "area": "on-disk",
+    "claim": "Trace files are event-grained not question-grained: memory-traces 17040 lines and model-traces 8638 lines for 500 questions, while hypotheses/verdicts/provenance are 500 lines each",
+    "evidence": "wc -l on f500-gate-1 artifacts: memory-traces 17040, model-traces 8638, hypotheses/verdicts/partial-verdicts/provenance 500"
+  },
+  {
+    "area": "on-disk",
+    "claim": "docs/schemas.md is the authoritative data-model doc; explicitly states artifacts model_traces is copied from provider-queue/model-queue-traces.jsonl and step_analytics is a derived rollup",
+    "evidence": "docs/schemas.md:271-274,291-297"
+  },
+  {
+    "area": "on-disk",
+    "claim": "The intended promotion model (canonical record) tracks artifacts/ in git and externalizes native state (vaults/workflow/provider-queue/raw) as native-state.tar.zst + external-artifacts.json",
+    "evidence": "docs/canonical-record-storage-task.md:29-55; records/README.md:33-46"
+  },
+  {
+    "area": "on-disk",
+    "claim": "records/ currently holds only artifact-only + meta records (run-params.json, benchmark-report.json, artifacts/, sometimes provider-queue/model-queue-traces.jsonl); no vaults/raw/workflow",
+    "evidence": "find records/symbiotic-memory tree shows only benchmark-report.json, run-params.json, artifacts/*, provider-queue/model-queue-traces.jsonl per record"
+  },
+  {
+    "area": "on-disk",
+    "claim": "raw/ is the legacy authoritative write target still referenced by code and metadata even though artifacts/ mirrors it",
+    "evidence": "artifacts/score-summary.json points hypotheses_file/scored_file/verdicts_file at .../raw/...; src/live.rs:941 defaults to raw/memory-traces.jsonl"
+  },
+  {
+    "area": "on-disk",
+    "claim": "runs/ also contains inputs/ (datasets longmemeval-cleaned, longmemeval-hard), .locks/ (empty), .tmp/ (server logs)",
+    "evidence": "find runs/inputs; ls runs/.locks runs/.tmp (membench-server-8787.err/out.log)"
+  }
+]

@@ -1,0 +1,146 @@
+syntax = "proto3";
+
+// Seam S17 · Referee hook (scorecards + evolution receipts).
+//
+// Every seam claim gets a receipt. membench is THE external referee: it emits
+// provenance-stamped scorecards per (manifest_id, caps_hash, benchmark, metric_version)
+// and — internally, via the weekly self-benchmark — evolution receipts that attribute a
+// score delta to the exact derivations that landed between runs. Disputes between the
+// instrument track and the organism track are settled by the referee, never by argument.
+//
+// Goodhart hedge (the reason the frozen hard set is a hashed field, not tuning input): the
+// referee remains the instrument the internal loop CANNOT see into its own tuning of. The
+// frozen hard set is never used for tuning; `frozen_hard_set_hash` on the evolution receipt
+// proves the same census was scored on both sides of a change without exposing its items.
+//
+// Consumers (data-api.md §B/§C/§J and the provenance stamp): runs, questions, cohorts,
+// telemetry, memory snapshot, journey — every MATERIALIZED product carries ArtifactProvenance
+// so a stale view is detectable and invalidated BY SOURCE-HASH, never by clock.
+//
+// Evolution rule: ADDITIVE-ONLY. Scorecard and EvolutionReceipt are ONE type family with
+// the future ActionReceipt (S15) — reserved below so it slots in without a new family.
+
+package membench.scorecard.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// ── Provenance stamp (every materialized product) ────────────────────────────
+// Unifies its digest vocabulary with OKF sources[].sha256 (S1) — one sha256 provenance
+// language ecosystem-wide (S17 do-now). Validity = sha256(current source logs) ==
+// sources[*].sha256. Invalidate by source hash, NEVER by clock.
+message SourceHash {
+  string locator = 1;   // id-addressed source (a run ledger, a manifest) — not a raw path
+  string sha256 = 2;    // sha256, lowercase hex (one digest vocabulary, S19)
+  uint64 byte_len = 3;
+}
+
+message ArtifactProvenance {
+  string schema = 1;
+  uint32 schema_version = 2;
+  string builder = 3;                        // materializer name + git_sha
+  string builder_git_sha = 4;
+  repeated SourceHash sources = 5;
+  google.protobuf.Timestamp generated_at = 6;
+  bool complete = 7;                         // false = partial/truncated view
+  string invalidated_by = 8;                 // set when a newer source hash supersedes it
+}
+
+// ── The subject a scorecard scores ───────────────────────────────────────────
+// The comparability partition: benchmark AND the resolved caps_hash (manifest.v1), NOT the
+// adapter id. metric_version pins the metric definitions so a metric redefinition never
+// silently re-ranks history.
+message ScorecardSubject {
+  string manifest_id = 1;        // adapter manifest id
+  string caps_hash = 2;          // resolved capability set (manifest.v1 Resolution.caps_hash)
+  string benchmark_id = 3;
+  string benchmark_version = 4;
+  string metric_version = 5;
+  string dataset_fingerprint = 6;
+  string judge_model = 7;
+  string judge_prompt_mode = 8;
+}
+
+// ── Metrics ──────────────────────────────────────────────────────────────────
+message PerTypeScore {
+  string question_type = 1;      // BenchmarkManifest.question_types id (data-driven)
+  double accuracy = 2;
+  uint32 n = 3;
+  uint32 correct = 4;
+}
+
+// Evidence coverage per lane — the crown-jewel differentiator made data (fact/raw/both/none
+// + rank survival). Aggregate roll-up over a run's QuestionRunRecord coverage.
+message EvidenceCoverageSummary {
+  string lane = 1;               // "fact" | "raw" | adapter-declared corpus
+  double piece_coverage = 2;
+  uint32 pieces_needed = 3;
+  uint32 pieces_covered = 4;
+}
+
+message MetricSet {
+  double accuracy = 1;
+  double task_averaged_accuracy = 2;
+  double abstention_accuracy = 3;
+  repeated PerTypeScore per_type = 4;
+  optional int64 cost_micro_usd = 5;
+  optional double latency_ms_p50 = 6;
+  optional double latency_ms_p95 = 7;
+  repeated EvidenceCoverageSummary evidence_coverage = 8;
+  // Open metric set (BenchmarkManifest.metrics is extensible) — extra scalar metrics by id.
+  map<string, double> extra = 9;
+}
+
+// The frozen hard set + rotating flaky set census. Items are referenced by qid; the census
+// hash lets a receipt prove "same set, both runs" without exposing the items (Goodhart).
+message SetCensus {
+  repeated string hard_set = 1;  // qids
+  repeated string flaky_set = 2; // qids
+  string hard_set_hash = 3;      // sha256, lowercase hex over the sorted hard_set — frozen-set anchor
+}
+
+// ── Scorecard ────────────────────────────────────────────────────────────────
+message Scorecard {
+  uint32 schema_version = 1;
+  string scorecard_id = 2;       // ULID/UUIDv7
+  string run_id = 3;
+  ScorecardSubject subject = 4;
+  MetricSet metrics = 5;
+  SetCensus census = 6;
+  string verdict = 7;            // referee's summary judgment (open string)
+  ArtifactProvenance provenance = 8;
+
+  // Reserve the ActionReceipt slot (S15): scorecard, evolution receipt, and action receipt
+  // are ONE family. The action receipt shape is runtime-owned — action-envelope.v1
+  // ActionReceipt (symbiotic/submodules/runtime/docs/contracts/action-envelope.v1.proto).
+  // NUMBERS only — the intended names stay addable additively:
+  //   20 action_receipt · 21 tenant_id · 22 space · 23 acl.
+  reserved 20, 21, 22, 23;
+}
+
+// ── Evolution receipt (the S17 receipt variant, S20 loop closer) ─────────────
+// The weekly self-benchmark: a probe set is scored before/after a change and the score
+// delta is attributed to the exact derivations (memory-op.v1 op ids) that landed between
+// runs. frozen_hard_set_hash proves the frozen set was scored, not tuned against.
+message MetricDelta {
+  string metric_id = 1;
+  double before = 2;
+  double after = 3;
+  double delta = 4;
+}
+
+message EvolutionReceipt {
+  uint32 schema_version = 1;
+  string receipt_id = 2;         // ULID/UUIDv7
+  string run_id = 3;             // the after-run
+  string baseline_run_id = 4;    // the before-run
+  string manifest_id = 5;
+  string caps_hash = 6;
+  string probe_set = 7;          // rotating probes drawn from PERSISTED query gaps (S6/B5)
+  repeated MetricDelta score_delta = 8;
+  repeated string attributed_derivations = 9; // memory-op.v1 op ids that landed between runs
+  string frozen_hard_set_hash = 10;           // Goodhart hedge: proves same census, not tuned
+  ArtifactProvenance provenance = 11;
+
+  // NUMBERS only — the intended names stay addable additively: 20 tenant_id · 21 space · 22 acl.
+  reserved 20, 21, 22;
+}

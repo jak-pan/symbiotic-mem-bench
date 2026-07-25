@@ -1,0 +1,5 @@
+{"question_id": "canary-q1", "question_type": "single-session-user", "correct": true}
+{"question_id": "canary-q2", "question_type": "single-session-user", "correct": true}
+{"question_id": "canary-q3", "question_type": "multi-session", "correct": true}
+{"question_id": "canary-q4", "question_type": "multi-session", "correct": false}
+{"question_id": "canary-q5", "question_type": "temporal-reasoning", "correct": false}

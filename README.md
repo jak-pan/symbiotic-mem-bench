@@ -6,13 +6,40 @@ This repository owns benchmark orchestration, run metadata, trace schemas, score
 portable run records. Memory implementation behavior stays inside the system under test, such as
 `symbiotic-memory`, `mem0`, or `HyMem`.
 
-## Quick Start
+## Quick Start (no secrets required)
 
-From this repository root:
+Everything in this section is local and network-free — no API keys. From this repository root:
 
 ```bash
 CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo test
-cargo run --bin membench -- explore
+cargo run --bin membench-leaderboard -- export --records-root records
+```
+
+The `membench` CLI itself (`cargo run --bin membench -- explore`) needs the
+`symbiotic-memory-adapter` feature, which builds against the pinned
+`jak-pan/symbiotic-memory` revision — currently a **private** repository, so a clean clone
+without access cannot build it (see `docs/oss-release-handoff.md`). With access:
+
+```bash
+cargo run --features symbiotic-memory-adapter --bin membench -- explore
+```
+
+`scripts/check-adapter-build.sh` is the gate for that path; `scripts/check-adapter-pins.sh`
+checks (offline, no credentials) that every git dependency is pinned to an exact rev that
+`Cargo.lock` resolves.
+
+Export the static leaderboard document over the reproducible sample records (the CI canary
+fixtures — synthetic, clearly labeled, never real results):
+
+```bash
+cargo run --bin membench-leaderboard -- export --records-root canary/records --deterministic
+```
+
+Build and open the dashboard over the tracked records (needs Node 22, still no keys):
+
+```bash
+cd dashboard && npm ci && npm run build && cd ..
+cargo run --features server --bin membench-server   # http://localhost:8787
 ```
 
 For paid provider-backed runs, create the local env file in this repository:
@@ -63,15 +90,11 @@ CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run \
   --smoke
 ```
 
-`membench` does not auto-download Symbiotic Memory. In this workspace it uses the sibling local
-crate dependency declared in `Cargo.toml`:
-
-```toml
-symbiotic-memory = { path = "../symbiotic-memory", ... }
-```
-
-Only the cleaned LongMemEval dataset is auto-downloaded. A publishable adapter mode can later switch
-the memory dependency to a Git revision, crate release, or external adapter binary.
+The Symbiotic Memory adapter dependencies are pinned public git revisions in `Cargo.toml`, so the
+core crate and the dashboard server build from a clean clone. Building the
+`symbiotic-memory-adapter` feature currently requires overriding those pins to sibling checkouts
+via `.cargo/config.toml` — see `docs/environment.md` ("Dependency Sources") for the exact block
+and the upstream-publication blocker behind it.
 
 These local `--smoke` adapter runs map internally to deterministic no-network providers and no
 scorer. They are smoke tests, not benchmark records. By default they run under `runs/.tmp/` and
@@ -210,11 +233,16 @@ cargo run --bin membench -- save-record \
   --run-root runs/symbiotic-memory/long-mem-eval/500/baseline-clean
 ```
 
+The command is portable by default: it copies normalized metadata and known public artifacts,
+rewrites artifact paths to the record, and omits executor-native vaults, queues, raw outputs, and
+debug state. Absolute machine-local metadata paths are disclosed as `local://<basename>`. Use
+`--include-native-state` only for an intentional local/private archive; that mode can be many GiB
+and may contain raw prompts or debug data that must not be published.
+
 Use `--force` only when intentionally replacing a record with a corrected version.
 
-Follow-up task: `docs/canonical-record-storage-task.md` tracks the plan for promoting one canonical
-run to `records/` while storing oversized native state externally with hashes and restore
-instructions.
+`docs/canonical-record-storage-task.md` tracks promotion of the first audited 500-question canonical
+run and optional external retention of oversized native state.
 
 Summarize queue timing from queue event JSONL:
 
@@ -453,9 +481,27 @@ Queue traces should preserve timestamps for queued, running, succeeded, and fail
 can derive queue wait time, run time, total time, attempts, and final status by grouping events by
 queue id and item id.
 
+## Leaderboard
+
+The publishable leaderboard is the `membench.leaderboard.v1` export over tracked `records/`
+(see `docs/schemas.md`). Every ranked row carries a verification level; runs whose scores
+cannot be independently reproduced from tracked artifacts are listed as unranked with the
+reason. The dashboard bundles a snapshot at `dashboard/public/data/leaderboard.json` and,
+when served statically without the API, renders it explicitly labeled as a static snapshot —
+verified cohorts stay empty until a record passes the review gate in
+`docs/longmemeval-methodology.md`, which also states the honest current result.
+
+## License
+
+Apache-2.0 (`LICENSE`). Contributions are welcome — see `CONTRIBUTING.md`; security reports
+via `SECURITY.md`; release process in `RELEASING.md`.
+
 ## More Docs
 
 - `AGENTS.md`: exact operating rules for coding agents.
+- `docs/longmemeval-methodology.md`: scoring methodology, honest current result, and the
+  leaderboard review gate.
+- `docs/oss-release-handoff.md`: external decisions/blockers for taking the repo public.
 - `docs/run-registry.md`: run layout and lifecycle reference.
 - `docs/symbiotic-memory/openrouter-qwen-embedding-tuning.md`: OpenRouter Qwen raw-embedding
   transport tuning evidence and reproduction scripts.

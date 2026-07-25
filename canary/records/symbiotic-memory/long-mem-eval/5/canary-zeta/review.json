@@ -1,0 +1,15 @@
+{
+  "artifact_sha256": {
+    "hypotheses": "d601018a91b9e15f765f3b5b085b24ff6294429c5720d969271f5d7b74bc2ea7",
+    "scored": "c12fc7ac86185ae79c747525209c923b641b5c02dc44214183202084e6b332b4",
+    "verdicts": "1dfda72f8254081109d157f19adb996e787cc3ab173b5a561e8c2395699c99c4"
+  },
+  "fixture": true,
+  "fixture_note": "Synthetic canary fixture for the leaderboard export contract. Never a real benchmark result.",
+  "notes": "Synthetic attestation exercising the review gate. Not a real review.",
+  "reviewed_at": "2026-01-02",
+  "reviewed_commit": "0000000",
+  "reviewer": "canary-second-reviewer",
+  "schema": "membench.record_review.v1",
+  "verdict": "pass"
+}

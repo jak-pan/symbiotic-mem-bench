@@ -1,0 +1,47 @@
+{
+  "schema": "membench.report.v1",
+  "fixture": true,
+  "fixture_note": "Synthetic canary fixture for the leaderboard export contract. Never a real benchmark result.",
+  "system": "symbiotic-memory",
+  "benchmark": "long-mem-eval",
+  "run_kind": "synthetic-fixture",
+  "run_name": "canary-gamma",
+  "created_at": "2026-01-01T00:00:00+00:00",
+  "meta_record": {
+    "schema": "membench.meta_record.v1",
+    "omitted": [
+      "artifacts/hypotheses.jsonl",
+      "artifacts/scored.json",
+      "artifacts/verdicts.jsonl"
+    ],
+    "retained": [
+      "benchmark-report.json",
+      "run-params.json"
+    ]
+  },
+  "metrics": {
+    "accuracy": {
+      "correct": 2,
+      "total": 5,
+      "value": 0.4
+    }
+  },
+  "cohort": {
+    "dataset_fingerprint": "canary-fixture-fingerprint",
+    "judge_model": "canary-judge",
+    "judge_prompt_mode": "official"
+  },
+  "models": {
+    "answer": "canary-answer-model",
+    "judge": "canary-judge"
+  },
+  "artifact_manifest": {
+    "available": [],
+    "missing": [
+      "hypotheses",
+      "scored",
+      "verdicts"
+    ],
+    "native_state_available": false
+  }
+}

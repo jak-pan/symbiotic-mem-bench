@@ -1,0 +1,133 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: authenticate private git dependencies
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
+      - name: rewrite github https to ssh
+        run: git config --global url."git@github.com:".insteadOf "https://github.com/"
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt -- --check
+      - name: clippy
+        run: cargo clippy --all-targets --features server -- -D warnings
+      - name: test (core)
+        run: cargo test
+      - name: test (server)
+        run: cargo test --features server
+      - name: production build (server)
+        run: cargo build --release --features server
+
+  dashboard:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+      - run: npm run build
+
+  deps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+        with:
+          command: check advisories licenses sources
+          ssh-key: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
+          ssh-known-hosts: github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+
+  leaderboard-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: authenticate private git dependencies
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
+      - name: rewrite github https to ssh
+        run: git config --global url."git@github.com:".insteadOf "https://github.com/"
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - name: canary export matches committed contract
+        run: |
+          cargo run --bin membench-leaderboard -- export --records-root canary/records --deterministic > /tmp/canary-out.json
+          diff <(python3 -m json.tool /tmp/canary-out.json) <(python3 -m json.tool canary/expected-leaderboard.json)
+      # The published snapshot must still describe records/ — a stale snapshot
+      # looks exactly like a fresh one from its git sha alone.
+      - name: bundled snapshot matches records/
+        run: ./scripts/check-leaderboard-snapshot.sh
+
+  # Offline half of the adapter gate: the manifest pins exact revs and the
+  # lockfile resolves them. Runs everywhere, including forks.
+  adapter-pins:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: git dependencies are pinned and locked
+        run: ./scripts/check-adapter-pins.sh
+
+  # Credentialed half: does the documented `membench` CLI actually build
+  # against those pins? The adapter depends on a private repository, so this
+  # job runs only where a read-only deploy key is configured. Until that repository is
+  # public, `scripts/check-adapter-build.sh` is a mandatory manual release gate
+  # (RELEASING.md) rather than an enforced CI gate.
+  adapter-key:
+    runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.probe.outputs.available }}
+    steps:
+      - id: probe
+        env:
+          SYMBIOTIC_MEMORY_DEPLOY_KEY: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
+        run: |
+          if [ -n "$SYMBIOTIC_MEMORY_DEPLOY_KEY" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::SYMBIOTIC_MEMORY_DEPLOY_KEY not configured — adapter CLI build not verified in CI."
+          fi
+
+  adapter-build:
+    needs: adapter-key
+    if: needs.adapter-key.outputs.available == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: authenticate private git dependencies
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
+      - name: rewrite github https to ssh
+        run: git config --global url."git@github.com:".insteadOf "https://github.com/"
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: adapter CLI builds against the pinned revisions
+        run: ./scripts/check-adapter-build.sh

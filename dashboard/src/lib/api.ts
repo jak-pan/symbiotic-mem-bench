@@ -2,6 +2,7 @@ import type {
   Cohort,
   CompareResponse,
   GoldEvalResponse,
+  LeaderboardSnapshot,
   LiveResponse,
   PendingRun,
   QuestionDebug,
@@ -11,6 +12,7 @@ import type {
   RunnerPreview,
   RunnerSchema,
   TracesResponse,
+  UnrankedRecord,
 } from "./types";
 
 async function get<T>(path: string): Promise<T> {
@@ -46,14 +48,28 @@ export const api = {
   runs: () => get<{ runs: RunSummary[] }>("/runs").then((r) => r.runs),
   pending: () => get<{ pending: PendingRun[] }>("/pending").then((r) => r.pending),
   live: (id: string) => get<LiveResponse>(`/run/live?id=${enc(id)}`),
+  // Live counterpart of the static export: the same ranked cohorts *and* the
+  // same exclusion list, so the two surfaces cannot tell different stories.
   leaderboard: (benchmark?: string, limit?: number) => {
     const q = new URLSearchParams();
     if (benchmark) q.set("benchmark", benchmark);
     if (limit != null) q.set("limit", String(limit));
     const qs = q.toString();
-    return get<{ cohorts: Cohort[] }>(`/leaderboard${qs ? "?" + qs : ""}`).then(
-      (r) => r.cohorts,
+    return get<{ cohorts: Cohort[]; unranked: UnrankedRecord[] }>(
+      `/leaderboard${qs ? "?" + qs : ""}`,
     );
+  },
+  leaderboardSnapshot: async () => {
+    // Static `membench.leaderboard.v1` export bundled into the SPA at build
+    // time (dashboard/public/data/leaderboard.json). Only used as a fallback
+    // when the live /api backend is unreachable — e.g. a static deploy.
+    const res = await fetch("/data/leaderboard.json", { cache: "no-store" });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    const doc = (await res.json()) as LeaderboardSnapshot;
+    if (doc.schema !== "membench.leaderboard.v1") {
+      throw new Error(`unexpected leaderboard schema: ${doc.schema}`);
+    }
+    return doc;
   },
   run: (id: string) => get<RunDetail>(`/run?id=${enc(id)}`),
   questions: (id: string) =>

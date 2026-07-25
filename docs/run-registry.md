@@ -181,10 +181,15 @@ records/{system}/{benchmark}/{limit}/{run_name}/
 Use `--record-name` only when giving the tracked record a clearer public name. Use `--force` only
 when intentionally replacing an existing record.
 
-Full native runs may be too large to track entirely in Git. The planned canonical-record workflow is
-tracked in `docs/canonical-record-storage-task.md`: keep normalized public artifacts in `records/`,
-store heavy native state externally with hashes, and restore reusable vault substrates locally when
-needed for answer-only reruns.
+The default command copies only normalized metadata and known public artifacts. It omits native
+vaults, workflow state, provider queues, raw outputs, and debug files; its generated report marks
+that state unavailable and rewrites artifact paths to the portable record. Pass
+`--include-native-state` only for an intentional local/private archive.
+
+Full native runs may be too large to track entirely in Git. The canonical-record workflow is tracked
+in `docs/canonical-record-storage-task.md`: keep normalized public artifacts in `records/`, store
+heavy native state externally with hashes when it must remain reusable, and restore reusable vault
+substrates locally when needed for answer-only reruns.
 
 ## Explorer Behavior
 

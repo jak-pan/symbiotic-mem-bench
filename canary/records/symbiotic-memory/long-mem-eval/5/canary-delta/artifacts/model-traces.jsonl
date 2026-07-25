@@ -1,0 +1,2 @@
+{"role": "bench.answer", "model": "canary-answer-model", "operator": "canary-provider", "input_tokens": 100, "output_tokens": 10}
+{"role": "bench.judge", "model": "canary-judge", "operator": "canary-provider", "input_tokens": 50, "output_tokens": 5}

@@ -69,7 +69,15 @@ pub fn dataset_fingerprint(run_root: &Path) -> Option<String> {
     Some(stable_hash(ids.join(",").as_bytes()))
 }
 
-/// Stable label/id for a `(benchmark, limit, dataset, judge, prompt mode)` cohort.
+/// Stable, readable id for a `(benchmark, limit, dataset, judge, prompt mode)`
+/// cohort — the full comparability identity, spelled out rather than hashed so
+/// a reader can see *why* two runs share (or do not share) a board.
+///
+/// This is the same string [`crate::leaderboard`] groups by, so a run's
+/// recorded `cohort_id` always equals the id of the cohort it lands in.
+/// Unknown components render as `?`, which never matches another `?` run's
+/// identity by accident — it just marks the identity as incomplete, and the
+/// `cohort-identity` review gate keeps such runs off published boards.
 pub fn cohort_id(
     benchmark: &str,
     limit: Option<u64>,
@@ -77,14 +85,15 @@ pub fn cohort_id(
     judge_model: Option<&str>,
     judge_prompt_mode: Option<&str>,
 ) -> String {
-    let seed = format!(
-        "{benchmark}|{}|{}|{}|{}",
-        limit.map(|value| value.to_string()).unwrap_or_default(),
-        dataset_fingerprint.unwrap_or(""),
-        judge_model.unwrap_or(""),
-        judge_prompt_mode.unwrap_or(""),
-    );
-    stable_hash(seed.as_bytes())
+    format!(
+        "{benchmark}::{}::ds:{}::judge:{}::mode:{}",
+        limit
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "?".to_string()),
+        dataset_fingerprint.unwrap_or("?"),
+        judge_model.unwrap_or("?"),
+        judge_prompt_mode.unwrap_or("?"),
+    )
 }
 
 /// Hash of the comparable configuration knobs. Reads the tunable fields from

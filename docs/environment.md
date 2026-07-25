@@ -56,6 +56,30 @@ cp .env.example .env.test.local
 It does not implicitly read sibling repository env files. Use `--env-file path/to/file` only when
 intentionally testing a different environment.
 
+## Dependency Sources
+
+The Symbiotic Memory adapter dependencies (`symbiotic-memory`, `symbiotic-memory-config`,
+`symbiotic-core`, `symbiotic-queue`) are pinned public git revisions in `Cargo.toml`, so the core
+crate and the `server` feature build from a clean clone with no sibling checkouts.
+
+The `symbiotic-memory-adapter` feature additionally requires APIs that are not yet published on
+the public kit branches (the YAML `providers:` role bindings and `queue.resolve_provider_queue`).
+Until those land upstream, adapter builds must override the pins to sibling checkouts in a
+gitignored `.cargo/config.toml` at this repository root:
+
+```toml
+[patch."ssh://git@github.com/jak-pan/symbiotic-memory"]
+symbiotic-memory = { path = "../symbiotic-memory" }
+symbiotic-memory-config = { path = "../symbiotic-memory/config" }
+
+[patch."https://github.com/symbiotic-sh/symbiotic-foundation"]
+symbiotic-core = { path = "../symbiotic-foundation/crates/symbiotic-core" }
+symbiotic-queue = { path = "../symbiotic-foundation/crates/symbiotic-queue" }
+```
+
+Without that override, `cargo build --features symbiotic-memory-adapter` fails against the pinned
+public revisions. This is a known external blocker, tracked in `docs/oss-release-handoff.md`.
+
 ## Required Keys
 
 Paid Symbiotic Memory LongMemEval runs on the owner-default stack currently need:

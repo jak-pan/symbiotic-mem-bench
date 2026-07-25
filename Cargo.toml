@@ -1,9 +1,11 @@
 [package]
-name = "symbiotic-mem-bench"
+name = "membench"
 version = "0.1.0"
 edition = "2024"
 description = "Benchmark contracts and tooling for memory systems"
 readme = "README.md"
+license = "Apache-2.0"
+repository = "https://github.com/jak-pan/symbiotic-mem-bench"
 
 [features]
 default = []
@@ -21,7 +23,7 @@ symbiotic-memory-adapter = [
     "dep:tokio",
 ]
 # Dashboard backend. Feature-gated so the core harness and `cargo test` stay lean.
-server = ["dep:axum", "dep:prost", "dep:rusqlite", "dep:tokio", "dep:tower-http"]
+server = ["dep:axum", "dep:rusqlite", "dep:tokio", "dep:tower-http"]
 
 [dependencies]
 anyhow = "1"
@@ -30,28 +32,29 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 clap = { version = "4", features = ["derive"] }
-# Path dep per the standing "path deps until v1" policy — the baseline bench
-# must measure the LOCAL kit (Stage 2.6 access layer), not a GitHub pin.
-symbiotic-memory-config = { path = "../symbiotic-memory/config", optional = true }
-symbiotic-memory = { path = "../symbiotic-memory", default-features = false, features = ["http", "cli"], optional = true }
+prost = "0.14"
+prost-types = "0.14"
+# The adapter deps are pinned git revs so a clean clone builds without sibling
+# checkouts. For local co-development against sibling checkouts, override them
+# in a gitignored `.cargo/config.toml` — see docs/environment.md.
+symbiotic-memory-config = { git = "ssh://git@github.com/jak-pan/symbiotic-memory", rev = "c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e", optional = true }
+symbiotic-memory = { git = "ssh://git@github.com/jak-pan/symbiotic-memory", rev = "c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e", default-features = false, features = ["http", "cli"], optional = true }
 async-trait = { version = "0.1", optional = true }
 futures = { version = "0.3", optional = true }
 hex = { version = "0.4", optional = true }
 reqwest = { version = "0.13.4", features = ["json"], optional = true }
 regex = { version = "1", optional = true }
 rusqlite = { version = "0.37", features = ["bundled", "chrono"], optional = true }
-symbiotic-core = { path = "../symbiotic-foundation/crates/symbiotic-core", optional = true }
-symbiotic-queue = { path = "../symbiotic-foundation/crates/symbiotic-queue", optional = true }
+symbiotic-core = { git = "https://github.com/symbiotic-sh/symbiotic-foundation", rev = "814060cd3c31b976234c171608196293c1fed4eb", optional = true }
+symbiotic-queue = { git = "https://github.com/symbiotic-sh/symbiotic-foundation", rev = "814060cd3c31b976234c171608196293c1fed4eb", optional = true }
 axum = { version = "0.8", optional = true }
-prost = { version = "0.14", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"], optional = true }
 tower-http = { version = "0.6", features = ["fs", "cors"], optional = true }
+tempfile = "3"
 
 [build-dependencies]
 prost-build = "0.14"
-
-[dev-dependencies]
-tempfile = "3"
+protoc-bin-vendored = "3"
 
 [[bin]]
 name = "membench"
@@ -66,7 +69,6 @@ path = "src/bin/membench-server.rs"
 required-features = ["server"]
 
 [[bin]]
-name = "trace_pb_bench"
-path = "src/bin/trace_pb_bench.rs"
-# Uses dashboard_proto (prost), which is gated behind the server feature.
-required-features = ["server"]
+name = "membench-leaderboard"
+path = "src/bin/membench-leaderboard.rs"
+# Core-only (clap + lib): intentionally builds without any cargo features.

@@ -1,0 +1,15 @@
+{
+  "artifact_hashes": {
+    "artifacts/scored.json": "81d5995dac069a9d76c13c00654261ba899845e17413be45a61ffc19f1a804b5",
+    "artifacts/verdicts.jsonl": "1fac3badbe52da0d8236cc8f7279feafc8399feb2fee1e5cc61d1bc3288018d2"
+  },
+  "fixture": true,
+  "fixture_note": "Synthetic canary fixture for the leaderboard export contract. Never a real benchmark result.",
+  "hypotheses_count": 5,
+  "hypotheses_file": "artifacts/hypotheses.jsonl",
+  "hypotheses_hash": "d601018a91b9e15f765f3b5b085b24ff6294429c5720d969271f5d7b74bc2ea7",
+  "schema_version": 1,
+  "scored_artifact": "artifacts/scored.json",
+  "scorer": "canary-judge",
+  "verdicts_artifact": "artifacts/verdicts.jsonl"
+}

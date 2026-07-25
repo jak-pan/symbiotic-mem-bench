@@ -1,0 +1,29 @@
+# Dependency policy for membench. Audited in CI (`cargo deny check`).
+# Scope: the full release graph, including the credentialed adapter feature.
+
+[graph]
+all-features = false
+features = ["server"]
+
+[advisories]
+# RustSec advisory database, default settings.
+
+[licenses]
+confidence-threshold = 0.8
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT-0",
+    "Unicode-3.0",
+    "Zlib",
+    "Unlicense",
+]
+
+[sources]
+# The adapter feature pins public ecosystem git revisions (see Cargo.toml).
+unknown-git = "allow"

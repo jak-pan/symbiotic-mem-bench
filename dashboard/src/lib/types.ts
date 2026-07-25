@@ -39,6 +39,9 @@ export interface RunSummary {
   native_state_available: boolean | null;
   is_trial_run: boolean;
   trial_markers: TrialMarker[];
+  /** Synthetic contract fixture — never a real benchmark result. */
+  fixture?: boolean;
+  eligibility?: Eligibility;
 }
 
 export interface TrialMarker {
@@ -70,15 +73,91 @@ export interface QTypeScore {
 export type RankedRow = RunSummary & { rank: number };
 
 export interface Cohort {
+  /** `{benchmark}::{limit}::ds:{fingerprint}::judge:{model}::mode:{prompt_mode}` —
+   *  the full comparability identity, equal to each row's `cohort_id`. */
   cohort_id: string;
   benchmark: string;
   limit: number | null;
   run_count: number;
+  /** The single fingerprint/judge/prompt mode shared by every row. */
+  dataset_fingerprint: string | null;
+  judge_model: string | null;
+  judge_prompt_mode: string | null;
   dataset_fingerprints: string[];
   judge_models: string[];
+  judge_prompt_modes: string[];
   strictly_comparable: boolean;
   best_accuracy: number | null;
   rows: RankedRow[];
+}
+
+// `membench.leaderboard.v1` — the static, publishable leaderboard document
+// exported by `membench-leaderboard` (see docs/schemas.md). The SPA falls back
+// to a bundled copy at /data/leaderboard.json when no /api backend is present.
+
+export interface ReviewAttestation {
+  reviewer: string;
+  reviewed_at: string;
+  reviewed_commit?: string | null;
+  verdict: string;
+}
+
+/** One failed condition of the published review gate. */
+export interface GateFailure {
+  gate: string;
+  detail: string;
+}
+
+/** Whether a record may be ranked, decided from bytes on disk (src/eligibility.rs). */
+export interface Eligibility {
+  eligible: boolean;
+  level: "verified" | "unverified";
+  missing_artifacts: string[];
+  failures: GateFailure[];
+  review?: ReviewAttestation | null;
+}
+
+export interface RowVerification {
+  /** `verified` = every review gate passed; only verified rows are ranked. */
+  level: "verified" | "unverified";
+  missing_artifacts: string[];
+  review?: ReviewAttestation | null;
+}
+
+/** Ranked rows in the export carry an extra per-row verification object. */
+export type SnapshotRankedRow = RankedRow & { verification?: RowVerification };
+
+export interface UnrankedRecord {
+  run_id: string;
+  run_name: string;
+  /** `meta-record`, `unscored`, or `gate-failed`. */
+  reason: string;
+  failed_gates: GateFailure[];
+  system: string;
+  benchmark: string;
+  limit?: number | null;
+  accuracy?: number | null;
+  accuracy_correct?: number | null;
+  accuracy_total?: number | null;
+  fixture?: boolean;
+}
+
+export interface LeaderboardSnapshot {
+  schema: string;
+  generated_at: string;
+  source: {
+    records_root: string;
+    /** Content hash of the records tree — recomputable, unlike the commit sha. */
+    records_digest: string | null;
+    git_sha: string;
+    run_count: number;
+    ranked_count: number;
+    unranked_count: number;
+    contains_fixtures: boolean;
+  };
+  methodology: string;
+  cohorts: Cohort[];
+  unranked: UnrankedRecord[];
 }
 
 export interface QuestionRow {
