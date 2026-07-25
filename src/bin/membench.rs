@@ -1379,7 +1379,7 @@ fn run_selected_benchmark(cli: Cli) -> anyhow::Result<()> {
     }
 
     match (system.as_str(), benchmark.as_str()) {
-        ("symbiotic-memory", "long-mem-eval") => {
+        ("symbiotic-memory", selected) if membench::benchmark::loader_for(selected).is_some() => {
             if cli.import_report {
                 let hypotheses = cli
                     .hypotheses
@@ -1493,8 +1493,11 @@ fn run_selected_benchmark(cli: Cli) -> anyhow::Result<()> {
                     }
                 });
             let fresh = effective_fresh(cli.resume, cli.answer_only, cli.rejudge, cli.fresh)?;
-            let dataset = resolve_longmemeval_dataset(cli.dataset)?;
+            let loader = membench::benchmark::loader_for(&benchmark)
+                .ok_or_else(|| anyhow::anyhow!("no loader registered for {benchmark}"))?;
+            let dataset = resolve_benchmark_dataset(loader.as_ref(), cli.dataset)?;
             run_symbiotic_memory_longmemeval(SymbioticMemoryCliRun {
+                benchmark,
                 dataset,
                 run_root,
                 run_name,
@@ -1631,6 +1634,43 @@ fn resolve_longmemeval_dataset(dataset: Option<PathBuf>) -> anyhow::Result<PathB
     let dataset = default_longmemeval_dataset_path();
     ensure_default_longmemeval_dataset(&dataset)?;
     Ok(dataset)
+}
+
+fn resolve_benchmark_dataset(
+    loader: &dyn membench::benchmark::BenchmarkLoader,
+    dataset: Option<PathBuf>,
+) -> anyhow::Result<PathBuf> {
+    if loader.id() == "long-mem-eval" {
+        return resolve_longmemeval_dataset(dataset);
+    }
+    if let Some(dataset) = dataset {
+        let dataset = resolve_repo_path(&dataset);
+        if !dataset.exists() {
+            anyhow::bail!("dataset does not exist: {}", dataset.display());
+        }
+        return Ok(dataset);
+    }
+    match loader.default_dataset() {
+        membench::benchmark::DatasetSource::Path {
+            rel_path,
+            download_url,
+        } => {
+            let path = resolve_repo_path(Path::new(rel_path));
+            if !path.exists() {
+                let download_note = if download_url.is_some() {
+                    "a download source is registered but automatic multi-file download is disabled"
+                } else {
+                    "no automatic download is registered"
+                };
+                anyhow::bail!(
+                    "benchmark '{}' dataset not found at {} ({download_note}); pass --dataset",
+                    loader.id(),
+                    path.display()
+                );
+            }
+            Ok(path)
+        }
+    }
 }
 
 fn ensure_default_longmemeval_dataset(path: &Path) -> anyhow::Result<()> {
@@ -2077,7 +2117,7 @@ fn write_native_provenance(
             "router_reason": hypothesis.get("router_reason").cloned().unwrap_or(serde_json::Value::Null),
             "debug_artifact": hypothesis.get("debug_artifact").cloned().unwrap_or(serde_json::Value::Null),
             "system": "symbiotic-memory",
-            "benchmark": "long-mem-eval",
+            "benchmark": run.benchmark,
             "run_name": run.run_name,
             "dataset": portable_path(&run.dataset),
             "memory_config": run.memory_config.as_deref().map(portable_path),
@@ -2088,7 +2128,7 @@ fn write_native_provenance(
             "routed": run.routed,
             "consolidate_briefs": run.consolidate_briefs,
             "query_planner": run.query_planner,
-            "scorer": run.scorer,
+            "scorer": effective_scorer(run),
             "judge_operator": judge.operator.clone(),
             "judge_model": judge.model.clone(),
             "judge_workers": run.judge_workers,
@@ -2227,7 +2267,7 @@ fn write_native_benchmark_report(run: &SymbioticMemoryCliRun) -> anyhow::Result<
     let mut report = json!({
         "schema": "membench.report.v1",
         "system": "symbiotic-memory",
-        "benchmark": "long-mem-eval",
+        "benchmark": run.benchmark,
         "run_kind": "native",
         "run_name": run.run_name,
         "run_params": run_params,
@@ -3873,6 +3913,7 @@ fn nested_f64(value: &serde_json::Value, path: &[&str]) -> Option<f64> {
 
 #[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
 struct SymbioticMemoryCliRun {
+    benchmark: String,
     dataset: PathBuf,
     run_root: PathBuf,
     run_name: String,
@@ -3991,8 +4032,59 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
     );
 
     let provider_runtime = ProviderRuntime::new(&run, &config)?;
-    let rows = membench::symbiotic_memory_adapter::load_longmemeval(&run.dataset, None)?;
-    let rows = select_longmemeval_rows(rows, run.limit, &run.sample)?;
+    let loader = membench::benchmark::loader_for(&run.benchmark)
+        .ok_or_else(|| anyhow::anyhow!("no loader registered for {}", run.benchmark))?;
+    membench::symbiotic_memory_adapter::set_active_manifest_tag(loader.manifest_tag())?;
+    let scope = loader.haystack_scope();
+    let load_limit = (run.sample == "first" && run.limit > 0).then_some(run.limit);
+    let (rows, shared_questions) = match scope {
+        membench::benchmark::HaystackScope::SharedCorpus => {
+            let questions = loader.shared_questions(&run.dataset, load_limit)?;
+            let rows = questions
+                .iter()
+                .map(
+                    |question| membench::symbiotic_memory_adapter::LongMemEvalRecord {
+                        question_id: question.id.clone(),
+                        question_type: question.question_type.clone(),
+                        question: question.question.clone(),
+                        question_date: question.reference_date.clone(),
+                        answer: None,
+                        answer_session_ids: Vec::new(),
+                        haystack_dates: Vec::new(),
+                        haystack_session_ids: Vec::new(),
+                        haystack_sessions: Vec::new(),
+                    },
+                )
+                .collect();
+            let rows = select_longmemeval_rows(rows, run.limit, &run.sample)?;
+            let selected: BTreeSet<_> = rows.iter().map(|row| row.question_id.clone()).collect();
+            let questions = questions
+                .into_iter()
+                .filter(|question| selected.contains(&question.id))
+                .collect();
+            (rows, questions)
+        }
+        membench::benchmark::HaystackScope::PerQuestion => {
+            let rows = loader.load(&run.dataset, load_limit)?;
+            (
+                select_longmemeval_rows(rows, run.limit, &run.sample)?,
+                Vec::new(),
+            )
+        }
+    };
+    if scope == membench::benchmark::HaystackScope::SharedCorpus {
+        if run.source_vault_root.is_some()
+            || run.answer_only
+            || run.re_embed
+            || run.consolidate_briefs
+            || run.stop_after_raw_embed
+        {
+            anyhow::bail!(
+                "shared-corpus benchmarks do not yet support --source-vault-root, --answer-only, \
+                 --re-embed, --consolidate-briefs, or --stop-after-raw-embed"
+            );
+        }
+    }
     // --rejudge: re-grade an existing run's stored hypotheses with the current judge, NO re-answer.
     // Reuses this run root's hypotheses.jsonl (fresh=false keeps it intact); score_prepared rewrites
     // verdicts/scored/summary, then we rewrite the report. Skips all ingest/recall/answer machinery.
@@ -4008,19 +4100,25 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
             "[longmemeval] --rejudge: re-grading {} stored answers (no re-answer)",
             rows.len()
         );
-        let runtime = tokio::runtime::Runtime::new()?;
-        let judge_factory = provider_runtime.judge_factory(&run)?;
-        runtime.block_on(score_longmemeval_native(
-            &run,
-            &rows,
-            &hypotheses_path,
-            judge_factory,
-        ))?;
+        if run.benchmark == "longmemeval-v2" {
+            score_v2_native(&run, &rows, &hypotheses_path)?;
+        } else {
+            let runtime = tokio::runtime::Runtime::new()?;
+            let judge_factory = provider_runtime.judge_factory(&run)?;
+            runtime.block_on(score_longmemeval_native(
+                &run,
+                &rows,
+                &hypotheses_path,
+                judge_factory,
+            ))?;
+        }
         write_native_benchmark_report(&run)?;
         // --rejudge rewrote verdicts/score-summary, so refresh gold-eval too.
         // Defensive: a failure only logs and never fails the run.
-        if let Err(e) = gold_eval(&run.run_name) {
-            eprintln!("[gold-eval] auto-run skipped: {e}");
+        if run.benchmark == "long-mem-eval" {
+            if let Err(error) = gold_eval(&run.run_name) {
+                eprintln!("[gold-eval] auto-run skipped: {error}");
+            }
         }
         return Ok(());
     }
@@ -4152,40 +4250,71 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
         std::fs::write(&zvec_marker, "zvec\n")?;
         let embedder_factory = provider_runtime.embedding_factory(&run)?;
         let distiller_factory = provider_runtime.distiller_factory(&run)?;
-        let consolidator_factory = provider_runtime.consolidator_factory(&run)?;
-        if run.consolidate_briefs && consolidator_factory.is_none() {
-            anyhow::bail!(
-                "--consolidate-briefs requires a truthy MEMBENCH_CONSOLIDATOR (for example `llm`); refusing a run whose manifest could never complete"
-            );
-        }
         let answer_factory = provider_runtime.answer_factory(&run)?;
-        let answer_retry_factory = provider_runtime.answer_retry_factory(&run)?;
         let planner_factory = provider_runtime.query_planner_factory(&run)?;
         let reranker = provider_runtime.reranker(&run)?;
-        runtime.block_on(
-            membench::symbiotic_memory_adapter::run_longmemeval_vault_with_planner(
-                &rows,
-                &run.run_root,
-                move || embedder_factory(),
-                move || distiller_factory(),
-                consolidator_factory,
-                move || answer_factory(),
-                answer_retry_factory,
-                planner_factory,
-                reranker,
-                Some(provider_runtime.debug_metadata(&run)),
-                memory_trace_sink,
-                policy,
-                hypotheses_path.clone(),
-                run.routed,
-                run.answer_only,
-                run.consolidate_briefs,
-                effective_stop_after_raw_embed(&run),
-                adapter_ingest_diagnostic_mode(&run),
-                Some(workflow_max_in_flight),
-                run.resume,
-            ),
-        )?;
+        if scope == membench::benchmark::HaystackScope::SharedCorpus {
+            let corpus_keys: BTreeSet<_> = shared_questions
+                .iter()
+                .map(|question| question.corpus_key.clone())
+                .collect();
+            let mut corpora = Vec::with_capacity(corpus_keys.len());
+            for corpus_key in corpus_keys {
+                let record = loader.corpus_record(&run.dataset, &corpus_key)?;
+                corpora.push((
+                    corpus_key,
+                    membench::symbiotic_memory_adapter::longmemeval_to_source(&record),
+                ));
+            }
+            runtime.block_on(
+                membench::symbiotic_memory_adapter::run_shared_corpus_with_planner(
+                    corpora,
+                    shared_questions,
+                    &run.run_root,
+                    move || embedder_factory(),
+                    move || distiller_factory(),
+                    move || answer_factory(),
+                    planner_factory,
+                    reranker,
+                    memory_trace_sink,
+                    policy,
+                    hypotheses_path.clone(),
+                    adapter_ingest_diagnostic_mode(&run),
+                ),
+            )?;
+        } else {
+            let consolidator_factory = provider_runtime.consolidator_factory(&run)?;
+            if run.consolidate_briefs && consolidator_factory.is_none() {
+                anyhow::bail!(
+                    "--consolidate-briefs requires a truthy MEMBENCH_CONSOLIDATOR (for example `llm`); refusing a run whose manifest could never complete"
+                );
+            }
+            let answer_retry_factory = provider_runtime.answer_retry_factory(&run)?;
+            runtime.block_on(
+                membench::symbiotic_memory_adapter::run_longmemeval_vault_with_planner(
+                    &rows,
+                    &run.run_root,
+                    move || embedder_factory(),
+                    move || distiller_factory(),
+                    consolidator_factory,
+                    move || answer_factory(),
+                    answer_retry_factory,
+                    planner_factory,
+                    reranker,
+                    Some(provider_runtime.debug_metadata(&run)),
+                    memory_trace_sink,
+                    policy,
+                    hypotheses_path.clone(),
+                    run.routed,
+                    run.answer_only,
+                    run.consolidate_briefs,
+                    effective_stop_after_raw_embed(&run),
+                    adapter_ingest_diagnostic_mode(&run),
+                    Some(workflow_max_in_flight),
+                    run.resume,
+                ),
+            )?;
+        }
     } else if run.store == "memory" {
         if run.answer_only || run.consolidate_briefs || run.routed || run.score {
             anyhow::bail!("--store memory only supports simple unscored slice runs");
@@ -4210,13 +4339,17 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
         );
     }
     if run.score {
-        let judge_factory = provider_runtime.judge_factory(&run)?;
-        runtime.block_on(score_longmemeval_native(
-            &run,
-            &rows,
-            &hypotheses_path,
-            judge_factory,
-        ))?;
+        if run.benchmark == "longmemeval-v2" {
+            score_v2_native(&run, &rows, &hypotheses_path)?;
+        } else {
+            let judge_factory = provider_runtime.judge_factory(&run)?;
+            runtime.block_on(score_longmemeval_native(
+                &run,
+                &rows,
+                &hypotheses_path,
+                judge_factory,
+            ))?;
+        }
     }
     provider_runtime.flush_trace_writers(Duration::from_secs(30));
     if !memory_trace_writer.flush_blocking(Duration::from_secs(30)) {
@@ -4230,9 +4363,9 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
     // Keep artifacts/gold-eval.json fresh after every scored run, so nobody has to
     // run `membench gold-eval --run <name>` by hand. Defensive: a failure (e.g. a
     // run with no answer_session_ids, which gold_eval bails on) only logs.
-    if run.score {
-        if let Err(e) = gold_eval(&run.run_name) {
-            eprintln!("[gold-eval] auto-run skipped: {e}");
+    if run.score && run.benchmark == "long-mem-eval" {
+        if let Err(error) = gold_eval(&run.run_name) {
+            eprintln!("[gold-eval] auto-run skipped: {error}");
         }
     }
     if run.ephemeral_smoke_run {
@@ -4307,7 +4440,7 @@ impl PaidProviderRunLock {
                     "run_name": run.run_name,
                     "run_root": portable_path(&run.run_root),
                     "system": "symbiotic-memory",
-                    "benchmark": "long-mem-eval",
+                    "benchmark": run.benchmark,
                     "limit": run.limit,
                     "score": run.score,
                     "answer_only": run.answer_only,
@@ -5740,6 +5873,178 @@ async fn score_prepared_longmemeval_native(
     Ok(())
 }
 
+/// Score v2 with its per-question deterministic evaluator.
+///
+/// Official LLM checker semantics are not implemented yet. Those checker heads, unknown heads, and
+/// missing evaluator specs fail closed before any score artifacts are published.
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn score_v2_native(
+    run: &SymbioticMemoryCliRun,
+    rows: &[membench::symbiotic_memory_adapter::LongMemEvalRecord],
+    hypotheses_path: &Path,
+) -> anyhow::Result<()> {
+    use membench::benchmark::{GradeOutcome, grade_v2};
+
+    let loader = membench::benchmark::loader_for(&run.benchmark)
+        .ok_or_else(|| anyhow::anyhow!("no loader registered for {}", run.benchmark))?;
+    let targets = loader.grade_targets(run.oracle.as_deref().unwrap_or(&run.dataset))?;
+    let selected_ids: BTreeSet<_> = rows.iter().map(|row| row.question_id.clone()).collect();
+    let hypotheses = read_native_hypotheses(hypotheses_path)?;
+    let raw_dir = native_raw_dir(&run.run_root);
+    std::fs::create_dir_all(&raw_dir)?;
+    let verdicts_path = raw_dir.join("verdicts.jsonl");
+    let scored_path = raw_dir.join("scored.json");
+    let summary_path = raw_dir.join("score-summary.json");
+
+    let started = std::time::Instant::now();
+    let mut verdicts = Vec::new();
+    let mut deterministic_count = 0u64;
+
+    for hypothesis in hypotheses {
+        if !selected_ids.contains(&hypothesis.question_id) {
+            continue;
+        }
+        let target = targets.get(&hypothesis.question_id).ok_or_else(|| {
+            anyhow::anyhow!(
+                "v2 grade target missing for question '{}'",
+                hypothesis.question_id
+            )
+        })?;
+        let answer = gold_answer_to_string(target.gold_answer.as_ref());
+        let question_type = hypothesis
+            .question_type
+            .clone()
+            .or_else(|| target.question_type.clone());
+        let is_abstention_question = question_type
+            .as_deref()
+            .is_some_and(|value| value.contains("abs"));
+        match target.eval_function.as_deref() {
+            Some(eval_function) => match grade_v2(eval_function, &answer, &hypothesis.hypothesis) {
+                GradeOutcome::Deterministic(label) => {
+                    deterministic_count += 1;
+                    verdicts.push(NativeVerdict {
+                        question_id: hypothesis.question_id,
+                        question_type,
+                        question: hypothesis.question,
+                        answer,
+                        hypothesis: hypothesis.hypothesis,
+                        judge_raw: format!("deterministic:{eval_function}"),
+                        judge_system_prompt: None,
+                        judge_user_prompt: None,
+                        autoeval_label: NativeAutoEvalLabel {
+                            model: "deterministic".to_string(),
+                            label,
+                        },
+                        label,
+                        is_abstention: is_abstention_question,
+                        error: None,
+                    });
+                }
+                GradeOutcome::Unsupported(checker) => {
+                    anyhow::bail!(
+                        "unsupported LongMemEval-v2 checker '{}' for question '{}'; official \
+                         checker semantics are not implemented, so scoring refuses to publish",
+                        checker.id(),
+                        hypothesis.question_id
+                    );
+                }
+            },
+            None => {
+                anyhow::bail!(
+                    "LongMemEval-v2 question '{}' has no eval_function; scoring refuses to publish",
+                    hypothesis.question_id
+                );
+            }
+        }
+    }
+
+    verdicts.sort_by(|left, right| left.question_id.cmp(&right.question_id));
+    let mut lines = String::new();
+    for verdict in &verdicts {
+        lines.push_str(&serde_json::to_string(verdict)?);
+        lines.push('\n');
+    }
+    std::fs::write(&verdicts_path, lines)?;
+
+    let scored_count = verdicts.len() as u64;
+    if scored_count != rows.len() as u64 {
+        anyhow::bail!(
+            "LongMemEval-v2 scoring incomplete: verdicts={scored_count} expected={}",
+            rows.len()
+        );
+    }
+    let total_correct = verdicts.iter().filter(|verdict| verdict.label).count() as u64;
+    let mut per_type: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+    for verdict in &verdicts {
+        let entry = per_type
+            .entry(
+                verdict
+                    .question_type
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+            )
+            .or_insert((0, 0));
+        entry.1 += 1;
+        if verdict.label {
+            entry.0 += 1;
+        }
+    }
+    let per_question_type = per_type
+        .into_iter()
+        .map(|(question_type, (correct, total))| {
+            (
+                question_type,
+                json!({
+                    "correct": correct,
+                    "total": total,
+                    "accuracy": (total > 0).then_some(correct as f64 / total as f64),
+                }),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    let scored_json = json!({
+        "judge_model": "deterministic-v2-eval-function",
+        "judge_prompt_mode": "dataset-eval-function",
+        "overall_accuracy": (scored_count > 0)
+            .then_some(total_correct as f64 / scored_count as f64),
+        "task_averaged_accuracy": task_averaged_accuracy(&per_question_type),
+        "counts": {
+            "scored": scored_count,
+            "total_correct": total_correct,
+            "deterministic": deterministic_count,
+            "judge_calls": 0,
+            "abstention_correct": verdicts
+                .iter()
+                .filter(|verdict| verdict.is_abstention && verdict.label)
+                .count() as u64,
+            "abstention_total": verdicts
+                .iter()
+                .filter(|verdict| verdict.is_abstention)
+                .count() as u64,
+        },
+        "per_question_type": per_question_type,
+    });
+    std::fs::write(
+        &scored_path,
+        serde_json::to_string_pretty(&scored_json)? + "\n",
+    )?;
+    std::fs::write(
+        &summary_path,
+        serde_json::to_string_pretty(&json!({
+            "schema_version": 1,
+            "scorer": "longmemeval-v2-eval-function",
+            "judge_model": scored_json["judge_model"],
+            "judge_prompt_mode": scored_json["judge_prompt_mode"],
+            "hypotheses_file": portable_path(hypotheses_path),
+            "verdicts_file": portable_path(&verdicts_path),
+            "scored_file": portable_path(&scored_path),
+            "elapsed_ms": started.elapsed().as_millis() as u64,
+            "metrics": scored_json,
+        }))? + "\n",
+    )?;
+    Ok(())
+}
+
 #[cfg(feature = "symbiotic-memory-adapter")]
 async fn judge_one_longmemeval(
     item: ScoredHypothesis,
@@ -6205,7 +6510,7 @@ fn symbiotic_memory_run_params(run: &SymbioticMemoryCliRun) -> serde_json::Value
     let mut params = json!({
         "schema": "membench.run_params.v1",
         "system": "symbiotic-memory",
-        "benchmark": "long-mem-eval",
+        "benchmark": run.benchmark,
         "run_kind": "native",
         "run_name": run.run_name,
         "dataset": portable_path(&run.dataset),
@@ -6244,7 +6549,7 @@ fn symbiotic_memory_run_params(run: &SymbioticMemoryCliRun) -> serde_json::Value
         "judge_workers": run.judge_workers,
         "prewarm_judge_cache": run.prewarm_judge_cache,
         "prewarm_pause_secs": run.prewarm_pause_secs,
-        "scorer": run.scorer,
+        "scorer": effective_scorer(run),
         "judge_operator": judge.operator,
         "judge_model": judge.model,
         "env_file": run.env_file.as_deref().map(portable_path),
@@ -6328,7 +6633,12 @@ fn symbiotic_memory_run_params(run: &SymbioticMemoryCliRun) -> serde_json::Value
     );
     object.insert(
         "provider_queue_available".to_string(),
-        json!(run.distiller != "heuristic" || run.embedder != "hash" || run.score || run.answerer),
+        json!(
+            run.distiller != "heuristic"
+                || run.embedder != "hash"
+                || uses_model_judge(run)
+                || run.answerer
+        ),
     );
     object.insert("workflow_queue_available".to_string(), json!(true));
     object.insert(
@@ -6564,8 +6874,10 @@ fn runtime_provider_bindings(
                     run.query_planner.as_deref().unwrap_or("config-default")
                 )
             },
-            "judge": if run.score {
+            "judge": if uses_model_judge(run) {
                 format!("queued:{}:{}", judge.operator, judge.model)
+            } else if run.score {
+                "local:deterministic-v2-eval-function".to_string()
             } else {
                 "not-run".to_string()
             },
@@ -6595,8 +6907,10 @@ fn runtime_provider_bindings(
                 run.query_planner.as_deref().unwrap_or("config-default")
             )
         },
-        "judge": if run.score {
+        "judge": if uses_model_judge(run) {
             format!("queued:{}:{}", judge.operator, judge.model)
+        } else if run.score {
+            "local:deterministic-v2-eval-function".to_string()
         } else {
             "not-run".to_string()
         },
@@ -6630,7 +6944,7 @@ fn resolved_role_settings(
             "embed": role_setting_for_adapter(run, "EMBED", &config, &embed, queued_embedder(run)),
             "answer": role_setting_for_adapter(run, "ANSWER", &config, &answer, run.answerer),
             "query_planner": role_setting_for_adapter(run, "QUERY_PLANNER", &config, &query_planner, run.query_planner.as_deref() == Some("flash")),
-            "judge": role_setting_for_adapter(run, "JUDGE", &config, &judge_adapter, run.score),
+            "judge": role_setting_for_adapter(run, "JUDGE", &config, &judge_adapter, uses_model_judge(run)),
         });
     }
     json!({
@@ -6638,8 +6952,20 @@ fn resolved_role_settings(
         "embed": fallback_role_setting(run, "EMBED", queued_embedder(run)),
         "answer": fallback_role_setting(run, "ANSWER", run.answerer),
         "query_planner": fallback_role_setting(run, "QUERY_PLANNER", run.query_planner.as_deref() == Some("flash")),
-        "judge": fallback_role_setting(run, "JUDGE", run.score),
+        "judge": fallback_role_setting(run, "JUDGE", uses_model_judge(run)),
     })
+}
+
+fn uses_model_judge(run: &SymbioticMemoryCliRun) -> bool {
+    run.score && run.benchmark != "longmemeval-v2"
+}
+
+fn effective_scorer(run: &SymbioticMemoryCliRun) -> &str {
+    if run.score && run.benchmark == "longmemeval-v2" {
+        "longmemeval-v2-eval-function"
+    } else {
+        &run.scorer
+    }
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
@@ -7168,6 +7494,7 @@ mod tests {
 
     fn sample_run(symem_bin: Option<PathBuf>) -> SymbioticMemoryCliRun {
         SymbioticMemoryCliRun {
+            benchmark: "long-mem-eval".to_string(),
             dataset: PathBuf::from("data/longmemeval.json"),
             run_root: PathBuf::from("runs/symbiotic-memory/long-mem-eval/3/sample"),
             run_name: "sample".to_string(),
@@ -8436,6 +8763,80 @@ mod tests {
         assert_eq!(args.first().map(String::as_str), Some("--symbiotic-memory"));
         assert!(args.contains(&"--score".to_string()));
         assert!(args.contains(&"--oracle".to_string()));
+    }
+
+    #[test]
+    fn native_run_params_preserve_selected_v2_benchmark() {
+        let mut run = sample_run(None);
+        run.benchmark = "longmemeval-v2".to_string();
+        run.run_root = PathBuf::from("runs/symbiotic-memory/longmemeval-v2/2/sample");
+        run.score = true;
+        run.distiller = "heuristic".to_string();
+        run.embedder = "hash".to_string();
+        run.answerer = false;
+        let params = symbiotic_memory_run_params(&run);
+        assert_eq!(params["benchmark"], "longmemeval-v2");
+        assert_eq!(params["scorer"], "longmemeval-v2-eval-function");
+        assert_eq!(
+            params["runtime_models"]["judge"],
+            "local:deterministic-v2-eval-function"
+        );
+        assert_eq!(params["provider_queue_available"], false);
+    }
+
+    #[cfg(feature = "symbiotic-memory-adapter")]
+    #[test]
+    fn v2_scorer_fails_closed_on_unsupported_official_checker() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("questions.jsonl"),
+            serde_json::json!({
+                "id": "q1",
+                "domain": "web",
+                "question_type": "errors-gotchas",
+                "question": "What happened?",
+                "answer": "expected",
+                "eval_function": "llm_gotchas_checker|require_non_empty=true"
+            })
+            .to_string()
+                + "\n",
+        )
+        .unwrap();
+        let hypotheses = root.path().join("hypotheses.jsonl");
+        std::fs::write(
+            &hypotheses,
+            serde_json::json!({
+                "question_id": "q1",
+                "question_type": "errors-gotchas",
+                "question": "What happened?",
+                "hypothesis": "candidate"
+            })
+            .to_string()
+                + "\n",
+        )
+        .unwrap();
+        let mut run = sample_run(None);
+        run.benchmark = "longmemeval-v2".to_string();
+        run.dataset = root.path().to_path_buf();
+        run.run_root = root.path().join("run");
+        run.score = true;
+        let rows = vec![membench::symbiotic_memory_adapter::LongMemEvalRecord {
+            question_id: "q1".to_string(),
+            question_type: Some("errors-gotchas".to_string()),
+            question: "What happened?".to_string(),
+            question_date: None,
+            answer: None,
+            answer_session_ids: Vec::new(),
+            haystack_dates: Vec::new(),
+            haystack_session_ids: Vec::new(),
+            haystack_sessions: Vec::new(),
+        }];
+
+        let error = score_v2_native(&run, &rows, &hypotheses).unwrap_err();
+        assert!(error.to_string().contains("llm_gotchas_checker"));
+        assert!(error.to_string().contains("refuses to publish"));
+        assert!(!run.run_root.join("raw/verdicts.jsonl").exists());
+        assert!(!run.run_root.join("raw/scored.json").exists());
     }
 
     #[test]
