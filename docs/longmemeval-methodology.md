@@ -48,32 +48,82 @@ The best **clean, measured** result to date, from local full-500Q runs pending p
 
 Detailed running evidence: `TUNING-REPORT.md`, `PUSH-TO-95.md` (historical log).
 
+## Comparability: what a cohort is
+
+A leaderboard cohort is one *comparability class*, not one size class. Two runs share a cohort
+only when **benchmark, question count, question-set fingerprint, judge model and judge prompt
+mode** all match; that tuple is the cohort id
+(`long-mem-eval::500::ds:<fingerprint>::judge:<model>::mode:<prompt_mode>`), and it is also
+recorded on every run. Runs judged by different models, or scored over different question sets,
+are different boards — their accuracies are not comparable, so the tooling will not place them
+in one table. The live `/api/leaderboard` and the static export share this partition.
+
 ## Review gate for a canonical ranked record
 
 A record may be ranked in a published leaderboard cohort only if all of the following hold.
-This gate is what separates "verified" from "unverified" on the landing page.
+This gate is what separates "verified" from "unverified" on the landing page. Conditions 1–4 and
+the artifact half of 5–6 are **enforced in code** (`src/eligibility.rs`) against bytes on disk —
+a record's own `artifact_manifest` is not evidence — and a record that fails any of them is
+listed as unranked with the gate it failed, never ranked.
 
 1. **Full-scale, fresh run.** The complete benchmark question set for its cohort (500Q for
    LongMemEval-S), executed through the full pipeline. Answer-only reruns are acceptable only
    when the ingested substrate they reuse is itself part of the record's provenance.
+   *Enforced as `full-scale`: the scored question count must equal the cohort's declared size,
+   so a 50-question subset can never appear on the 500-question board.*
 2. **Complete scoring artifacts.** `hypotheses`, `verdicts`, and `scored` present in the
-   record (export verification level `full`), plus `run-params.json` and
-   `benchmark-report.json` with `dataset_fingerprint`, `judge_model`, and
-   `judge_prompt_mode` recorded.
+   record, plus `run-params.json` and `benchmark-report.json` with `dataset_fingerprint`,
+   `judge_model`, and `judge_prompt_mode` recorded.
+   *Enforced as `scoring-artifacts` (each file must exist on disk and be non-empty — a manifest
+   entry is not evidence), `cohort-identity`, and `score-summary-hashes`: when the scorer wrote
+   `artifacts/score-summary.json`, the hashes it recorded for the artifacts it judged must still
+   match those files. That chain involves no reviewer, so post-scoring edits are caught on any
+   record, reviewed or not.*
 3. **Provenance, not intent.** Provider usage proven by model/provider traces
    (`model_traces` or provider-queue traces), with cost rollup derivable. `configured_models`
-   alone proves nothing.
+   alone proves nothing. *Enforced as `provenance-traces`.*
 4. **Clean flags.** Not `oracle_gold`, not `TRIAL`-flagged, no experimental gate enabled that
-   has not been disclosed in the record's config label.
+   has not been disclosed in the record's config label. *Enforced as `clean-flags` (meta
+   records, oracle-gold runs and trial-flagged runs are rejected); the disclosure half is
+   human judgement.*
 5. **No-cheating review.** A second reviewer (human or independent agent) samples verdicts
    against raw artifacts and confirms the pipeline rules above; misses were not "fixed" by
-   tuning to broken golds.
+   tuning to broken golds. *Enforced as `independent-review` + `artifact-hashes`: the record
+   must carry a `review.json` attestation (below) whose recorded SHA-256s still match the
+   scoring artifacts. Editing any artifact after review invalidates the attestation rather
+   than silently inheriting it. Whether the reviewer did a real review is not machine-checkable
+   — the attestation names who is accountable for it.*
 6. **Hygiene.** No secrets, raw provider payloads, or absolute local paths in the record;
    oversized native state stored externally per `docs/canonical-record-storage-task.md` with
-   hashes and restore instructions.
+   hashes and restore instructions. *Attested in `review.json`; not machine-checked.*
+
+### The review attestation (`review.json`)
+
+Written next to `benchmark-report.json` in the record directory:
+
+```json
+{
+  "schema": "membench.record_review.v1",
+  "reviewer": "name of the person or independent agent accountable for the review",
+  "reviewed_at": "2026-07-24",
+  "reviewed_commit": "7e416c4",
+  "verdict": "pass",
+  "artifact_sha256": {
+    "hypotheses": "<sha256 of artifacts/hypotheses.jsonl>",
+    "verdicts": "<sha256 of artifacts/verdicts.jsonl>",
+    "scored": "<sha256 of artifacts/scored.json>"
+  },
+  "notes": "what was sampled and checked"
+}
+```
+
+`verdict` must be `pass`; any other value (or a missing/renamed schema, reviewer or date) keeps
+the record unranked. Hashes are plain `sha256sum` of the files as reviewed.
 
 Promotion is `membench save-record` into `records/{system}/{benchmark}/{limit}/{run_name}/`,
-followed by regenerating the bundled leaderboard snapshot
-(`scripts/export-leaderboard-snapshot.sh`). The selection and promotion of the first
-canonical 500-question record is tracked in `docs/canonical-record-storage-task.md` and has
-not happened yet — which is why the published leaderboard is honestly empty.
+adding `review.json` after the independent review, then regenerating the bundled leaderboard
+snapshot (`scripts/export-leaderboard-snapshot.sh`; CI re-checks it against `records/` via
+`scripts/check-leaderboard-snapshot.sh`). The selection and promotion of the first canonical
+500-question record is tracked in `docs/canonical-record-storage-task.md` and **has not
+happened yet** — which is why the published leaderboard is honestly empty, and why the ~88.5%
+above is stated as a measured local result rather than a leaderboard claim.

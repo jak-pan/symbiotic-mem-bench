@@ -32,6 +32,7 @@ Track this in Git:
 records/symbiotic-memory/long-mem-eval/500/{record-name}/
   run-params.json
   benchmark-report.json
+  review.json            # membench.record_review.v1 — required before the record can rank
   artifacts/
     hypotheses.jsonl
     scored.json
@@ -67,6 +68,11 @@ The tracked `external-artifacts.json` should include:
 
 ## Acceptance Criteria
 
+- The promoted record passes `src/eligibility.rs` — i.e. it appears in a ranked cohort of
+  `cargo run --bin membench-leaderboard -- export --records-root records`, not in `unranked`.
+  That requires the scoring artifacts on disk, provider traces, a full-scale question count,
+  recorded cohort identity, and a `review.json` attestation written *after* an independent
+  no-cheating review (`docs/longmemeval-methodology.md`).
 - `membench explore` can show the tracked record without downloading external state.
 - Dashboard can compare the tracked record to new runs from `artifacts/`.
 - A documented restore command can place native state under ignored local storage.

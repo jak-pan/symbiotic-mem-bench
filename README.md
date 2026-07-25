@@ -12,8 +12,21 @@ Everything in this section is local and network-free — no API keys. From this 
 
 ```bash
 CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo test
-cargo run --bin membench -- explore
+cargo run --bin membench-leaderboard -- export --records-root records
 ```
+
+The `membench` CLI itself (`cargo run --bin membench -- explore`) needs the
+`symbiotic-memory-adapter` feature, which builds against the pinned
+`jak-pan/symbiotic-memory` revision — currently a **private** repository, so a clean clone
+without access cannot build it (see `docs/oss-release-handoff.md`). With access:
+
+```bash
+cargo run --features symbiotic-memory-adapter --bin membench -- explore
+```
+
+`scripts/check-adapter-build.sh` is the gate for that path; `scripts/check-adapter-pins.sh`
+checks (offline, no credentials) that every git dependency is pinned to an exact rev that
+`Cargo.lock` resolves.
 
 Export the static leaderboard document over the reproducible sample records (the CI canary
 fixtures — synthetic, clearly labeled, never real results):

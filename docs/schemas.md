@@ -80,7 +80,10 @@ and `metrics.latency_ms_p95`, derived from `model-traces.jsonl`.
 ## Cohort Identity
 
 `cohort` lets tooling decide which runs are fairly comparable on a leaderboard. Two runs belong to
-the same cohort when they share a benchmark, size, question set, judge model, and judge prompt mode.
+the same cohort when they share a benchmark, size, question set, judge model, and judge prompt
+mode — all five, which is exactly what the leaderboard partitions on. The derived id is the
+readable tuple `{benchmark}::{limit}::ds:{fingerprint}::judge:{model}::mode:{prompt_mode}`
+(unknown components render as `?`), recorded on every run as `cohort_id`.
 
 ```json
 {
@@ -138,45 +141,88 @@ Top-level fields:
 | `schema` | Schema id, currently `membench.leaderboard.v1`. |
 | `generated_at` | RFC3339 export timestamp. Fixed to `1970-01-01T00:00:00Z` under `--deterministic`. |
 | `source.records_root` | Records root that was scanned, as passed to the exporter (repo-relative). |
-| `source.git_sha` | Git sha baked into the exporting binary. Fixed to `deterministic` under `--deterministic`. |
+| `source.records_digest` | SHA-256 over the sorted `{path}\0{sha256 of file}` lines of every file in that tree. Content-derived, so it stays real under `--deterministic` and can be recomputed from any checkout. |
+| `source.git_sha` | Git sha baked into the exporting binary. Weak provenance — a committed snapshot always names the commit *before* itself; prefer `records_digest`. Fixed to `deterministic` under `--deterministic`. |
 | `source.run_count` | Total runs scanned (ranked + unranked). |
+| `source.ranked_count` / `source.unranked_count` | How the scan split. |
+| `source.contains_fixtures` | True when any scanned record is a synthetic fixture (`fixture: true`). |
 | `methodology` | Repo-relative pointer to the scoring methodology doc. |
-| `cohorts` | Cohorts from `build_cohorts`: one per `{benchmark}::{limit}`, rows ranked by accuracy descending. |
-| `unranked` | Scanned runs excluded from ranking, with the reason (see below). |
+| `cohorts` | Comparable cohorts: one per full identity `{benchmark}::{limit}::ds:{fingerprint}::judge:{model}::mode:{prompt_mode}`, rows ranked by accuracy descending. |
+| `unranked` | Scanned runs excluded from ranking, with the gates they failed (see below). |
 
-Every ranked row is the serialized `RankedRow` (rank plus the flattened `RunSummary`) with one
-added object:
+Each cohort states its identity in `dataset_fingerprint`, `judge_model` and
+`judge_prompt_mode` (single values, shared by every row) alongside the legacy plural lists,
+which are now length ≤ 1 by construction. `strictly_comparable` is false only when part of that
+identity is unknown.
+
+Only records that pass the review gate in `docs/longmemeval-methodology.md` are ranked; the
+verdict is computed once in `src/eligibility.rs` from bytes on disk and is served identically by
+`GET /api/leaderboard` and by this export. Every ranked row is the serialized `RankedRow` (rank
+plus the flattened `RunSummary`, including its `eligibility` object) with one added summary:
 
 ```json
 "verification": {
-  "level": "full",
-  "missing_artifacts": []
+  "level": "verified",
+  "missing_artifacts": [],
+  "review": {
+    "reviewer": "…",
+    "reviewed_at": "2026-07-24",
+    "reviewed_commit": "7e416c4",
+    "verdict": "pass"
+  }
 }
 ```
 
 | Level | Meaning |
 |---|---|
-| `full` | None of the scoring artifacts (`hypotheses`, `verdicts`, `scored`) are in the row's `artifacts_missing`; the score can be independently reproduced from the record. |
-| `partial` | At least one scoring artifact is missing; `missing_artifacts` lists which of the three are absent. |
+| `verified` | Every gate passed: scoring artifacts present on disk, cohort identity recorded, full-scale, provider traces present, clean flags, and a `membench.record_review.v1` attestation whose hashes still match the artifacts. Only verified rows are ranked. |
+| `unverified` | At least one gate failed. Such rows appear in `unranked`, never in a cohort. |
 
-`unranked` rows carry `run_id`, `run_name`, `reason`, `benchmark`, and `limit`. When the report
-has an accuracy, the row also carries `accuracy`, `accuracy_correct`, and `accuracy_total`: a meta
-record can hold a real measured score whose question-level artifacts were omitted on purpose, and
-consumers may display it as long as the `reason` label travels with the number.
+`unranked` rows carry `run_id`, `run_name`, `reason`, `failed_gates`, `system`, `benchmark`,
+`limit`, and `fixture`. When the report has an accuracy, the row also carries `accuracy`,
+`accuracy_correct`, and `accuracy_total`: a meta record can hold a real measured score whose
+question-level artifacts were omitted on purpose, and consumers may display it as long as the
+exclusion label travels with the number.
 
 | Reason | Meaning |
 |---|---|
 | `meta-record` | The record is a dashboard-safe rollup (`meta_record` present) without question-level data. |
 | `unscored` | The report has no `metrics.accuracy.value`. |
+| `gate-failed` | The record is scored but failed one or more review gates. |
+
+`failed_gates` entries are `{ "gate": "<id>", "detail": "<why>" }`, with gate ids
+`clean-flags`, `scored`, `scoring-artifacts`, `cohort-identity`, `full-scale`,
+`provenance-traces`, `score-summary-hashes`, `independent-review`, `artifact-hashes`.
+
+`score-summary-hashes` re-checks the hashes the scorer itself wrote into
+`artifacts/score-summary.json` (`hypotheses_hash` plus the run-relative
+`artifact_hashes` map). It needs no reviewer, so an artifact edited after scoring
+is caught even on a record nobody has reviewed. Records without a score summary
+are not penalised.
 
 `--deterministic` exists for contract canaries: it pins `generated_at` and `git_sha` and nulls
 each row's `modified_ms` (a file mtime) so repeated exports over unchanged records are
 byte-identical. See `canary/` for the fixture-based smoke test wired into CI.
 
 The dashboard bundles a non-deterministic export (real provenance) at
-`dashboard/public/data/leaderboard.json`; the SPA falls back to it, labeled as a static
-snapshot, when no `/api` backend is present. Regenerate it with
-`scripts/export-leaderboard-snapshot.sh` whenever `records/` changes.
+`dashboard/public/data/leaderboard.json`; the SPA serves it, labeled as a static snapshot, when
+no `/api` backend is present. Regenerate it with `scripts/export-leaderboard-snapshot.sh`
+whenever `records/` changes — CI fails if the committed snapshot no longer matches `records/`
+(`scripts/check-leaderboard-snapshot.sh`).
+
+## Record Review Attestation
+
+`membench.record_review.v1` — `review.json` in a record directory. Required for ranking; see
+"Review gate" in `docs/longmemeval-methodology.md` for the full document and semantics.
+
+| Field | Meaning |
+|---|---|
+| `schema` | `membench.record_review.v1`. |
+| `reviewer` | Person or independent agent accountable for the review. Must be non-empty. |
+| `reviewed_at` | Review date. Must be non-empty. |
+| `reviewed_commit` | Optional commit the review was performed at. |
+| `verdict` | `pass` admits the record to ranking; anything else keeps it unranked. |
+| `artifact_sha256` | `hypotheses`/`verdicts`/`scored` → SHA-256 of the file as reviewed. Re-checked on every scan, so editing an artifact after review invalidates the attestation. |
 
 ## Machine-readable Index
 

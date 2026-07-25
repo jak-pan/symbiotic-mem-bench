@@ -62,3 +62,55 @@ jobs:
         run: |
           cargo run --bin membench-leaderboard -- export --records-root canary/records --deterministic > /tmp/canary-out.json
           diff <(python3 -m json.tool /tmp/canary-out.json) <(python3 -m json.tool canary/expected-leaderboard.json)
+      # The published snapshot must still describe records/ — a stale snapshot
+      # looks exactly like a fresh one from its git sha alone.
+      - name: bundled snapshot matches records/
+        run: ./scripts/check-leaderboard-snapshot.sh
+
+  # Offline half of the adapter gate: the manifest pins exact revs and the
+  # lockfile resolves them. Runs everywhere, including forks.
+  adapter-pins:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: git dependencies are pinned and locked
+        run: ./scripts/check-adapter-pins.sh
+
+  # Credentialed half: does the documented `membench` CLI actually build
+  # against those pins? The adapter depends on a private repository, so this
+  # job runs only where a read token is configured. Until that repository is
+  # public, `scripts/check-adapter-build.sh` is a mandatory manual release gate
+  # (RELEASING.md) rather than an enforced CI gate.
+  adapter-token:
+    runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.probe.outputs.available }}
+    steps:
+      - id: probe
+        env:
+          ADAPTER_DEPS_TOKEN: ${{ secrets.ADAPTER_DEPS_TOKEN }}
+        run: |
+          if [ -n "$ADAPTER_DEPS_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::ADAPTER_DEPS_TOKEN not configured — adapter CLI build not verified in CI."
+          fi
+
+  adapter-build:
+    needs: adapter-token
+    if: needs.adapter-token.outputs.available == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: authenticate private git dependencies
+        env:
+          ADAPTER_DEPS_TOKEN: ${{ secrets.ADAPTER_DEPS_TOKEN }}
+        run: |
+          git config --global url."https://x-access-token:${ADAPTER_DEPS_TOKEN}@github.com/".insteadOf "https://github.com/"
+      - name: adapter CLI builds against the pinned revisions
+        run: ./scripts/check-adapter-build.sh
