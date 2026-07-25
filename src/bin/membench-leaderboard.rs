@@ -72,11 +72,14 @@ fn main() -> anyhow::Result<()> {
         repo_root().join(&args.records_root)
     };
 
-    let records = registry::scan_registry(&[records_root], &repo_root());
+    let records = registry::scan_registry(std::slice::from_ref(&records_root), &repo_root());
     let summaries: Vec<_> = records.iter().map(registry::summarize).collect();
 
     let options = ExportOptions {
         records_root: args.records_root.to_string_lossy().replace('\\', "/"),
+        // Recomputable provenance: whoever reads the document can hash the same
+        // tree and see whether it still describes these records.
+        records_digest: leaderboard_export::records_digest(&records_root),
         git_sha: option_env!("GIT_SHA").unwrap_or("unknown").to_string(),
         methodology: leaderboard_export::DEFAULT_METHODOLOGY.to_string(),
         deterministic: args.deterministic,

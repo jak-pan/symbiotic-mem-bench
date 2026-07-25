@@ -1,0 +1,27 @@
+{
+  "accuracy": {
+    "correct": 5,
+    "total": 5,
+    "value": 1.0
+  },
+  "fixture": true,
+  "judge_model": "canary-judge",
+  "judge_prompt_mode": "official",
+  "per_question_type": {
+    "multi-session": {
+      "correct": 2,
+      "total": 2,
+      "value": 1.0
+    },
+    "single-session-user": {
+      "correct": 2,
+      "total": 2,
+      "value": 1.0
+    },
+    "temporal-reasoning": {
+      "correct": 1,
+      "total": 1,
+      "value": 1.0
+    }
+  }
+}

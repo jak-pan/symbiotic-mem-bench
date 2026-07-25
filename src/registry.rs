@@ -9,6 +9,7 @@
 
 use crate::cohort::{self, Models};
 use crate::cost;
+use crate::eligibility;
 use crate::jsonutil::{nested_bool, nested_f64, nested_str, nested_string, nested_u64};
 use crate::{artifacts, stable_hash};
 use serde::Serialize;
@@ -71,6 +72,14 @@ pub struct RunSummary {
     pub native_state_available: Option<bool>,
     pub is_trial_run: bool,
     pub trial_markers: Vec<TrialMarker>,
+    /// Synthetic fixture (`fixture: true` in the report) — a contract test
+    /// input, never a benchmark claim. Carried through every view so a fixture
+    /// can never be mistaken for a measured result.
+    pub fixture: bool,
+    /// Whether this record may be ranked on a published leaderboard, and which
+    /// gates it failed if not. Computed once here, from bytes on disk, so the
+    /// live API and the static export cannot disagree.
+    pub eligibility: eligibility::Eligibility,
 }
 
 /// Compact marker attached to benchmark runs that are referenced by a typed
@@ -450,6 +459,24 @@ pub fn summarize_with_trials(
         .filter(|kind| !artifacts_available.contains(kind))
         .collect::<Vec<_>>();
 
+    let accuracy = nested_f64(report, &["metrics", "accuracy", "value"]);
+    let accuracy_total = nested_u64(report, &["metrics", "accuracy", "total"]);
+    let oracle_gold = nested_bool(params, &["oracle_gold"]).unwrap_or(false);
+    // The published review gate, checked against this record's bytes. Both the
+    // live leaderboard and the static export consume this one verdict.
+    let eligibility = eligibility::evaluate(&eligibility::RecordFacts {
+        run_root: &record.run_root,
+        is_meta_record,
+        oracle_gold,
+        is_trial_run,
+        accuracy,
+        accuracy_total,
+        limit,
+        dataset_fingerprint: dataset_fingerprint.as_deref(),
+        judge_model: judge_model.as_deref(),
+        judge_prompt_mode: judge_prompt_mode.as_deref(),
+    });
+
     RunSummary {
         run_id: record.run_id.clone(),
         origin: record.origin.clone(),
@@ -465,9 +492,9 @@ pub fn summarize_with_trials(
         is_meta_record,
         tuning_cohort,
         tuning_shape,
-        accuracy: nested_f64(report, &["metrics", "accuracy", "value"]),
+        accuracy,
         accuracy_correct: nested_u64(report, &["metrics", "accuracy", "correct"]),
-        accuracy_total: nested_u64(report, &["metrics", "accuracy", "total"]),
+        accuracy_total,
         task_averaged_accuracy: nested_f64(report, &["metrics", "task_averaged_accuracy"]),
         abstention_accuracy: nested_f64(report, &["metrics", "abstention_accuracy", "value"]),
         cost_micro_usd: nested_u64(report, &["metrics", "cost_micro_usd"]),
@@ -478,7 +505,7 @@ pub fn summarize_with_trials(
         dataset_fingerprint,
         judge_model,
         judge_prompt_mode,
-        oracle_gold: nested_bool(params, &["oracle_gold"]).unwrap_or(false),
+        oracle_gold,
         created_at: nested_string(report, &["created_at"]),
         modified_ms: record.modified_ms,
         per_question_type,
@@ -490,6 +517,10 @@ pub fn summarize_with_trials(
         ),
         is_trial_run,
         trial_markers,
+        fixture: nested_bool(report, &["fixture"])
+            .or_else(|| nested_bool(params, &["fixture"]))
+            .unwrap_or(false),
+        eligibility,
     }
 }
 
@@ -1144,6 +1175,118 @@ mod tests {
         );
         assert_eq!(summary.display_name, "baseline");
         assert_eq!(summary.registry_section, "benchmarks");
+    }
+
+    /// A report may claim any artifact it likes; the scan believes the disk.
+    #[test]
+    fn a_manifest_claim_does_not_make_a_record_rankable() {
+        let repo = tempfile::tempdir().unwrap();
+        let run_root = repo
+            .path()
+            .join("records/symbiotic-memory/long-mem-eval/500/claims-everything");
+        let report = json!({
+            "system": "symbiotic-memory",
+            "benchmark": "long-mem-eval",
+            "run_kind": "native",
+            "run_name": "claims-everything",
+            "metrics": {"accuracy": {"correct": 495, "total": 500, "value": 0.99}},
+            "cohort": {
+                "dataset_fingerprint": "fp",
+                "judge_model": "deepseek-v4-flash",
+                "judge_prompt_mode": "official"
+            },
+            // Everything a fully verified record would list — and nothing on disk.
+            "artifact_manifest": {
+                "available": ["hypotheses", "verdicts", "scored", "model_traces"],
+                "missing": [],
+                "native_state_available": false
+            }
+        });
+        write_run(&run_root, &report, &json!({"limit": 500}));
+
+        let records = scan_registry(&[repo.path().join("records")], repo.path());
+        let summary = summarize(&records[0]);
+
+        assert!(!summary.eligibility.eligible);
+        assert_eq!(summary.eligibility.level, "unverified");
+        let gates: Vec<&str> = summary
+            .eligibility
+            .failures
+            .iter()
+            .map(|failure| failure.gate.as_str())
+            .collect();
+        assert_eq!(
+            gates,
+            vec![
+                "scoring-artifacts",
+                "provenance-traces",
+                "independent-review"
+            ]
+        );
+        assert_eq!(
+            summary.eligibility.missing_artifacts,
+            vec!["hypotheses", "verdicts", "scored"]
+        );
+    }
+
+    /// The whole gate, end to end: scan a record that satisfies every condition
+    /// and confirm it is the one thing that reaches a ranked cohort.
+    #[test]
+    fn a_complete_reviewed_record_is_scanned_as_rankable() {
+        let repo = tempfile::tempdir().unwrap();
+        let run_root = repo
+            .path()
+            .join("records/symbiotic-memory/long-mem-eval/2/promoted");
+        let report = json!({
+            "system": "symbiotic-memory",
+            "benchmark": "long-mem-eval",
+            "run_kind": "native",
+            "run_name": "promoted",
+            "metrics": {"accuracy": {"correct": 1, "total": 2, "value": 0.5}},
+            "cohort": {
+                "dataset_fingerprint": "fp",
+                "judge_model": "deepseek-v4-flash",
+                "judge_prompt_mode": "official"
+            },
+            "artifact_manifest": {"available": [], "missing": [], "native_state_available": false}
+        });
+        write_run(&run_root, &report, &json!({"limit": 2}));
+        let artifacts_dir = run_root.join("artifacts");
+        std::fs::create_dir_all(&artifacts_dir).unwrap();
+        for (name, body) in [
+            ("hypotheses.jsonl", "{\"question_id\":\"q1\"}\n"),
+            ("verdicts.jsonl", "{\"question_id\":\"q1\"}\n"),
+            ("scored.json", "{\"judge_model\":\"deepseek-v4-flash\"}\n"),
+            ("model-traces.jsonl", "{\"model\":\"deepseek-v4-flash\"}\n"),
+        ] {
+            std::fs::write(artifacts_dir.join(name), body).unwrap();
+        }
+        let hashes = crate::eligibility::artifact_hashes(&run_root);
+        std::fs::write(
+            run_root.join("review.json"),
+            serde_json::to_string_pretty(&json!({
+                "schema": crate::eligibility::REVIEW_SCHEMA,
+                "reviewer": "independent-reviewer",
+                "reviewed_at": "2026-07-24",
+                "verdict": "pass",
+                "artifact_sha256": hashes,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let records = scan_registry(&[repo.path().join("records")], repo.path());
+        let summary = summarize(&records[0]);
+        assert!(
+            summary.eligibility.eligible,
+            "unexpected failures: {:?}",
+            summary.eligibility.failures
+        );
+
+        let view = crate::leaderboard::build_view(vec![summary]);
+        assert_eq!(view.cohorts.len(), 1);
+        assert_eq!(view.cohorts[0].rows[0].summary.run_name, "promoted");
+        assert!(view.unranked.is_empty());
     }
 
     #[test]

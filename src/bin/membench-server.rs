@@ -458,24 +458,30 @@ struct LeaderboardQuery {
     limit: Option<u64>,
 }
 
+/// Live counterpart of the static `membench.leaderboard.v1` export. Both call
+/// `leaderboard::build_view`, so a record ranked here is ranked there — the
+/// live board cannot be more permissive than the published one.
 async fn leaderboard_handler(
     State(state): State<Shared>,
     Query(query): Query<LeaderboardQuery>,
 ) -> impl IntoResponse {
-    let cohorts = tokio::task::spawn_blocking(move || {
+    let view = tokio::task::spawn_blocking(move || {
         let snapshot = state.registry_snapshot();
-        let mut cohorts = leaderboard::build_cohorts(snapshot.summaries.clone());
+        let mut view = leaderboard::build_view(snapshot.summaries.clone());
         if let Some(benchmark) = &query.benchmark {
-            cohorts.retain(|cohort| &cohort.benchmark == benchmark);
+            view.cohorts.retain(|cohort| &cohort.benchmark == benchmark);
+            view.unranked.retain(|row| &row.benchmark == benchmark);
         }
         if let Some(limit) = query.limit {
-            cohorts.retain(|cohort| cohort.limit == Some(limit));
+            view.cohorts.retain(|cohort| cohort.limit == Some(limit));
+            view.unranked.retain(|row| row.limit == Some(limit));
         }
-        cohorts
+        view
     })
     .await
-    .unwrap_or_default();
-    Json(json!({ "cohorts": cohorts }))
+    .map(|view| json!({ "cohorts": view.cohorts, "unranked": view.unranked }))
+    .unwrap_or_else(|_| json!({ "cohorts": [], "unranked": [] }));
+    Json(view)
 }
 
 #[derive(Deserialize)]

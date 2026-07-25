@@ -8,6 +8,7 @@ pub mod artifacts;
 pub mod cohort;
 pub mod compare;
 pub mod cost;
+pub mod eligibility;
 pub mod jsonutil;
 pub mod leaderboard;
 pub mod leaderboard_export;

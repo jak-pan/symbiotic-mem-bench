@@ -2,14 +2,125 @@
     "cohorts": [
         {
             "benchmark": "long-mem-eval",
-            "best_accuracy": 0.8,
-            "cohort_id": "long-mem-eval::5",
+            "best_accuracy": 0.6,
+            "cohort_id": "long-mem-eval::5::ds:canary-fixture-fingerprint::judge:canary-judge-b::mode:official",
+            "dataset_fingerprint": "canary-fixture-fingerprint",
             "dataset_fingerprints": [
                 "canary-fixture-fingerprint"
             ],
+            "judge_model": "canary-judge-b",
+            "judge_models": [
+                "canary-judge-b"
+            ],
+            "judge_prompt_mode": "official",
+            "judge_prompt_modes": [
+                "official"
+            ],
+            "limit": 5,
+            "rows": [
+                {
+                    "abstention_accuracy": null,
+                    "accuracy": 0.6,
+                    "accuracy_correct": 3,
+                    "accuracy_total": 5,
+                    "artifacts_available": [
+                        "hypotheses",
+                        "verdicts",
+                        "model_traces",
+                        "scored",
+                        "score_summary"
+                    ],
+                    "artifacts_missing": [
+                        "memory_traces"
+                    ],
+                    "benchmark": "long-mem-eval",
+                    "cohort_id": "long-mem-eval::5::ds:canary-fixture-fingerprint::judge:canary-judge-b::mode:official",
+                    "config_label": "ans:canary-answer-model",
+                    "config_signature": "799bba4624e8ba12865728a0685233465d0ba7ba689836204637100bd6a5b048",
+                    "cost_micro_usd": null,
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "dataset_fingerprint": "canary-fixture-fingerprint",
+                    "display_name": "canary-zeta",
+                    "eligibility": {
+                        "eligible": true,
+                        "failures": [],
+                        "level": "verified",
+                        "missing_artifacts": [],
+                        "review": {
+                            "reviewed_at": "2026-01-02",
+                            "reviewed_commit": "0000000",
+                            "reviewer": "canary-second-reviewer",
+                            "verdict": "pass"
+                        }
+                    },
+                    "fixture": true,
+                    "is_meta_record": false,
+                    "is_trial_run": false,
+                    "judge_model": "canary-judge-b",
+                    "judge_prompt_mode": "official",
+                    "latency_ms_p50": null,
+                    "latency_ms_p95": null,
+                    "limit": 5,
+                    "modified_ms": null,
+                    "native_state_available": false,
+                    "oracle_gold": false,
+                    "origin": "canary",
+                    "per_question_type": {
+                        "multi-session": {
+                            "correct": 1,
+                            "total": 2,
+                            "value": 0.5
+                        },
+                        "single-session-user": {
+                            "correct": 2,
+                            "total": 2,
+                            "value": 1.0
+                        },
+                        "temporal-reasoning": {
+                            "correct": 0,
+                            "total": 1,
+                            "value": 0.0
+                        }
+                    },
+                    "rank": 1,
+                    "registry_section": "benchmarks",
+                    "run_id": "canary/records/symbiotic-memory/long-mem-eval/5/canary-zeta",
+                    "run_kind": "synthetic-fixture",
+                    "run_name": "canary-zeta",
+                    "settings_label": "",
+                    "system": "symbiotic-memory",
+                    "task_averaged_accuracy": null,
+                    "trial_markers": [],
+                    "tuning_cohort": null,
+                    "tuning_shape": null,
+                    "verification": {
+                        "level": "verified",
+                        "missing_artifacts": [],
+                        "review": {
+                            "reviewed_at": "2026-01-02",
+                            "reviewed_commit": "0000000",
+                            "reviewer": "canary-second-reviewer",
+                            "verdict": "pass"
+                        }
+                    }
+                }
+            ],
+            "run_count": 1,
+            "strictly_comparable": true
+        },
+        {
+            "benchmark": "long-mem-eval",
+            "best_accuracy": 0.8,
+            "cohort_id": "long-mem-eval::5::ds:canary-fixture-fingerprint::judge:canary-judge::mode:official",
+            "dataset_fingerprint": "canary-fixture-fingerprint",
+            "dataset_fingerprints": [
+                "canary-fixture-fingerprint"
+            ],
+            "judge_model": "canary-judge",
             "judge_models": [
                 "canary-judge"
             ],
+            "judge_prompt_mode": "official",
             "judge_prompt_modes": [
                 "official"
             ],
@@ -23,20 +134,34 @@
                     "artifacts_available": [
                         "hypotheses",
                         "verdicts",
-                        "scored"
+                        "model_traces",
+                        "scored",
+                        "score_summary"
                     ],
                     "artifacts_missing": [
-                        "memory_traces",
-                        "model_traces"
+                        "memory_traces"
                     ],
                     "benchmark": "long-mem-eval",
-                    "cohort_id": "87598cc00134ed16b221cba295ec6d7425086ef2fcb8953877012f6611b3f229",
+                    "cohort_id": "long-mem-eval::5::ds:canary-fixture-fingerprint::judge:canary-judge::mode:official",
                     "config_label": "ans:canary-answer-model",
                     "config_signature": "799bba4624e8ba12865728a0685233465d0ba7ba689836204637100bd6a5b048",
                     "cost_micro_usd": null,
                     "created_at": "2026-01-01T00:00:00+00:00",
                     "dataset_fingerprint": "canary-fixture-fingerprint",
-                    "display_name": "canary-alpha",
+                    "display_name": "canary-delta",
+                    "eligibility": {
+                        "eligible": true,
+                        "failures": [],
+                        "level": "verified",
+                        "missing_artifacts": [],
+                        "review": {
+                            "reviewed_at": "2026-01-02",
+                            "reviewed_commit": "0000000",
+                            "reviewer": "canary-second-reviewer",
+                            "verdict": "pass"
+                        }
+                    },
+                    "fixture": true,
                     "is_meta_record": false,
                     "is_trial_run": false,
                     "judge_model": "canary-judge",
@@ -48,12 +173,28 @@
                     "native_state_available": false,
                     "oracle_gold": false,
                     "origin": "canary",
-                    "per_question_type": null,
+                    "per_question_type": {
+                        "multi-session": {
+                            "correct": 2,
+                            "total": 2,
+                            "value": 1.0
+                        },
+                        "single-session-user": {
+                            "correct": 2,
+                            "total": 2,
+                            "value": 1.0
+                        },
+                        "temporal-reasoning": {
+                            "correct": 0,
+                            "total": 1,
+                            "value": 0.0
+                        }
+                    },
                     "rank": 1,
                     "registry_section": "benchmarks",
-                    "run_id": "canary/records/symbiotic-memory/long-mem-eval/5/canary-alpha",
+                    "run_id": "canary/records/symbiotic-memory/long-mem-eval/5/canary-delta",
                     "run_kind": "synthetic-fixture",
-                    "run_name": "canary-alpha",
+                    "run_name": "canary-delta",
                     "settings_label": "",
                     "system": "symbiotic-memory",
                     "task_averaged_accuracy": null,
@@ -61,62 +202,18 @@
                     "tuning_cohort": null,
                     "tuning_shape": null,
                     "verification": {
-                        "level": "full",
-                        "missing_artifacts": []
-                    }
-                },
-                {
-                    "abstention_accuracy": null,
-                    "accuracy": 0.6,
-                    "accuracy_correct": 3,
-                    "accuracy_total": 5,
-                    "artifacts_available": [
-                        "hypotheses",
-                        "verdicts"
-                    ],
-                    "artifacts_missing": [
-                        "scored"
-                    ],
-                    "benchmark": "long-mem-eval",
-                    "cohort_id": "87598cc00134ed16b221cba295ec6d7425086ef2fcb8953877012f6611b3f229",
-                    "config_label": "ans:canary-answer-model",
-                    "config_signature": "799bba4624e8ba12865728a0685233465d0ba7ba689836204637100bd6a5b048",
-                    "cost_micro_usd": null,
-                    "created_at": "2026-01-01T00:00:00+00:00",
-                    "dataset_fingerprint": "canary-fixture-fingerprint",
-                    "display_name": "canary-beta",
-                    "is_meta_record": false,
-                    "is_trial_run": false,
-                    "judge_model": "canary-judge",
-                    "judge_prompt_mode": "official",
-                    "latency_ms_p50": null,
-                    "latency_ms_p95": null,
-                    "limit": 5,
-                    "modified_ms": null,
-                    "native_state_available": false,
-                    "oracle_gold": false,
-                    "origin": "canary",
-                    "per_question_type": null,
-                    "rank": 2,
-                    "registry_section": "benchmarks",
-                    "run_id": "canary/records/symbiotic-memory/long-mem-eval/5/canary-beta",
-                    "run_kind": "synthetic-fixture",
-                    "run_name": "canary-beta",
-                    "settings_label": "",
-                    "system": "symbiotic-memory",
-                    "task_averaged_accuracy": null,
-                    "trial_markers": [],
-                    "tuning_cohort": null,
-                    "tuning_shape": null,
-                    "verification": {
-                        "level": "partial",
-                        "missing_artifacts": [
-                            "scored"
-                        ]
+                        "level": "verified",
+                        "missing_artifacts": [],
+                        "review": {
+                            "reviewed_at": "2026-01-02",
+                            "reviewed_commit": "0000000",
+                            "reviewer": "canary-second-reviewer",
+                            "verdict": "pass"
+                        }
                     }
                 }
             ],
-            "run_count": 2,
+            "run_count": 1,
             "strictly_comparable": true
         }
     ],
@@ -124,20 +221,114 @@
     "methodology": "docs/longmemeval-methodology.md",
     "schema": "membench.leaderboard.v1",
     "source": {
+        "contains_fixtures": true,
         "git_sha": "deterministic",
+        "ranked_count": 2,
+        "records_digest": "fd301422399f554a26ce3d28ec9d6414d13bd5a24f7b1eaeeff10cc0e1c11a44",
         "records_root": "canary/records",
-        "run_count": 3
+        "run_count": 6,
+        "unranked_count": 4
     },
     "unranked": [
+        {
+            "accuracy": 0.8,
+            "accuracy_correct": 4,
+            "accuracy_total": 5,
+            "benchmark": "long-mem-eval",
+            "failed_gates": [
+                {
+                    "detail": "absent or empty on disk: hypotheses, verdicts, scored",
+                    "gate": "scoring-artifacts"
+                },
+                {
+                    "detail": "no model or memory traces on disk; configured_models alone proves nothing",
+                    "gate": "provenance-traces"
+                },
+                {
+                    "detail": "no membench.record_review.v1 attestation (review.json) in the record",
+                    "gate": "independent-review"
+                }
+            ],
+            "fixture": true,
+            "limit": 5,
+            "reason": "gate-failed",
+            "run_id": "canary/records/symbiotic-memory/long-mem-eval/5/canary-alpha",
+            "run_name": "canary-alpha",
+            "system": "symbiotic-memory"
+        },
+        {
+            "accuracy": 0.6,
+            "accuracy_correct": 3,
+            "accuracy_total": 5,
+            "benchmark": "long-mem-eval",
+            "failed_gates": [
+                {
+                    "detail": "absent or empty on disk: hypotheses, verdicts, scored",
+                    "gate": "scoring-artifacts"
+                },
+                {
+                    "detail": "no model or memory traces on disk; configured_models alone proves nothing",
+                    "gate": "provenance-traces"
+                },
+                {
+                    "detail": "no membench.record_review.v1 attestation (review.json) in the record",
+                    "gate": "independent-review"
+                }
+            ],
+            "fixture": true,
+            "limit": 5,
+            "reason": "gate-failed",
+            "run_id": "canary/records/symbiotic-memory/long-mem-eval/5/canary-beta",
+            "run_name": "canary-beta",
+            "system": "symbiotic-memory"
+        },
+        {
+            "accuracy": 1.0,
+            "accuracy_correct": 5,
+            "accuracy_total": 5,
+            "benchmark": "long-mem-eval",
+            "failed_gates": [
+                {
+                    "detail": "no membench.record_review.v1 attestation (review.json) in the record",
+                    "gate": "independent-review"
+                }
+            ],
+            "fixture": true,
+            "limit": 5,
+            "reason": "gate-failed",
+            "run_id": "canary/records/symbiotic-memory/long-mem-eval/5/canary-epsilon",
+            "run_name": "canary-epsilon",
+            "system": "symbiotic-memory"
+        },
         {
             "accuracy": 0.4,
             "accuracy_correct": 2,
             "accuracy_total": 5,
             "benchmark": "long-mem-eval",
+            "failed_gates": [
+                {
+                    "detail": "meta record: question-level scoring artifacts were deliberately omitted",
+                    "gate": "clean-flags"
+                },
+                {
+                    "detail": "absent or empty on disk: hypotheses, verdicts, scored",
+                    "gate": "scoring-artifacts"
+                },
+                {
+                    "detail": "no model or memory traces on disk; configured_models alone proves nothing",
+                    "gate": "provenance-traces"
+                },
+                {
+                    "detail": "no membench.record_review.v1 attestation (review.json) in the record",
+                    "gate": "independent-review"
+                }
+            ],
+            "fixture": true,
             "limit": 5,
             "reason": "meta-record",
             "run_id": "canary/records/symbiotic-memory/long-mem-eval/5/canary-gamma",
-            "run_name": "canary-gamma"
+            "run_name": "canary-gamma",
+            "system": "symbiotic-memory"
         }
     ]
 }
