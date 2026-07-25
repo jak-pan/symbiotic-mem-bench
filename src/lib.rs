@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod artifacts;
+#[cfg(feature = "symbiotic-memory-adapter")]
+pub mod benchmark;
 pub mod cohort;
 pub mod compare;
 pub mod cost;

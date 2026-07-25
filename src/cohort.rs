@@ -110,6 +110,9 @@ pub fn config_signature(params: &Value, models: &Models) -> String {
         "answer_only",
         "query_planner",
         "scorer",
+        "official_equivalent",
+        "leaderboard_eligible",
+        "benchmark_protocol",
     ] {
         if let Some(value) = params.get(key)
             && !value.is_null()

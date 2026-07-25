@@ -69,6 +69,14 @@ When `--dataset` is omitted for LongMemEval, `membench` downloads the cleaned S 
 Small LongMemEval runs use `--sample stratified` by default so quick runs cover multiple question
 types. Use `--sample first` only when reproducing the dataset's original row order.
 
+The experimental `longmemeval-v2-text` lane is intentionally non-official and non-promotable —
+its numbers are experimental text-projection results, never official LongMemEval-V2 scores:
+query-image questions are excluded and trajectory screenshots remain locators rather than model
+inputs. Note that `--no-score` skips scoring only; ingest and answering still run through paid
+providers by default. See
+[docs/longmemeval-v2-text-projection.md](docs/longmemeval-v2-text-projection.md) for upstream OSS
+data acquisition, no-score usage, and the fail-closed scoring limits.
+
 Default launches are paid, provider-backed, scored, and must run in Cargo release mode. The
 owner-default stack is: `llm` distill (DeepSeek Flash), OpenRouter `qwen/qwen3-embedding-8b`
 embeddings at 1024 dims (`--embedder openrouter` is the default; Gemini embeddings are NOT the
