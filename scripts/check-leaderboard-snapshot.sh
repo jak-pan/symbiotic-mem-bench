@@ -15,7 +15,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SNAPSHOT="dashboard/public/data/leaderboard.json"
-FRESH="$(mktemp -t membench-leaderboard-fresh)"
+FRESH="$(mktemp "${TMPDIR:-/tmp}/membench-leaderboard-fresh.XXXXXX")"
 trap 'rm -f "$FRESH"' EXIT
 
 cargo run --quiet --bin membench-leaderboard -- export --records-root records > "$FRESH"
