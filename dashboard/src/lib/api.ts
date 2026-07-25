@@ -12,6 +12,7 @@ import type {
   RunnerPreview,
   RunnerSchema,
   TracesResponse,
+  UnrankedRecord,
 } from "./types";
 
 async function get<T>(path: string): Promise<T> {
@@ -47,13 +48,15 @@ export const api = {
   runs: () => get<{ runs: RunSummary[] }>("/runs").then((r) => r.runs),
   pending: () => get<{ pending: PendingRun[] }>("/pending").then((r) => r.pending),
   live: (id: string) => get<LiveResponse>(`/run/live?id=${enc(id)}`),
+  // Live counterpart of the static export: the same ranked cohorts *and* the
+  // same exclusion list, so the two surfaces cannot tell different stories.
   leaderboard: (benchmark?: string, limit?: number) => {
     const q = new URLSearchParams();
     if (benchmark) q.set("benchmark", benchmark);
     if (limit != null) q.set("limit", String(limit));
     const qs = q.toString();
-    return get<{ cohorts: Cohort[] }>(`/leaderboard${qs ? "?" + qs : ""}`).then(
-      (r) => r.cohorts,
+    return get<{ cohorts: Cohort[]; unranked: UnrankedRecord[] }>(
+      `/leaderboard${qs ? "?" + qs : ""}`,
     );
   },
   leaderboardSnapshot: async () => {

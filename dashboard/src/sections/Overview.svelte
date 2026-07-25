@@ -71,7 +71,9 @@
           <dt>RERANK</dt><dd class:dim={!c.models?.rerank}>{c.models?.rerank ?? "none"}</dd>
           <dt>QSET·FP</dt><dd class="mono-num">{shortHash(c.dataset_fingerprint, 16)}</dd>
           <dt>CFG·SIG</dt><dd class="mono-num">{shortHash(c.config_signature, 16)}</dd>
-          <dt>COHORT</dt><dd class="mono-num">{shortHash(s.cohort_id, 16)}</dd>
+          <!-- `cohort_id` is the spelled-out comparability identity, not a
+               hash: show it whole so the judge and question set are readable. -->
+          <dt>COHORT</dt><dd class="mono-num wrap" title={s.cohort_id}>{s.cohort_id}</dd>
         </dl>
       </Panel>
     </div>
@@ -255,6 +257,11 @@
   .params dd {
     color: var(--text-dim);
     white-space: nowrap;
+  }
+  .kv dd.wrap {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    font-size: 10px;
   }
 
   .ov-grid {

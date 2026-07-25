@@ -19,12 +19,13 @@
   }
 
   onMount(() => {
-    store.loadVersion();
-    store.load();
+    store.boot();
     tick();
     const t = setInterval(tick, 1000);
     // Poll the registry, but skip while the tab is hidden and re-pull
     // immediately on focus so background tabs don't churn the server.
+    // `store.load()` is a no-op outside live mode, so a static deploy never
+    // requests an endpoint it knows is not there.
     const r = setInterval(() => {
       if (document.visibilityState === "visible") store.load();
     }, 15000);
@@ -56,7 +57,7 @@
       router.go("leaderboard");
     } else if (e.key === "F2") {
       e.preventDefault();
-      router.go("debug");
+      if (!store.isSnapshot) router.go("debug");
     } else if (e.key === "Escape") {
       cmdEl?.blur();
     }
@@ -91,7 +92,16 @@
     <button class="navbtn" class:active={router.view === "leaderboard"} onclick={() => router.go("leaderboard")}>
       <span class="fk">F1</span> LEADERBOARD
     </button>
-    <button class="navbtn" class:active={router.view === "debug"} onclick={() => router.go("debug")}>
+    <!-- The debugger reads per-run artifacts through /api; a static snapshot
+         deploy has no such endpoint, so the tab is disabled rather than
+         offered and then failing. -->
+    <button
+      class="navbtn"
+      class:active={router.view === "debug"}
+      disabled={store.isSnapshot}
+      title={store.isSnapshot ? "Run debugger needs a live membench-server backend" : ""}
+      onclick={() => router.go("debug")}
+    >
       <span class="fk">F2</span> DEBUGGER
     </button>
   </nav>
@@ -122,17 +132,42 @@
 </main>
 
 <footer class="statusbar">
-  <span class="st" class:on={store.online} class:off={!store.online}>
-    <span class="dot"></span>{store.online ? "LIVE" : "OFFLINE"}
+  <!-- Three distinct states, never conflated: a live backend, a deliberate
+       static snapshot, and an actual failure. A static deploy is not offline. -->
+  <span
+    class="st"
+    class:on={store.online}
+    class:snap={store.isSnapshot}
+    class:off={store.mode === "offline"}
+  >
+    <span class="dot"></span>{store.online
+      ? "LIVE"
+      : store.isSnapshot
+        ? "STATIC SNAPSHOT"
+        : store.mode === "boot"
+          ? "CONNECTING"
+          : "OFFLINE"}
   </span>
+  {#if store.isSnapshot && store.snapshot}
+    <span class="sep">│</span>
+    <span class="stk" title={`Exported ${store.snapshot.generated_at} from ${store.snapshot.source.records_root}`}>
+      GENERATED <b>{store.snapshot.generated_at.slice(0, 10)}</b>
+    </span>
+  {/if}
   <span class="sep">│</span>
-  <span class="stk">RUNS <b>{store.runs.length}</b></span>
+  <span class="stk">{store.isSnapshot ? "RECORDS" : "RUNS"} <b>{store.recordCount}</b></span>
+  <span class="sep">│</span>
+  <span class="stk" title="Records that passed every review gate and may be ranked">
+    VERIFIED <b>{store.verifiedCount}</b>
+  </span>
   <span class="sep">│</span>
   <span class="stk">SYSTEMS <b>{store.systems.length}</b></span>
   <span class="sep">│</span>
   <span class="stk">BENCHMARKS <b>{store.benchmarks.length}</b></span>
   <span class="sep">│</span>
-  <span class="stk">PEAK&nbsp;ACC <b class="amber">{pct(store.bestAccuracy)}%</b></span>
+  <span class="stk" title="Best accuracy among verified records only">
+    PEAK&nbsp;ACC <b class="amber">{store.bestAccuracy == null ? "—" : `${pct(store.bestAccuracy)}%`}</b>
+  </span>
   {#if store.active.length}
     <span class="sep">│</span>
     <button class="inflight" onclick={() => router.openRun(store.active[0].run_id, "live")}>
@@ -146,9 +181,12 @@
   <span class="sep">│</span>
   <span
     class="stk ver"
-    title={`server v${store.serverVersion || "?"} · ui bundle built ${store.uiBuilt || "?"}`}
+    title={store.isSnapshot
+      ? `static bundle built ${store.uiBuilt || "?"} — no server`
+      : `server v${store.serverVersion || "?"} · ui bundle built ${store.uiBuilt || "?"}`}
   >
-    SRV <b>{store.serverSha || "?"}</b><span class="dim">·</span>UI <b>{store.uiBundle || "?"}</b>
+    {#if !store.isSnapshot}SRV <b>{store.serverSha || "?"}</b><span class="dim">·</span>{/if}UI
+    <b>{store.uiBundle || "?"}</b>
   </span>
 </footer>
 
@@ -209,9 +247,13 @@
     cursor: pointer;
     transition: all 0.12s;
   }
-  .navbtn:hover {
+  .navbtn:hover:not(:disabled) {
     color: var(--text);
     background: var(--bg-elev);
+  }
+  .navbtn:disabled {
+    color: var(--text-faint);
+    cursor: not-allowed;
   }
   .navbtn.active {
     color: var(--amber);
@@ -308,6 +350,13 @@
   }
   .st.off .dot {
     background: var(--red);
+  }
+  /* A deliberate static deploy: informational, not an error colour. */
+  .st.snap {
+    color: var(--cyan);
+  }
+  .st.snap .dot {
+    background: var(--cyan);
   }
   .stk b {
     color: var(--text);

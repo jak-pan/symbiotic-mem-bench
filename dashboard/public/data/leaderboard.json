@@ -1,93 +1,382 @@
 {
   "cohorts": [],
-  "generated_at": "2026-07-24T23:23:11Z",
+  "generated_at": "2026-07-25T00:40:56Z",
   "methodology": "docs/longmemeval-methodology.md",
   "schema": "membench.leaderboard.v1",
   "source": {
-    "git_sha": "a64867d",
+    "contains_fixtures": false,
+    "git_sha": "7e416c4",
+    "ranked_count": 0,
+    "records_digest": "a932b368345c871504c3c0bd4835162966700dfbf092d274f97401b7d249d736",
     "records_root": "records",
-    "run_count": 11
+    "run_count": 11,
+    "unranked_count": 11
   },
   "unranked": [
     {
       "benchmark": "long-mem-eval",
+      "failed_gates": [
+        {
+          "detail": "meta record: question-level scoring artifacts were deliberately omitted",
+          "gate": "clean-flags"
+        },
+        {
+          "detail": "no accuracy metric in benchmark-report.json",
+          "gate": "scored"
+        },
+        {
+          "detail": "absent or empty on disk: hypotheses, verdicts, scored",
+          "gate": "scoring-artifacts"
+        },
+        {
+          "detail": "not recorded: judge_model, judge_prompt_mode",
+          "gate": "cohort-identity"
+        },
+        {
+          "detail": "no scored question count in the report",
+          "gate": "full-scale"
+        },
+        {
+          "detail": "no membench.record_review.v1 attestation (review.json) in the record",
+          "gate": "independent-review"
+        }
+      ],
       "limit": 10,
       "reason": "meta-record",
       "run_id": "records/symbiotic-memory/long-mem-eval/10/target-10q-qwen1024-h2pool16x64-rawembed-20260623-174819",
-      "run_name": "target-10q-qwen1024-h2pool16x64-rawembed-20260623-174819"
+      "run_name": "target-10q-qwen1024-h2pool16x64-rawembed-20260623-174819",
+      "system": "symbiotic-memory"
     },
     {
       "benchmark": "long-mem-eval",
+      "failed_gates": [
+        {
+          "detail": "meta record: question-level scoring artifacts were deliberately omitted",
+          "gate": "clean-flags"
+        },
+        {
+          "detail": "no accuracy metric in benchmark-report.json",
+          "gate": "scored"
+        },
+        {
+          "detail": "absent or empty on disk: hypotheses, verdicts, scored",
+          "gate": "scoring-artifacts"
+        },
+        {
+          "detail": "not recorded: judge_model, judge_prompt_mode",
+          "gate": "cohort-identity"
+        },
+        {
+          "detail": "no scored question count in the report",
+          "gate": "full-scale"
+        },
+        {
+          "detail": "no membench.record_review.v1 attestation (review.json) in the record",
+          "gate": "independent-review"
+        }
+      ],
       "limit": 10,
       "reason": "meta-record",
       "run_id": "records/symbiotic-memory/long-mem-eval/10/target-10q-qwen1024-h2pool32x32-rawembed-20260623-181354",
-      "run_name": "target-10q-qwen1024-h2pool32x32-rawembed-20260623-181354"
+      "run_name": "target-10q-qwen1024-h2pool32x32-rawembed-20260623-181354",
+      "system": "symbiotic-memory"
     },
     {
       "benchmark": "long-mem-eval",
+      "failed_gates": [
+        {
+          "detail": "meta record: question-level scoring artifacts were deliberately omitted",
+          "gate": "clean-flags"
+        },
+        {
+          "detail": "no accuracy metric in benchmark-report.json",
+          "gate": "scored"
+        },
+        {
+          "detail": "absent or empty on disk: hypotheses, verdicts, scored",
+          "gate": "scoring-artifacts"
+        },
+        {
+          "detail": "not recorded: judge_model, judge_prompt_mode",
+          "gate": "cohort-identity"
+        },
+        {
+          "detail": "no scored question count in the report",
+          "gate": "full-scale"
+        },
+        {
+          "detail": "no membench.record_review.v1 attestation (review.json) in the record",
+          "gate": "independent-review"
+        }
+      ],
       "limit": 10,
       "reason": "meta-record",
       "run_id": "records/symbiotic-memory/long-mem-eval/10/target-10q-qwen1024-h2pool4x64-rawembed-no-zvec-batch-flush-20260623-173447",
-      "run_name": "target-10q-qwen1024-h2pool4x64-rawembed-no-zvec-batch-flush-20260623-173447"
+      "run_name": "target-10q-qwen1024-h2pool4x64-rawembed-no-zvec-batch-flush-20260623-173447",
+      "system": "symbiotic-memory"
     },
     {
       "benchmark": "long-mem-eval",
+      "failed_gates": [
+        {
+          "detail": "meta record: question-level scoring artifacts were deliberately omitted",
+          "gate": "clean-flags"
+        },
+        {
+          "detail": "no accuracy metric in benchmark-report.json",
+          "gate": "scored"
+        },
+        {
+          "detail": "absent or empty on disk: hypotheses, verdicts, scored",
+          "gate": "scoring-artifacts"
+        },
+        {
+          "detail": "not recorded: judge_model, judge_prompt_mode",
+          "gate": "cohort-identity"
+        },
+        {
+          "detail": "no scored question count in the report",
+          "gate": "full-scale"
+        },
+        {
+          "detail": "no membench.record_review.v1 attestation (review.json) in the record",
+          "gate": "independent-review"
+        }
+      ],
       "limit": 10,
       "reason": "meta-record",
       "run_id": "records/symbiotic-memory/long-mem-eval/10/target-10q-qwen1024-h2pool4x64-rawembed-repeat-20260623-173900",
-      "run_name": "target-10q-qwen1024-h2pool4x64-rawembed-repeat-20260623-173900"
+      "run_name": "target-10q-qwen1024-h2pool4x64-rawembed-repeat-20260623-173900",
+      "system": "symbiotic-memory"
     },
     {
       "benchmark": "long-mem-eval",
+      "failed_gates": [
+        {
+          "detail": "meta record: question-level scoring artifacts were deliberately omitted",
+          "gate": "clean-flags"
+        },
+        {
+          "detail": "no accuracy metric in benchmark-report.json",
+          "gate": "scored"
+        },
+        {
+          "detail": "absent or empty on disk: hypotheses, verdicts, scored",
+          "gate": "scoring-artifacts"
+        },
+        {
+          "detail": "not recorded: judge_model, judge_prompt_mode",
+          "gate": "cohort-identity"
+        },
+        {
+          "detail": "no scored question count in the report",
+          "gate": "full-scale"
+        },
+        {
+          "detail": "no membench.record_review.v1 attestation (review.json) in the record",
+          "gate": "independent-review"
+        }
+      ],
       "limit": 10,
       "reason": "meta-record",
       "run_id": "records/symbiotic-memory/long-mem-eval/10/target-10q-qwen1024-h2pool64x16-rawembed-20260623-180637",
-      "run_name": "target-10q-qwen1024-h2pool64x16-rawembed-20260623-180637"
+      "run_name": "target-10q-qwen1024-h2pool64x16-rawembed-20260623-180637",
+      "system": "symbiotic-memory"
     },
     {
       "benchmark": "long-mem-eval",
+      "failed_gates": [
+        {
+          "detail": "meta record: question-level scoring artifacts were deliberately omitted",
+          "gate": "clean-flags"
+        },
+        {
+          "detail": "no accuracy metric in benchmark-report.json",
+          "gate": "scored"
+        },
+        {
+          "detail": "absent or empty on disk: hypotheses, verdicts, scored",
+          "gate": "scoring-artifacts"
+        },
+        {
+          "detail": "not recorded: judge_model, judge_prompt_mode",
+          "gate": "cohort-identity"
+        },
+        {
+          "detail": "no scored question count in the report",
+          "gate": "full-scale"
+        },
+        {
+          "detail": "no membench.record_review.v1 attestation (review.json) in the record",
+          "gate": "independent-review"
+        }
+      ],
       "limit": 10,
       "reason": "meta-record",
       "run_id": "records/symbiotic-memory/long-mem-eval/10/target-10q-qwen1024-h2pool8x64-rawembed-20260623-174546",
-      "run_name": "target-10q-qwen1024-h2pool8x64-rawembed-20260623-174546"
+      "run_name": "target-10q-qwen1024-h2pool8x64-rawembed-20260623-174546",
+      "system": "symbiotic-memory"
     },
     {
       "benchmark": "long-mem-eval",
+      "failed_gates": [
+        {
+          "detail": "meta record: question-level scoring artifacts were deliberately omitted",
+          "gate": "clean-flags"
+        },
+        {
+          "detail": "no accuracy metric in benchmark-report.json",
+          "gate": "scored"
+        },
+        {
+          "detail": "absent or empty on disk: hypotheses, verdicts, scored",
+          "gate": "scoring-artifacts"
+        },
+        {
+          "detail": "not recorded: judge_model, judge_prompt_mode",
+          "gate": "cohort-identity"
+        },
+        {
+          "detail": "no scored question count in the report",
+          "gate": "full-scale"
+        },
+        {
+          "detail": "no membench.record_review.v1 attestation (review.json) in the record",
+          "gate": "independent-review"
+        }
+      ],
       "limit": 10,
       "reason": "meta-record",
       "run_id": "records/symbiotic-memory/long-mem-eval/10/target-10q-qwen1024-http1-pool16x64-rawembed-20260623-174942",
-      "run_name": "target-10q-qwen1024-http1-pool16x64-rawembed-20260623-174942"
+      "run_name": "target-10q-qwen1024-http1-pool16x64-rawembed-20260623-174942",
+      "system": "symbiotic-memory"
     },
     {
       "benchmark": "long-mem-eval",
+      "failed_gates": [
+        {
+          "detail": "meta record: question-level scoring artifacts were deliberately omitted",
+          "gate": "clean-flags"
+        },
+        {
+          "detail": "no accuracy metric in benchmark-report.json",
+          "gate": "scored"
+        },
+        {
+          "detail": "absent or empty on disk: hypotheses, verdicts, scored",
+          "gate": "scoring-artifacts"
+        },
+        {
+          "detail": "not recorded: judge_model, judge_prompt_mode",
+          "gate": "cohort-identity"
+        },
+        {
+          "detail": "no scored question count in the report",
+          "gate": "full-scale"
+        },
+        {
+          "detail": "no membench.record_review.v1 attestation (review.json) in the record",
+          "gate": "independent-review"
+        }
+      ],
       "limit": 10,
       "reason": "meta-record",
       "run_id": "records/symbiotic-memory/long-mem-eval/10/target-10q-qwen1024-http1-pool32x32-rawembed-20260623-102020",
-      "run_name": "target-10q-qwen1024-http1-pool32x32-rawembed-20260623-102020"
+      "run_name": "target-10q-qwen1024-http1-pool32x32-rawembed-20260623-102020",
+      "system": "symbiotic-memory"
     },
     {
       "benchmark": "long-mem-eval",
+      "failed_gates": [
+        {
+          "detail": "meta record: question-level scoring artifacts were deliberately omitted",
+          "gate": "clean-flags"
+        },
+        {
+          "detail": "no accuracy metric in benchmark-report.json",
+          "gate": "scored"
+        },
+        {
+          "detail": "absent or empty on disk: hypotheses, verdicts, scored",
+          "gate": "scoring-artifacts"
+        },
+        {
+          "detail": "not recorded: judge_model, judge_prompt_mode",
+          "gate": "cohort-identity"
+        },
+        {
+          "detail": "no scored question count in the report",
+          "gate": "full-scale"
+        },
+        {
+          "detail": "no membench.record_review.v1 attestation (review.json) in the record",
+          "gate": "independent-review"
+        }
+      ],
       "limit": 10,
       "reason": "meta-record",
       "run_id": "records/symbiotic-memory/long-mem-eval/10/target-10q-qwen1024-http1-pool64x16-rawembed-20260623-102400",
-      "run_name": "target-10q-qwen1024-http1-pool64x16-rawembed-20260623-102400"
+      "run_name": "target-10q-qwen1024-http1-pool64x16-rawembed-20260623-102400",
+      "system": "symbiotic-memory"
     },
     {
       "benchmark": "long-mem-eval",
+      "failed_gates": [
+        {
+          "detail": "meta record: question-level scoring artifacts were deliberately omitted",
+          "gate": "clean-flags"
+        },
+        {
+          "detail": "no accuracy metric in benchmark-report.json",
+          "gate": "scored"
+        },
+        {
+          "detail": "absent or empty on disk: hypotheses, verdicts, scored",
+          "gate": "scoring-artifacts"
+        },
+        {
+          "detail": "not recorded: judge_model, judge_prompt_mode",
+          "gate": "cohort-identity"
+        },
+        {
+          "detail": "no scored question count in the report",
+          "gate": "full-scale"
+        },
+        {
+          "detail": "no membench.record_review.v1 attestation (review.json) in the record",
+          "gate": "independent-review"
+        }
+      ],
       "limit": 10,
       "reason": "meta-record",
       "run_id": "records/symbiotic-memory/long-mem-eval/10/target-10q-qwen1024-http1-rawembed-20260623-174255",
-      "run_name": "target-10q-qwen1024-http1-rawembed-20260623-174255"
+      "run_name": "target-10q-qwen1024-http1-rawembed-20260623-174255",
+      "system": "symbiotic-memory"
     },
     {
       "accuracy": 0.9,
       "accuracy_correct": 45,
       "accuracy_total": 50,
       "benchmark": "long-mem-eval",
+      "failed_gates": [
+        {
+          "detail": "meta record: question-level scoring artifacts were deliberately omitted",
+          "gate": "clean-flags"
+        },
+        {
+          "detail": "absent or empty on disk: hypotheses, verdicts, scored",
+          "gate": "scoring-artifacts"
+        },
+        {
+          "detail": "no membench.record_review.v1 attestation (review.json) in the record",
+          "gate": "independent-review"
+        }
+      ],
       "limit": 50,
       "reason": "meta-record",
       "run_id": "records/symbiotic-memory/long-mem-eval/50/w50-count-zvec-filters",
-      "run_name": "w50-count-zvec-filters"
+      "run_name": "w50-count-zvec-filters",
+      "system": "symbiotic-memory"
     }
   ]
 }

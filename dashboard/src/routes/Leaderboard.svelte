@@ -1,14 +1,16 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import { api } from "../lib/api";
   import { router } from "../lib/router.svelte";
+  import { store } from "../lib/store.svelte";
   import {
     QTYPES,
     type Cohort,
+    type GateFailure,
     type LeaderboardSnapshot,
     type RankedRow,
     type RowVerification,
     type SnapshotRankedRow,
+    type UnrankedRecord,
   } from "../lib/types";
   import {
     pct,
@@ -28,8 +30,11 @@
   import { trialBadge, runKindLabel, runKindChipClass } from "../lib/run";
 
   let cohorts = $state<Cohort[]>([]);
-  // Non-null when the live /api backend was unreachable and the page is
-  // showing the bundled `membench.leaderboard.v1` static export instead.
+  // Records held back from ranking. Present in both modes — the live API and
+  // the static export apply the same review gate.
+  let unranked = $state<UnrankedRecord[]>([]);
+  // Non-null when the page is serving the bundled `membench.leaderboard.v1`
+  // export because no /api backend is present (a static deploy).
   let snapshot = $state<LeaderboardSnapshot | null>(null);
   let activeId = $state<string>("");
   let loading = $state(true);
@@ -42,27 +47,49 @@
 
   const SEL_COLORS = ["var(--amber)", "var(--cyan)", "var(--green)", "var(--violet)"];
 
-  onMount(async () => {
-    // Live registry first; on failure fall back to the bundled static export.
-    // The fallback is labeled as a snapshot — it must never masquerade as live
-    // data, and an empty verified field stays empty rather than being filled
-    // from unverified rows.
-    try {
-      cohorts = await api.leaderboard();
-    } catch {
-      try {
-        snapshot = await api.leaderboardSnapshot();
-        cohorts = snapshot.cohorts;
-      } catch {
-        // Neither live API nor snapshot — the empty state below says so.
-      }
-    }
-    if (cohorts.length) activeId = cohorts[0].cohort_id;
-    loading = false;
+  // The store decides how this page is being served (live backend vs bundled
+  // static export); the board reads from whichever source that mode has. A
+  // static deploy is a supported mode, not a failed live load, so nothing here
+  // treats the absence of /api as an error. Mode is resolved asynchronously at
+  // boot, so this reacts to it rather than sampling it once on mount.
+  let loadedFor = $state<string | null>(null);
+  $effect(() => {
+    const mode = store.mode;
+    if (mode === "boot" || loadedFor === mode) return;
+    loadedFor = mode;
+    void loadBoard(mode);
   });
 
+  async function loadBoard(mode: string) {
+    if (mode === "snapshot") {
+      snapshot = store.snapshot;
+      cohorts = snapshot?.cohorts ?? [];
+      unranked = snapshot?.unranked ?? [];
+    } else if (mode === "live") {
+      try {
+        const view = await api.leaderboard();
+        cohorts = view.cohorts;
+        unranked = view.unranked;
+      } catch {
+        // The status bar reports backend failures; the empty state covers this.
+      }
+    }
+    if (cohorts.length && !cohorts.some((c) => c.cohort_id === activeId)) {
+      activeId = cohorts[0].cohort_id;
+    }
+    loading = false;
+  }
+
   function verification(r: RankedRow): RowVerification | null {
-    return (r as SnapshotRankedRow).verification ?? null;
+    return (r as SnapshotRankedRow).verification ?? r.eligibility ?? null;
+  }
+
+  function reviewTitle(r: RankedRow): string {
+    const review = verification(r)?.review;
+    if (!review) return "Passed every review gate.";
+    return `Reviewed by ${review.reviewer} on ${review.reviewed_at}${
+      review.reviewed_commit ? ` (${review.reviewed_commit})` : ""
+    }; scoring artifacts still hash to what was reviewed.`;
   }
 
   function reasonHelp(reason: string): string {
@@ -71,9 +98,28 @@
         return "Dashboard-safe rollup: timing/trace evidence is kept, but question-level scoring artifacts were deliberately omitted, so the score cannot be independently verified.";
       case "unscored":
         return "The record has no accuracy metric in its report.";
+      case "gate-failed":
+        return "The record did not pass every condition of the published review gate (docs/longmemeval-methodology.md).";
       default:
         return reason;
     }
+  }
+
+  /** True when another cohort shares this benchmark, size and judge — then the
+   *  question-set fingerprint is what tells them apart. */
+  function judgeIsAmbiguous(cohort: Cohort): boolean {
+    return cohorts.some(
+      (other) =>
+        other.cohort_id !== cohort.cohort_id &&
+        other.benchmark === cohort.benchmark &&
+        other.limit === cohort.limit &&
+        other.judge_model === cohort.judge_model &&
+        other.judge_prompt_mode === cohort.judge_prompt_mode,
+    );
+  }
+
+  function gateSummary(gates: GateFailure[]): string {
+    return gates.map((g) => `${g.gate}: ${g.detail}`).join("\n");
   }
 
   const active = $derived(cohorts.find((c) => c.cohort_id === activeId));
@@ -213,11 +259,21 @@
   <div class="main">
     {#if snapshot}
       <div class="snapshot-note">
-        <b>STATIC SNAPSHOT</b> — no live registry backend. Showing the committed
-        <code>{snapshot.schema}</code> export of tracked records
-        (<code>{snapshot.source.records_root}</code>, {snapshot.source.run_count} run{snapshot.source.run_count === 1 ? "" : "s"} scanned,
-        exporter <code>{shortHash(snapshot.source.git_sha, 12)}</code>,
+        <b>STATIC SNAPSHOT</b> — this deployment has no registry backend by
+        design. Showing the committed <code>{snapshot.schema}</code> export of
+        tracked records (<code>{snapshot.source.records_root}</code>,
+        {snapshot.source.run_count} run{snapshot.source.run_count === 1 ? "" : "s"} scanned,
+        {snapshot.source.ranked_count} ranked, {snapshot.source.unranked_count} unranked,
         generated {snapshot.generated_at}).
+        {#if snapshot.source.records_digest}
+          Records digest <code
+            title="SHA-256 over every file in the exported records tree. Recompute it from a checkout to prove this document describes those records."
+          >{shortHash(snapshot.source.records_digest, 12)}</code>
+          (exporter <code>{shortHash(snapshot.source.git_sha, 12)}</code>).
+        {/if}
+        {#if snapshot.source.contains_fixtures}
+          <b class="fixture-warn">Contains synthetic fixtures — not measured results.</b>
+        {/if}
         Methodology: <code>{snapshot.methodology}</code>.
       </div>
     {/if}
@@ -225,11 +281,23 @@
     <div class="cohort-strip">
       <span class="label" style="margin-right:4px">COHORT</span>
       {#each cohorts as c (c.cohort_id)}
-        <button class="cohort-chip" class:on={c.cohort_id === activeId} onclick={() => { activeId = c.cohort_id; selected = []; }}>
+        <!-- Benchmark and size alone do not identify a board: two cohorts can
+             share both and still be incomparable. Show the judge that separates
+             them, and the question set when even the judge matches. -->
+        <button
+          class="cohort-chip"
+          class:on={c.cohort_id === activeId}
+          title={c.cohort_id}
+          onclick={() => { activeId = c.cohort_id; selected = []; }}
+        >
           <span class="cb">{c.benchmark}</span>
           <span class="cs">·{c.limit ?? "?"}Q</span>
+          <span class="cj">{c.judge_model ?? "judge?"}{c.judge_prompt_mode ? `/${c.judge_prompt_mode}` : ""}</span>
+          {#if judgeIsAmbiguous(c)}
+            <span class="cj mono-num">{shortHash(c.dataset_fingerprint, 8)}</span>
+          {/if}
           <span class="cn">{c.run_count}</span>
-          {#if !c.strictly_comparable}<span class="warn" title="mixed question set or judge">⚠</span>{/if}
+          {#if !c.strictly_comparable}<span class="warn" title="cohort identity incomplete">⚠</span>{/if}
         </button>
       {/each}
     </div>
@@ -237,24 +305,21 @@
     {#if loading}
       <div class="empty">SCANNING REGISTRY…</div>
     {:else if !active}
-      {#if snapshot}
-        <div class="empty">
-          NO VERIFIED COHORTS<br />
-          <span class="empty-detail">
-            The tracked records tree holds no fully-attested scored runs to rank.
-            Runs excluded from ranking are listed below with the reason — their
-            scores are not fabricated into a ranking.
-          </span>
-        </div>
-      {:else}
-        <div class="empty">NO COHORTS</div>
-      {/if}
+      <div class="empty">
+        NO VERIFIED COHORTS<br />
+        <span class="empty-detail">
+          No record passed every condition of the review gate, so there is
+          nothing to rank. Records excluded from ranking are listed below with
+          the gates they failed — their reported scores are not promoted into a
+          ranking.
+        </span>
+      </div>
     {:else}
       {#if !active.strictly_comparable}
         <div class="integrity">
-          ⚠ COHORT NOT STRICTLY COMPARABLE —
-          {active.dataset_fingerprints.length} question-set fingerprint(s),
-          {active.judge_models.length} judge(s). Rank by sub-group with care.
+          ⚠ COHORT IDENTITY INCOMPLETE — this cohort does not record all of
+          question set, judge model and judge prompt mode, so its rows cannot be
+          asserted comparable.
         </div>
       {/if}
 
@@ -272,8 +337,9 @@
               <dl class="meta">
                 <dt>SIZE</dt><dd>{active.limit ?? "?"} questions</dd>
                 <dt>FIELD</dt><dd>{active.run_count} systems</dd>
-                <dt>JUDGE</dt><dd>{active.judge_models.join(", ") || "—"}</dd>
-                <dt>QSET</dt><dd class="mono-num">{shortHash(active.dataset_fingerprints[0], 12)}</dd>
+                <dt>JUDGE</dt><dd>{active.judge_model ?? "—"}</dd>
+                <dt>RUBRIC</dt><dd>{active.judge_prompt_mode ?? "—"}</dd>
+                <dt>QSET</dt><dd class="mono-num">{shortHash(active.dataset_fingerprint, 12)}</dd>
                 <dt>COMPARABLE</dt>
                 <dd>{#if active.strictly_comparable}<span class="up">● STRICT</span>{:else}<span class="down">● MIXED</span>{/if}</dd>
               </dl>
@@ -422,11 +488,14 @@
                       title="Meta record: dashboard-safe rollup without question-level scoring artifacts. Its score cannot be independently verified and is excluded from published leaderboard exports."
                     >META</span>
                   {/if}
-                  {#if verification(r)?.level === "partial"}
+                  {#if r.fixture}
                     <span
-                      class="verif-badge"
-                      title={`Scoring artifacts missing from the record: ${verification(r)?.missing_artifacts.join(", ")}. The score cannot be independently reproduced from the tracked artifacts.`}
-                    >PARTIAL EVIDENCE</span>
+                      class="verif-badge fixture"
+                      title="Synthetic contract fixture. Not a measured benchmark result."
+                    >FIXTURE</span>
+                  {/if}
+                  {#if verification(r)?.level === "verified"}
+                    <span class="verif-badge verified" title={reviewTitle(r)}>VERIFIED</span>
                   {/if}
                   <span class="cfg">{r.config_label}</span>
                 </td>
@@ -453,7 +522,7 @@
       </Panel>
     {/if}
 
-    {#if snapshot && snapshot.unranked.length}
+    {#if unranked.length}
       <Panel title="Unranked Records" tag="excluded from ranking" flush scroll>
         <table class="grid unranked-table">
           <thead>
@@ -465,14 +534,20 @@
             </tr>
           </thead>
           <tbody>
-            {#each snapshot.unranked as u (u.run_id)}
+            {#each unranked as u (u.run_id)}
               <tr>
                 <td class="system-cell">
                   <span class="unranked-name" title={u.run_id}>{u.run_name}</span>
+                  {#if u.fixture}<span class="verif-badge fixture">FIXTURE</span>{/if}
                 </td>
                 <td class="dim">{u.benchmark}{u.limit != null ? ` · ${u.limit}Q` : ""}</td>
                 <td>
                   <span class="reason-badge" title={reasonHelp(u.reason)}>{u.reason.toUpperCase()}</span>
+                  {#if u.failed_gates?.length}
+                    <span class="gate-list" title={gateSummary(u.failed_gates)}>
+                      {#each u.failed_gates as g (g.gate)}<span class="gate-chip">{g.gate}</span>{/each}
+                    </span>
+                  {/if}
                 </td>
                 <td class="num mono-num dim">
                   {#if u.accuracy != null}
@@ -555,6 +630,10 @@
   .cohort-chip .cs {
     color: var(--amber);
   }
+  .cohort-chip .cj {
+    color: var(--text-faint);
+    font-size: 9.5px;
+  }
   .cohort-chip .cn {
     font-size: 9px;
     background: var(--bg-elev);
@@ -606,6 +685,33 @@
     font-weight: 700;
     letter-spacing: 0.08em;
     vertical-align: 1px;
+  }
+  .verif-badge.verified {
+    border-color: var(--green-dim);
+    background: rgba(47, 207, 122, 0.08);
+    color: var(--green);
+  }
+  .verif-badge.fixture {
+    border-color: var(--violet);
+    background: rgba(150, 120, 255, 0.08);
+    color: var(--violet);
+  }
+  .fixture-warn {
+    color: var(--violet);
+  }
+  .gate-list {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    margin-left: 6px;
+  }
+  .gate-chip {
+    padding: 0 4px;
+    border: 1px solid var(--border-bright);
+    color: var(--text-faint);
+    font-family: var(--mono);
+    font-size: 8.5px;
+    letter-spacing: 0.04em;
   }
 
   .unranked-table {
