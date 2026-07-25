@@ -15,8 +15,8 @@
 //! **Provenance you can recompute.** The exporting commit's sha is a weak
 //! witness: the snapshot is committed *after* the sha it names, so it is stale
 //! by construction and says nothing about what was exported. The document
-//! therefore also carries `records_digest` — a content hash over every file in
-//! the records tree — which anyone can recompute from a checkout, and which CI
+//! therefore also carries `records_digest` — a content hash over every durable
+//! file in the records tree — which anyone can recompute from a checkout, and which CI
 //! uses to prove the committed snapshot still matches the records it claims to
 //! describe (`scripts/check-leaderboard-snapshot.sh`).
 
@@ -53,12 +53,13 @@ pub struct ExportOptions {
     pub deterministic: bool,
 }
 
-/// Content digest over a records tree: SHA-256 of the sorted
+/// Content digest over a records tree: SHA-256 of the sorted durable
 /// `{repo-relative path}\0{sha256 of file bytes}` lines.
 ///
 /// Machine-independent and recomputable, so a consumer can check that a
 /// published document describes the tree in front of them rather than trusting
-/// a commit sha that was stale the moment it was committed.
+/// a commit sha that was stale the moment it was committed. Ephemeral SQLite
+/// sidecars are excluded: they are ignored runtime state, not release records.
 pub fn records_digest(root: &Path) -> Option<String> {
     let mut files = Vec::new();
     collect_files(root, root, &mut files)?;
@@ -81,6 +82,13 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) -> Op
         if path.is_dir() {
             collect_files(root, &path, out)?;
         } else if path.is_file() {
+            let file_name = path.file_name()?.to_string_lossy();
+            if file_name.ends_with(".sqlite-wal")
+                || file_name.ends_with(".sqlite-shm")
+                || file_name.ends_with(".sqlite-journal")
+            {
+                continue;
+            }
             let relative = path
                 .strip_prefix(root)
                 .ok()?
@@ -379,6 +387,19 @@ mod tests {
         // Editing any byte of any record changes it.
         std::fs::write(dir.path().join("a/report.json"), "{\"x\":2}").unwrap();
         assert_ne!(records_digest(dir.path()).unwrap(), before);
+    }
+
+    #[test]
+    fn records_digest_ignores_ephemeral_sqlite_sidecars() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("queue.sqlite"), "durable").unwrap();
+        let before = records_digest(dir.path()).unwrap();
+
+        std::fs::write(dir.path().join("queue.sqlite-wal"), "transient wal").unwrap();
+        std::fs::write(dir.path().join("queue.sqlite-shm"), "transient shm").unwrap();
+        std::fs::write(dir.path().join("queue.sqlite-journal"), "transient journal").unwrap();
+
+        assert_eq!(records_digest(dir.path()).unwrap(), before);
     }
 
     #[test]

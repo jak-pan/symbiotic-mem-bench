@@ -126,14 +126,14 @@
       "strictly_comparable": true
     }
   ],
-  "generated_at": "2026-07-25T02:04:24Z",
+  "generated_at": "2026-07-25T03:17:26Z",
   "methodology": "docs/longmemeval-methodology.md",
   "schema": "membench.leaderboard.v1",
   "source": {
     "contains_fixtures": false,
-    "git_sha": "b99224d",
+    "git_sha": "f453e5a",
     "ranked_count": 1,
-    "records_digest": "fa59af01d3426ea51fc3738e9aacfb54ba6766596c90f014999049c4942fa1b9",
+    "records_digest": "4c42a71f61f6b2e126800bd581754b3ceed70ef06dd0ce98b24aa008477f5d74",
     "records_root": "records",
     "run_count": 12,
     "unranked_count": 11

@@ -68,7 +68,7 @@ Until those land upstream, adapter builds must override the pins to sibling chec
 gitignored `.cargo/config.toml` at this repository root:
 
 ```toml
-[patch."https://github.com/jak-pan/symbiotic-memory"]
+[patch."ssh://git@github.com/jak-pan/symbiotic-memory"]
 symbiotic-memory = { path = "../symbiotic-memory" }
 symbiotic-memory-config = { path = "../symbiotic-memory/config" }
 

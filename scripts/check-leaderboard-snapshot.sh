@@ -20,13 +20,16 @@ trap 'rm -f "$FRESH"' EXIT
 
 cargo run --quiet --bin membench-leaderboard -- export --records-root records > "$FRESH"
 
-# Strip the volatile provenance fields from both sides, then diff.
+# Strip volatile provenance and filesystem-mtime fields from both sides, then diff.
 strip() {
   python3 -c '
 import json, sys
 doc = json.load(open(sys.argv[1]))
 doc.pop("generated_at", None)
 doc.get("source", {}).pop("git_sha", None)
+for cohort in doc.get("cohorts", []):
+    for row in cohort.get("rows", []):
+        row.pop("modified_ms", None)
 print(json.dumps(doc, indent=2, sort_keys=True))
 ' "$1"
 }
