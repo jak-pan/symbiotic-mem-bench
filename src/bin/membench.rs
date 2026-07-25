@@ -2356,6 +2356,25 @@ fn sanitize_path_component(value: &str) -> String {
     }
 }
 
+fn validate_record_path_component<'a>(label: &str, value: &'a str) -> anyhow::Result<&'a str> {
+    if value.is_empty() || value == "." || value == ".." {
+        anyhow::bail!("unsafe {label} path component: {value:?}");
+    }
+    if !value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.')
+    {
+        anyhow::bail!("unsafe {label} path component: {value:?}");
+    }
+    let mut components = Path::new(value).components();
+    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+        || components.next().is_some()
+    {
+        anyhow::bail!("unsafe {label} path component: {value:?}");
+    }
+    Ok(value)
+}
+
 /// Emit the normalized run index (or a single run) as JSON, the same shape the
 /// dashboard backend serves.
 fn explore_runs_json(run_root: Option<PathBuf>) -> anyhow::Result<()> {
@@ -2502,19 +2521,28 @@ fn save_record(
     let run_name = record_name
         .or_else(|| text_at(&report, &["run_name"]).map(ToOwned::to_owned))
         .unwrap_or_else(|| "unnamed".to_string());
-    let dest = record_run_root(&records_root, system, benchmark, &report, &run_name);
-    if dest.exists() {
-        if !force {
-            anyhow::bail!(
-                "record already exists at {}; pass --force to overwrite",
-                dest.display()
-            );
-        }
-    }
+    let dest = record_run_root(&records_root, system, benchmark, &report, &run_name)?;
     let parent = dest
         .parent()
         .ok_or_else(|| anyhow::anyhow!("record destination has no parent: {}", dest.display()))?;
-    std::fs::create_dir_all(parent)?;
+    prepare_record_parent(&records_root, parent)?;
+    let existing = match std::fs::symlink_metadata(&dest) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            anyhow::bail!("refusing symlinked record destination {}", dest.display())
+        }
+        Ok(metadata) if !metadata.is_dir() => {
+            anyhow::bail!("record destination is not a directory: {}", dest.display())
+        }
+        Ok(_) => true,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+        Err(err) => return Err(err.into()),
+    };
+    if existing && !force {
+        anyhow::bail!(
+            "record already exists at {}; pass --force to overwrite",
+            dest.display()
+        );
+    }
     let staging = tempfile::Builder::new()
         .prefix(".membench-record-")
         .tempdir_in(parent)?;
@@ -2524,7 +2552,7 @@ fn save_record(
     } else {
         copy_portable_record(&run_root, &staged_record, &report)?;
     }
-    if dest.exists() {
+    if existing {
         std::fs::remove_dir_all(&dest)?;
     }
     std::fs::rename(&staged_record, &dest)?;
@@ -2706,17 +2734,78 @@ fn record_run_root(
     benchmark: &str,
     report: &serde_json::Value,
     run_name: &str,
-) -> PathBuf {
+) -> anyhow::Result<PathBuf> {
+    let system = validate_record_path_component("system", system)?;
+    let benchmark = validate_record_path_component("benchmark", benchmark)?;
+    let run_name = validate_record_path_component("run name", run_name)?;
     let limit = nested_u64(report, &["run_params", "limit"])
-        .or_else(|| nested_u64(report, &["metrics", "accuracy", "total"]));
-    if let Some(limit) = limit {
-        return records_root
-            .join(sanitize_path_component(system))
-            .join(sanitize_path_component(benchmark))
-            .join(limit.to_string())
-            .join(sanitize_path_component(run_name));
+        .or_else(|| nested_u64(report, &["metrics", "accuracy", "total"]))
+        .ok_or_else(|| anyhow::anyhow!("record report does not declare a question limit"))?;
+    Ok(records_root
+        .join(system)
+        .join(benchmark)
+        .join(limit.to_string())
+        .join(run_name))
+}
+
+fn prepare_record_parent(records_root: &Path, parent: &Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(records_root)?;
+    let relative = parent.strip_prefix(records_root).map_err(|_| {
+        anyhow::anyhow!(
+            "record parent {} is outside records root {}",
+            parent.display(),
+            records_root.display()
+        )
+    })?;
+    let components = relative.components().collect::<Vec<_>>();
+    if components.len() != 3
+        || components
+            .iter()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        anyhow::bail!(
+            "record parent must be records/{{system}}/{{benchmark}}/{{limit}}: {}",
+            parent.display()
+        );
     }
-    default_run_root(records_root, system, benchmark, run_name)
+
+    let canonical_root = std::fs::canonicalize(records_root)?;
+    let mut cursor = records_root.to_path_buf();
+    for component in &components {
+        cursor.push(component.as_os_str());
+        match std::fs::symlink_metadata(&cursor) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                anyhow::bail!("refusing symlinked record parent {}", cursor.display())
+            }
+            Ok(metadata) if !metadata.is_dir() => {
+                anyhow::bail!("record parent is not a directory: {}", cursor.display())
+            }
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir(&cursor)?;
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
+
+    let canonical_parent = std::fs::canonicalize(parent)?;
+    let expected_parent = components
+        .iter()
+        .fold(canonical_root.clone(), |mut path, component| {
+            path.push(component.as_os_str());
+            path
+        });
+    if canonical_parent == canonical_root
+        || !canonical_parent.starts_with(&canonical_root)
+        || canonical_parent != expected_parent
+    {
+        anyhow::bail!(
+            "resolved record parent {} is not the expected child of {}",
+            canonical_parent.display(),
+            canonical_root.display()
+        );
+    }
+    Ok(())
 }
 
 fn copy_dir_recursive(source: &std::path::Path, dest: &std::path::Path) -> anyhow::Result<()> {
@@ -8109,6 +8198,61 @@ mod tests {
             std::fs::read_to_string(saved.join("sentinel")).unwrap(),
             "previous record\n"
         );
+    }
+
+    #[test]
+    fn save_record_rejects_unsafe_components_before_deleting_any_record() {
+        let cases = [
+            ("record-dot", "safe", "bench", "candidate", Some(".")),
+            ("record-dotdot", "safe", "bench", "candidate", Some("..")),
+            ("system", "../outside", "bench", "candidate", None),
+            ("benchmark", "safe", "../../outside", "candidate", None),
+            ("report-run", "safe", "bench", "../outside", None),
+        ];
+
+        for (case, system, benchmark, run_name, override_name) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let run_root = dir.path().join("run");
+            let records_root = dir.path().join("records");
+            let existing = records_root.join("safe/bench/500/existing");
+            let outside = dir.path().join("outside");
+            std::fs::create_dir_all(&run_root).unwrap();
+            std::fs::create_dir_all(&existing).unwrap();
+            std::fs::create_dir_all(&outside).unwrap();
+            std::fs::write(run_root.join("run-params.json"), "{}\n").unwrap();
+            std::fs::write(existing.join("sentinel"), "existing record\n").unwrap();
+            std::fs::write(outside.join("sentinel"), "outside tree\n").unwrap();
+            write_pretty_json(
+                &run_root.join("benchmark-report.json"),
+                &json!({
+                    "system": system,
+                    "benchmark": benchmark,
+                    "run_name": run_name,
+                    "run_params": {"limit": 500},
+                    "metrics": {"accuracy": {"total": 500, "value": 1.0}}
+                }),
+            )
+            .unwrap();
+
+            let result = save_record(
+                run_root,
+                records_root,
+                override_name.map(ToOwned::to_owned),
+                false,
+                true,
+            );
+            assert!(result.is_err(), "{case} unexpectedly succeeded");
+            assert_eq!(
+                std::fs::read_to_string(existing.join("sentinel")).unwrap(),
+                "existing record\n",
+                "{case} damaged a sibling record"
+            );
+            assert_eq!(
+                std::fs::read_to_string(outside.join("sentinel")).unwrap(),
+                "outside tree\n",
+                "{case} damaged the surrounding tree"
+            );
+        }
     }
 
     #[test]

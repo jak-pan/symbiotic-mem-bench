@@ -29,15 +29,27 @@ gate a record must pass before it may be ranked on the leaderboard.
 
 ## Honest current result
 
-There is currently **no ranked score published**: the tracked `records/` tree contains only
-meta records (timing/transport evidence without question-level scoring artifacts), so every
-leaderboard cohort is empty and all records appear as unranked with their exclusion reason.
+The bundled leaderboard currently publishes **one verified ranked result**:
 
-The best **clean, measured** result to date, from local full-500Q runs pending promotion:
+- **87.4% accuracy (437/500)** on LongMemEval-S for
+  `factconsol-thinkon-500-20260624`, with 88.80% task-averaged accuracy and 25/48
+  abstention accuracy.
+- The run used the Symbiotic Memory stack with DeepSeek Flash for
+  distillation/query planning/answering, OpenRouter `qwen/qwen3-embedding-8b` at 1024
+  dimensions, answer thinking enabled, and DeepSeek Flash judging in
+  `semantic-shared-compact` mode.
+- Its cohort is tied to dataset fingerprint
+  `d8a772212d40150b75664719d3d078268bd665ce0988ca894c7064de97465c4e`; the portable
+  record includes all question-level scoring artifacts and trace-backed provider provenance,
+  and passed the independent review gate below.
 
-- **≈ 88.5% accuracy** on LongMemEval-S 500Q (N=3: 88.6 / 88.2 / 88.6, spread 0.2pp) with
-  the Symbiotic Memory stack: DeepSeek Flash distill/answer (thinking on), OpenRouter
-  `qwen/qwen3-embedding-8b` @1024d, cross-encoder reranking ON, judged by DeepSeek Flash.
+Separate local full-500Q experiments measured **≈88.5% accuracy** (N=3: 88.6 / 88.2 /
+88.6, spread 0.2pp) with a related rerank-ON configuration. Those runs remain useful tuning
+evidence, but they have not been promoted and reviewed as canonical public records and
+therefore are not leaderboard claims.
+
+Additional interpretation from those local experiments:
+
 - Run-to-run variance with the non-deterministic answerer is material (rerank-OFF spread
   ±0.7pp; earlier same-config runs ranged 87.2–89.6): single-run deltas under ~2pp are noise.
 - Reranking is the one proven lever: +3.4pp over rerank-OFF (85.1% mean), with
@@ -123,7 +135,7 @@ the record unranked. Hashes are plain `sha256sum` of the files as reviewed.
 Promotion is `membench save-record` into `records/{system}/{benchmark}/{limit}/{run_name}/`,
 adding `review.json` after the independent review, then regenerating the bundled leaderboard
 snapshot (`scripts/export-leaderboard-snapshot.sh`; CI re-checks it against `records/` via
-`scripts/check-leaderboard-snapshot.sh`). The selection and promotion of the first canonical
-500-question record is tracked in `docs/canonical-record-storage-task.md` and **has not
-happened yet** — which is why the published leaderboard is honestly empty, and why the ~88.5%
-above is stated as a measured local result rather than a leaderboard claim.
+`scripts/check-leaderboard-snapshot.sh`). The first canonical 500-question promotion is
+`factconsol-thinkon-500-20260624`; its 437/500 result is the verified rank-1 row described
+above. Opposite-model/K3 release approval is still pending as an additional release-process
+check, not as hidden evidence for or against this record's machine-enforced eligibility.
