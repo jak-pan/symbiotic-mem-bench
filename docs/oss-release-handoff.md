@@ -24,10 +24,10 @@ external action; the code-side work is done and gated in CI.
    `--features symbiotic-memory-adapter` builds and runs against the exact pins with no
    sibling checkout and no `.cargo/config.toml` override. The override block in
    `docs/environment.md` remains available for co-development, not as a requirement.
-3. **Mandatory opposite-model release approval.** The promoted record has passed its
-   independent integrity/no-cheating review and the machine-enforced eligibility gate. The
-   separate K3 review remains required by the release process before announcement; it is not
-   missing evidence in the published record and does not change the row's `verified` status.
+3. ~~**Mandatory opposite-model release approval.**~~ **Resolved 2026-07-24.** K3 independently
+   rebuilt the adapter, reproduced the traversal refusal, recounted 437/500, matched the three
+   review hashes, verified the public-hygiene and leaderboard snapshot gates, and ran all 142
+   tests before returning `K3_APPROVE`.
 
 ## Decisions pending
 

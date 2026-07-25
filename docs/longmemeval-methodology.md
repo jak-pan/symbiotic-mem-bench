@@ -137,5 +137,6 @@ adding `review.json` after the independent review, then regenerating the bundled
 snapshot (`scripts/export-leaderboard-snapshot.sh`; CI re-checks it against `records/` via
 `scripts/check-leaderboard-snapshot.sh`). The first canonical 500-question promotion is
 `factconsol-thinkon-500-20260624`; its 437/500 result is the verified rank-1 row described
-above. Opposite-model/K3 release approval is still pending as an additional release-process
-check, not as hidden evidence for or against this record's machine-enforced eligibility.
+above. The mandatory opposite-model/K3 review independently rebuilt the adapter, reproduced the
+traversal refusal, recounted the verdicts, matched the review hashes, and ran all 142 tests before
+approving the release candidate on 2026-07-24.

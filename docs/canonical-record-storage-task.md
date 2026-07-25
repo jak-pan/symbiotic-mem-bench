@@ -9,10 +9,11 @@ recorded hashes, public hygiene, and independent `review.json` attestation have 
 The deterministic leaderboard snapshot matches `records/` and publishes this row with no
 eligibility failures.
 
-The mandatory opposite-model/K3 release approval remains pending. That is a release-process
-gate, not a missing record artifact or a reason to hide the verified result. Retaining the much
-larger native-state substrate externally is optional and is not required for the public record
-or leaderboard.
+The mandatory opposite-model/K3 release review approved the candidate on 2026-07-24 after
+independently rebuilding the adapter, recounting all 500 verdicts, verifying the recorded hashes
+and public-hygiene scan, reproducing the traversal refusal, and running the full 142-test suite.
+Retaining the much larger native-state substrate externally is optional and is not required for
+the public record or leaderboard.
 
 ## Problem
 
@@ -105,7 +106,6 @@ If created, a tracked `external-artifacts.json` should include:
 
 ## Remaining Decisions
 
-- Mandatory opposite-model/K3 release approval.
 - External storage target: release asset, object storage bucket, Hugging Face dataset, or other.
 - Whether the full native bundle should include raw model prompts or only normalized traces.
 - Whether `save-record` should gain a `--external-state` mode that writes
@@ -123,7 +123,7 @@ becomes a release requirement.
    `--include-native-state`.
 3. [x] Promote the selected record to `records/` and commit its review attestation.
 4. [x] Export and independently verify the ranked leaderboard snapshot.
-5. [ ] Obtain the mandatory opposite-model/K3 release approval.
+5. [x] Obtain the mandatory opposite-model/K3 release approval.
 6. [ ] **Optional:** add an `external-artifacts.json` schema if the native vault substrate will
    be retained for answer-only reuse.
 7. [ ] **Optional:** add a restore/check command or documented script for any retained external
