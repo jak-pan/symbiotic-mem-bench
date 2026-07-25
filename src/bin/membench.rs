@@ -7887,6 +7887,15 @@ mod tests {
     fn paid_provider_lock_reclaims_dead_owner() {
         let dir = tempfile::tempdir().unwrap();
         let run = sample_run(None);
+        let mut exited_child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--list")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let dead_pid = exited_child.id();
+        assert!(exited_child.wait().unwrap().success());
+        assert!(!process_is_running(dead_pid));
         let lock_root = dir.path().join(".locks");
         let lock_path = lock_root.join("paid-provider-run.lock");
         std::fs::create_dir_all(&lock_path).unwrap();
@@ -7894,7 +7903,7 @@ mod tests {
             lock_path.join("owner.json"),
             serde_json::to_vec_pretty(&json!({
                 "schema": "membench.paid_provider_run_lock.v1",
-                "pid": u32::MAX,
+                "pid": dead_pid,
             }))
             .unwrap(),
         )
