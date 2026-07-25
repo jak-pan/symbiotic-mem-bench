@@ -24,8 +24,9 @@
    `./scripts/check-adapter-build.sh` on a machine with access to
    `jak-pan/symbiotic-memory`. This is the only check that the documented `membench` CLI
    builds *and runs* against the pinned revisions. CI runs it automatically only when the
-   repository has an `ADAPTER_DEPS_TOKEN` secret; without that secret the job is skipped and
-   the path is unverified in CI. Do not tag a release without running it somewhere.
+   repository has a read-only `SYMBIOTIC_MEMORY_DEPLOY_KEY` secret; without that
+   secret the job is skipped and the path is unverified in CI. Do not tag a release
+   without running it somewhere.
 3. No stray state: `git status --short --ignored` shows only expected ignored paths
    (`runs/`, external target dir, local env files).
 4. Bump versions in `Cargo.toml` + `dashboard/package.json`, update `Cargo.lock`, commit.

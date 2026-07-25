@@ -13,6 +13,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: authenticate private git dependencies
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
+      - name: rewrite github https to ssh
+        run: git config --global url."git@github.com:".insteadOf "https://github.com/"
       - uses: dtolnay/rust-toolchain@1.93.0
         with:
           components: rustfmt, clippy
@@ -47,6 +53,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: authenticate private git dependencies
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
+      - name: rewrite github https to ssh
+        run: git config --global url."git@github.com:".insteadOf "https://github.com/"
       - uses: dtolnay/rust-toolchain@1.93.0
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
@@ -56,6 +68,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: authenticate private git dependencies
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
+      - name: rewrite github https to ssh
+        run: git config --global url."git@github.com:".insteadOf "https://github.com/"
       - uses: dtolnay/rust-toolchain@1.93.0
       - uses: Swatinem/rust-cache@v2
       - name: canary export matches committed contract
@@ -78,39 +96,40 @@ jobs:
 
   # Credentialed half: does the documented `membench` CLI actually build
   # against those pins? The adapter depends on a private repository, so this
-  # job runs only where a read token is configured. Until that repository is
+  # job runs only where a read-only deploy key is configured. Until that repository is
   # public, `scripts/check-adapter-build.sh` is a mandatory manual release gate
   # (RELEASING.md) rather than an enforced CI gate.
-  adapter-token:
+  adapter-key:
     runs-on: ubuntu-latest
     outputs:
       available: ${{ steps.probe.outputs.available }}
     steps:
       - id: probe
         env:
-          ADAPTER_DEPS_TOKEN: ${{ secrets.ADAPTER_DEPS_TOKEN }}
+          SYMBIOTIC_MEMORY_DEPLOY_KEY: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
         run: |
-          if [ -n "$ADAPTER_DEPS_TOKEN" ]; then
+          if [ -n "$SYMBIOTIC_MEMORY_DEPLOY_KEY" ]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
           else
             echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::ADAPTER_DEPS_TOKEN not configured — adapter CLI build not verified in CI."
+            echo "::notice::SYMBIOTIC_MEMORY_DEPLOY_KEY not configured — adapter CLI build not verified in CI."
           fi
 
   adapter-build:
-    needs: adapter-token
-    if: needs.adapter-token.outputs.available == 'true'
+    needs: adapter-key
+    if: needs.adapter-key.outputs.available == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: authenticate private git dependencies
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
+      - name: rewrite github https to ssh
+        run: git config --global url."git@github.com:".insteadOf "https://github.com/"
       - uses: dtolnay/rust-toolchain@1.93.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: authenticate private git dependencies
-        env:
-          ADAPTER_DEPS_TOKEN: ${{ secrets.ADAPTER_DEPS_TOKEN }}
-        run: |
-          git config --global url."https://x-access-token:${ADAPTER_DEPS_TOKEN}@github.com/".insteadOf "https://github.com/"
       - name: adapter CLI builds against the pinned revisions
         run: ./scripts/check-adapter-build.sh

@@ -12,8 +12,9 @@ external action; the code-side work is done and gated in CI.
    git deps. But `--features symbiotic-memory-adapter` cannot build without access to that
    repo. Options: make it public, vendor the needed crates, or keep the adapter as an
    access-gated feature and say so in the README.
-   Consequence for CI: the `adapter-build` job runs only where an `ADAPTER_DEPS_TOKEN`
-   secret is configured, so on a public fork the documented `membench` CLI is **not**
+   Consequence for CI: the `adapter-build` job runs only where a read-only
+   `SYMBIOTIC_MEMORY_DEPLOY_KEY` secret is configured, so on a public fork the
+   documented `membench` CLI is **not**
    verified by CI. `scripts/check-adapter-build.sh` is the mandatory manual release gate
    until this is resolved (`RELEASING.md`).
 2. ~~**Adapter APIs not yet published upstream.**~~ **Resolved 2026-07-24.** The kit APIs the
