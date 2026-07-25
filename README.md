@@ -17,7 +17,7 @@ cargo run --bin membench-leaderboard -- export --records-root records
 
 The `membench` CLI itself (`cargo run --bin membench -- explore`) needs the
 `symbiotic-memory-adapter` feature, which builds against the pinned
-`jak-pan/symbiotic-memory` revision — currently a **private** repository, so a clean clone
+`symbiotic-sh/symbiotic-memory` revision — currently a **private** repository, so a clean clone
 without access cannot build it (see `docs/oss-release-handoff.md`). With access:
 
 ```bash

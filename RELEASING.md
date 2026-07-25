@@ -22,7 +22,7 @@
    - `./scripts/check-leaderboard-snapshot.sh` — the bundled snapshot still matches `records/`
 2. **Adapter CLI gate, manual until the dependency is public:**
    `./scripts/check-adapter-build.sh` on a machine with access to
-   `jak-pan/symbiotic-memory`. This is the only check that the documented `membench` CLI
+   `symbiotic-sh/symbiotic-memory`. This is the only check that the documented `membench` CLI
    builds *and runs* against the pinned revisions. CI runs it automatically only when the
    repository has a read-only `SYMBIOTIC_MEMORY_DEPLOY_KEY` secret; without that
    secret the job is skipped and the path is unverified in CI. Do not tag a release

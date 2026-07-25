@@ -4,7 +4,7 @@
 #
 # `cargo run --bin membench -- explore` is the first command in the README, and
 # `membench` requires the `symbiotic-memory-adapter` feature. That feature
-# builds against `jak-pan/symbiotic-memory`, which is currently a private
+# builds against `symbiotic-sh/symbiotic-memory`, which is currently a private
 # repository, so this check needs credentials and cannot run on an anonymous
 # CI runner (see docs/oss-release-handoff.md). It must pass on a credentialed
 # machine before any release is tagged.

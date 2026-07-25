@@ -1984,7 +1984,7 @@ dependencies = [
 [[package]]
 name = "symbiotic-memory"
 version = "0.2.0"
-source = "git+ssh://git@github.com/jak-pan/symbiotic-memory?rev=c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e#c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e"
+source = "git+ssh://git@github.com/symbiotic-sh/symbiotic-memory?rev=c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e#c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2013,7 +2013,7 @@ dependencies = [
 [[package]]
 name = "symbiotic-memory-config"
 version = "0.2.0"
-source = "git+ssh://git@github.com/jak-pan/symbiotic-memory?rev=c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e#c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e"
+source = "git+ssh://git@github.com/symbiotic-sh/symbiotic-memory?rev=c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e#c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e"
 dependencies = [
  "hex",
  "serde",
@@ -2939,7 +2939,7 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 [[package]]
 name = "zvec"
 version = "0.5.0"
-source = "git+ssh://git@github.com/jak-pan/symbiotic-memory?rev=c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e#c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e"
+source = "git+ssh://git@github.com/symbiotic-sh/symbiotic-memory?rev=c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e#c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e"
 dependencies = [
  "zvec-sys",
 ]
@@ -2947,4 +2947,4 @@ dependencies = [
 [[package]]
 name = "zvec-sys"
 version = "0.5.0"
-source = "git+ssh://git@github.com/jak-pan/symbiotic-memory?rev=c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e#c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e"
+source = "git+ssh://git@github.com/symbiotic-sh/symbiotic-memory?rev=c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e#c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e"

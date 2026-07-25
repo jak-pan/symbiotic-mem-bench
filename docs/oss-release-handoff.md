@@ -5,7 +5,7 @@ external action; the code-side work is done and gated in CI.
 
 ## Blockers
 
-1. **`jak-pan/symbiotic-memory` is private** (verified anonymously 2026-07-24: GitHub API
+1. **`symbiotic-sh/symbiotic-memory` is private** (ownership transferred 2026-07-25; GitHub API
    404 / `ls-remote` denied; `symbiotic-sh/symbiotic-foundation` is public). Measured
    impact: none for default + `server` builds — an anonymous, clean-`CARGO_HOME`
    `cargo check --features server` succeeds because Cargo does not fetch inactive optional

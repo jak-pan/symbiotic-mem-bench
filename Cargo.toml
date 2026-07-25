@@ -37,8 +37,8 @@ prost-types = "0.14"
 # The adapter deps are pinned git revs so a clean clone builds without sibling
 # checkouts. For local co-development against sibling checkouts, override them
 # in a gitignored `.cargo/config.toml` — see docs/environment.md.
-symbiotic-memory-config = { git = "ssh://git@github.com/jak-pan/symbiotic-memory", rev = "c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e", optional = true }
-symbiotic-memory = { git = "ssh://git@github.com/jak-pan/symbiotic-memory", rev = "c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e", default-features = false, features = ["http", "cli"], optional = true }
+symbiotic-memory-config = { git = "ssh://git@github.com/symbiotic-sh/symbiotic-memory", rev = "c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e", optional = true }
+symbiotic-memory = { git = "ssh://git@github.com/symbiotic-sh/symbiotic-memory", rev = "c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e", default-features = false, features = ["http", "cli"], optional = true }
 async-trait = { version = "0.1", optional = true }
 futures = { version = "0.3", optional = true }
 hex = { version = "0.4", optional = true }
