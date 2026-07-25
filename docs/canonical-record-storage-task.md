@@ -2,7 +2,11 @@
 
 ## Status
 
-Planned. Do not implement until a full 500-question run is selected for promotion.
+In progress. The selected candidate is
+`factconsol-thinkon-500-20260624` (437/500, `0.874` overall accuracy). Its scoring artifacts,
+question-ID joins, provider-trace provenance, and recorded hashes passed the first independent
+integrity audit. Final promotion still requires portable-record validation, the committed review
+attestation, leaderboard export verification, and the mandatory opposite-model review.
 
 ## Problem
 
@@ -92,10 +96,12 @@ The tracked `external-artifacts.json` should include:
 
 ## Suggested Implementation Steps
 
-1. Pick the canonical 500-question run only after quality and no-cheating review.
-2. Add an `external-artifacts.json` schema to `docs/schemas.md`.
-3. Extend `save-record` with optional external-state manifest support.
-4. Add a restore/check command or documented script.
-5. Promote the selected record to `records/`.
-6. Upload the native-state bundle externally and verify hashes.
-7. Run one answer-only smoke using the restored `source_vault_root`.
+1. Complete the no-cheating and public-hygiene review of the selected run.
+2. Validate the safe-by-default portable `save-record`; native state is copied only with
+   `--include-native-state`.
+3. Add an `external-artifacts.json` schema if the native vault substrate will be retained for
+   answer-only reuse.
+4. Add a restore/check command or documented script for any retained external substrate.
+5. Promote the selected record to `records/` and commit its review attestation.
+6. Export and independently verify the ranked leaderboard snapshot.
+7. If retained, upload the native-state bundle, verify hashes, and run an answer-only restore smoke.

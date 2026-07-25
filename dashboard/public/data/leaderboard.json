@@ -1,15 +1,141 @@
 {
-  "cohorts": [],
-  "generated_at": "2026-07-25T00:40:56Z",
+  "cohorts": [
+    {
+      "benchmark": "long-mem-eval",
+      "best_accuracy": 0.874,
+      "cohort_id": "long-mem-eval::500::ds:d8a772212d40150b75664719d3d078268bd665ce0988ca894c7064de97465c4e::judge:deepseek-v4-flash::mode:semantic-shared-compact",
+      "dataset_fingerprint": "d8a772212d40150b75664719d3d078268bd665ce0988ca894c7064de97465c4e",
+      "dataset_fingerprints": [
+        "d8a772212d40150b75664719d3d078268bd665ce0988ca894c7064de97465c4e"
+      ],
+      "judge_model": "deepseek-v4-flash",
+      "judge_models": [
+        "deepseek-v4-flash"
+      ],
+      "judge_prompt_mode": "semantic-shared-compact",
+      "judge_prompt_modes": [
+        "semantic-shared-compact"
+      ],
+      "limit": 500,
+      "rows": [
+        {
+          "abstention_accuracy": 0.5208333333333334,
+          "accuracy": 0.874,
+          "accuracy_correct": 437,
+          "accuracy_total": 500,
+          "artifacts_available": [
+            "hypotheses",
+            "verdicts",
+            "partial_verdicts",
+            "provenance",
+            "memory_traces",
+            "model_traces",
+            "step_analytics",
+            "scored",
+            "score_summary"
+          ],
+          "artifacts_missing": [
+            "gold_eval"
+          ],
+          "benchmark": "long-mem-eval",
+          "cohort_id": "long-mem-eval::500::ds:d8a772212d40150b75664719d3d078268bd665ce0988ca894c7064de97465c4e::judge:deepseek-v4-flash::mode:semantic-shared-compact",
+          "config_label": "llm·openrouter·zvec-hybrid·plan:flash·ans:deepseek-v4-flash",
+          "config_signature": "5e090392102a57fcfccb205a14aa9c0a2e8bd4feaaf4eabe0f7440fd1a7817cc",
+          "cost_micro_usd": 10444152,
+          "created_at": "2026-06-24T11:38:04.948570+00:00",
+          "dataset_fingerprint": "d8a772212d40150b75664719d3d078268bd665ce0988ca894c7064de97465c4e",
+          "display_name": "h1 32x32 · qwen3-emb-8b",
+          "eligibility": {
+            "eligible": true,
+            "failures": [],
+            "level": "verified",
+            "missing_artifacts": [],
+            "review": {
+              "reviewed_at": "2026-07-24",
+              "reviewer": "Codex independent canonical-record audit",
+              "verdict": "pass"
+            }
+          },
+          "fixture": false,
+          "is_meta_record": false,
+          "is_trial_run": false,
+          "judge_model": "deepseek-v4-flash",
+          "judge_prompt_mode": "semantic-shared-compact",
+          "latency_ms_p50": null,
+          "latency_ms_p95": null,
+          "limit": 500,
+          "modified_ms": 1784945031578,
+          "native_state_available": false,
+          "oracle_gold": false,
+          "origin": "records",
+          "per_question_type": {
+            "knowledge-update": {
+              "accuracy": 0.8974358974358975,
+              "correct": 70,
+              "total": 78
+            },
+            "multi-session": {
+              "accuracy": 0.8120300751879699,
+              "correct": 108,
+              "total": 133
+            },
+            "single-session-assistant": {
+              "accuracy": 0.9464285714285714,
+              "correct": 53,
+              "total": 56
+            },
+            "single-session-preference": {
+              "accuracy": 0.9,
+              "correct": 27,
+              "total": 30
+            },
+            "single-session-user": {
+              "accuracy": 0.9,
+              "correct": 63,
+              "total": 70
+            },
+            "temporal-reasoning": {
+              "accuracy": 0.8721804511278195,
+              "correct": 116,
+              "total": 133
+            }
+          },
+          "rank": 1,
+          "registry_section": "benchmarks",
+          "run_id": "records/symbiotic-memory/long-mem-eval/500/factconsol-thinkon-500-20260624",
+          "run_kind": "native",
+          "run_name": "factconsol-thinkon-500-20260624",
+          "settings_label": "wf50 · embed h1 32x32 · chat h2 · distill:disabled,query-planner:disabled,answer:enabled,judge:disabled",
+          "system": "symbiotic-memory",
+          "task_averaged_accuracy": 0.8880124991967097,
+          "trial_markers": [],
+          "tuning_cohort": null,
+          "tuning_shape": "h1 32x32",
+          "verification": {
+            "level": "verified",
+            "missing_artifacts": [],
+            "review": {
+              "reviewed_at": "2026-07-24",
+              "reviewer": "Codex independent canonical-record audit",
+              "verdict": "pass"
+            }
+          }
+        }
+      ],
+      "run_count": 1,
+      "strictly_comparable": true
+    }
+  ],
+  "generated_at": "2026-07-25T02:04:24Z",
   "methodology": "docs/longmemeval-methodology.md",
   "schema": "membench.leaderboard.v1",
   "source": {
     "contains_fixtures": false,
-    "git_sha": "7e416c4",
-    "ranked_count": 0,
-    "records_digest": "a932b368345c871504c3c0bd4835162966700dfbf092d274f97401b7d249d736",
+    "git_sha": "b99224d",
+    "ranked_count": 1,
+    "records_digest": "fa59af01d3426ea51fc3738e9aacfb54ba6766596c90f014999049c4942fa1b9",
     "records_root": "records",
-    "run_count": 11,
+    "run_count": 12,
     "unranked_count": 11
   },
   "unranked": [

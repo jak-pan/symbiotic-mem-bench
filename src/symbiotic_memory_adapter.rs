@@ -1449,7 +1449,9 @@ where
                 .with_optional_trace_sink(memory_trace_sink.clone())
                 .with_diagnostic_mode(ingest_diagnostic_mode);
         if consolidate_briefs {
-            // Briefs (extractive-brief-v1) are deprecated/killed — never generate them.
+            // Consolidation is explicit: the caller must supply the provider
+            // factory as well as enabling the run flag. Test-only convenience
+            // wrappers intentionally supply no consolidator.
             if let Some(consolidator_factory) = consolidator_factory {
                 ingest = ingest.with_consolidator(consolidator_factory());
             }
@@ -2727,11 +2729,11 @@ mod tests {
     #[cfg(feature = "symbiotic-memory-adapter")]
     use symbiotic_memory::types::{MemoryFact, RawArchiveReceipt};
 
-    /// Read-side handle onto a test vault's sqlite ledger, opened through
-    /// the vault facade — tests don't name backends either.
+    /// Read-side handle onto a test vault, opened through the backend-neutral
+    /// facade with the same vector dimensions as the test embedder.
     #[cfg(feature = "symbiotic-memory-adapter")]
-    async fn open_vault_ledger(vault_dir: &Path) -> BenchMemoryStore {
-        open_store_with_metrics(vault_dir.to_path_buf(), "sqlite".to_string(), 3)
+    async fn open_vault_ledger(vault_dir: &Path, dimensions: usize) -> BenchMemoryStore {
+        open_store_with_metrics(vault_dir.to_path_buf(), "zvec".to_string(), dimensions)
             .await
             .unwrap()
             .0
@@ -2746,7 +2748,7 @@ mod tests {
                 "config/symbiotic-memory/longmemeval-raw-light.yaml",
                 "memory-recall-v3-raw-light",
                 10usize,
-                10usize,
+                50usize,
                 1000usize,
                 300u64,
             ),
@@ -3115,7 +3117,7 @@ mod tests {
 
     #[cfg(feature = "symbiotic-memory-adapter")]
     #[tokio::test]
-    async fn sqlite_workflow_respects_configured_source_wip() {
+    async fn workflow_respects_configured_source_wip() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
         use symbiotic_memory::config::RecallPolicy;
@@ -3269,7 +3271,7 @@ mod tests {
 
     #[cfg(feature = "symbiotic-memory-adapter")]
     #[tokio::test]
-    async fn sqlite_benchmark_resumes_staged_distill_after_fact_embedding_failure() {
+    async fn benchmark_resumes_staged_distill_after_fact_embedding_failure() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         use symbiotic_memory::config::RecallPolicy;
@@ -3323,7 +3325,13 @@ mod tests {
             false,
         )
         .await;
-        assert!(first.is_err());
+        let first = first.unwrap();
+        assert_eq!(first.len(), 1);
+        assert!(
+            first[0]
+                .hypothesis
+                .starts_with("UNAVAILABLE: recall failed")
+        );
         assert_eq!(distill_calls.load(Ordering::SeqCst), 1);
 
         let vault_dir = dir.path().join("vaults").join("q-staged-resume");
@@ -3339,7 +3347,7 @@ mod tests {
         assert!(manifest.stage_succeeded(MemoryStage::WriteArchive));
         assert!(!manifest.stage_succeeded(MemoryStage::EmbedFacts));
         assert_eq!(
-            open_vault_ledger(&vault_dir)
+            open_vault_ledger(&vault_dir, 3)
                 .await
                 .active_facts()
                 .await
@@ -3349,6 +3357,10 @@ mod tests {
         );
 
         fail_fact_embeddings.store(false, Ordering::SeqCst);
+        // A fail-soft hypothesis is a legitimate completed result. Remove it
+        // to model a missing output beside terminal workflow state; resume
+        // must then force the queue row and reuse the staged distillation.
+        fs::write(&out, "").unwrap();
         run_longmemeval_vault(
             &[row],
             dir.path(),
@@ -3384,7 +3396,7 @@ mod tests {
         assert!(manifest.stage_succeeded(MemoryStage::EmbedFacts));
         assert!(manifest.stage_succeeded(MemoryStage::Index));
         assert_eq!(
-            open_vault_ledger(&vault_dir)
+            open_vault_ledger(&vault_dir, 3)
                 .await
                 .active_facts()
                 .await
@@ -3396,7 +3408,7 @@ mod tests {
 
     #[cfg(feature = "symbiotic-memory-adapter")]
     #[tokio::test]
-    async fn sqlite_benchmark_writes_archive_before_manifest_success() {
+    async fn benchmark_writes_archive_before_manifest_success() {
         use symbiotic_memory::config::RecallPolicy;
         use symbiotic_memory::ingest::PassthroughDistiller;
         use symbiotic_memory::providers::{DisabledChatProvider, HashEmbeddingProvider};
@@ -3451,7 +3463,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(manifest.stage_succeeded(MemoryStage::WriteArchive));
-        let store = open_vault_ledger(&vault_dir).await;
+        let store = open_vault_ledger(&vault_dir, 1024).await;
         let fact_count = store.active_facts().await.unwrap().len();
         let archive_count = std::fs::read_dir(vault_dir.join("archive").join("memories"))
             .unwrap()
@@ -3485,7 +3497,7 @@ mod tests {
 
     #[cfg(feature = "symbiotic-memory-adapter")]
     #[tokio::test]
-    async fn sqlite_answer_only_reuses_complete_vault_without_reingest() {
+    async fn answer_only_reuses_complete_vault_without_reingest() {
         use symbiotic_memory::config::RecallPolicy;
         use symbiotic_memory::ingest::PassthroughDistiller;
         use symbiotic_memory::providers::{DisabledChatProvider, HashEmbeddingProvider};
@@ -3574,7 +3586,7 @@ mod tests {
 
     #[cfg(feature = "symbiotic-memory-adapter")]
     #[tokio::test]
-    async fn sqlite_benchmark_can_consolidate_extractive_briefs() {
+    async fn benchmark_can_consolidate_extractive_briefs() {
         use symbiotic_memory::config::RecallPolicy;
         use symbiotic_memory::ingest::PassthroughDistiller;
         use symbiotic_memory::providers::{DisabledChatProvider, HashEmbeddingProvider};
@@ -3599,12 +3611,20 @@ mod tests {
         let mut policy = RecallPolicy::default();
         policy.answerer_enabled = false;
 
-        run_longmemeval_vault(
+        let consolidator: Arc<dyn Fn() -> Arc<dyn Distiller> + Send + Sync> =
+            Arc::new(|| Arc::new(PassthroughDistiller));
+        run_longmemeval_vault_with_planner(
             &[row],
             dir.path(),
             HashEmbeddingProvider::default,
             || PassthroughDistiller,
+            Some(consolidator),
             || DisabledChatProvider,
+            None,
+            None,
+            RerankCascade::default(),
+            None,
+            None,
             policy,
             &out,
             false,
@@ -3612,6 +3632,7 @@ mod tests {
             true,
             false,
             IngestDiagnosticMode::None,
+            None,
             false,
         )
         .await
@@ -3626,15 +3647,13 @@ mod tests {
             manifest.stages[&MemoryStage::Consolidate].metrics["brief_count"],
             serde_json::json!(1)
         );
-        let active = open_vault_ledger(&vault_dir)
+        let active = open_vault_ledger(&vault_dir, 1024)
             .await
-            .active_facts()
+            .active_briefs()
             .await
             .unwrap();
-        assert!(active.iter().any(|fact| {
-            fact.distillery_version.as_deref() == Some("extractive-brief-v1")
-                && fact.content.contains("sports store downtown")
-        }));
+        assert_eq!(active.len(), 1);
+        assert!(active[0].content.contains("sports store downtown"));
     }
 
     #[cfg(feature = "symbiotic-memory-adapter")]

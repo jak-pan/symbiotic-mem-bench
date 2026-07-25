@@ -221,6 +221,11 @@ enum Command {
         records_root: PathBuf,
         #[arg(long)]
         record_name: Option<String>,
+        /// Copy executor-native state (vaults, queues, raw outputs) as well as
+        /// the portable public record. Off by default because native runs can
+        /// be many GiB and may contain raw prompts or local debug data.
+        #[arg(long)]
+        include_native_state: bool,
         #[arg(long)]
         force: bool,
     },
@@ -376,11 +381,13 @@ fn main() -> anyhow::Result<()> {
                 run_root,
                 records_root,
                 record_name,
+                include_native_state,
                 force,
             } => save_record(
                 resolve_repo_path(&run_root),
                 resolve_repo_path(&records_root),
                 record_name,
+                include_native_state,
                 force,
             ),
             Command::SummarizeQueueEvents { jsonl } => summarize_queue_events(jsonl),
@@ -1440,11 +1447,12 @@ fn run_selected_benchmark(cli: Cli) -> anyhow::Result<()> {
             let consolidate_briefs = if cli.smoke {
                 false
             } else {
-                enabled_by_default(
-                    "consolidate-briefs",
-                    cli.consolidate_briefs,
-                    cli.no_consolidate_briefs,
-                )?
+                if cli.consolidate_briefs && cli.no_consolidate_briefs {
+                    anyhow::bail!(
+                        "choose either --consolidate-briefs or --no-consolidate-briefs, not both"
+                    );
+                }
+                cli.consolidate_briefs && !cli.no_consolidate_briefs
             };
             let query_planner = if cli.smoke {
                 Some("off".to_string())
@@ -2482,6 +2490,7 @@ fn save_record(
     run_root: PathBuf,
     records_root: PathBuf,
     record_name: Option<String>,
+    include_native_state: bool,
     force: bool,
 ) -> anyhow::Result<()> {
     let report_path = run_root.join("benchmark-report.json");
@@ -2501,11 +2510,194 @@ fn save_record(
                 dest.display()
             );
         }
+    }
+    let parent = dest
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("record destination has no parent: {}", dest.display()))?;
+    std::fs::create_dir_all(parent)?;
+    let staging = tempfile::Builder::new()
+        .prefix(".membench-record-")
+        .tempdir_in(parent)?;
+    let staged_record = staging.path().join("record");
+    if include_native_state {
+        copy_dir_recursive(&run_root, &staged_record)?;
+    } else {
+        copy_portable_record(&run_root, &staged_record, &report)?;
+    }
+    if dest.exists() {
         std::fs::remove_dir_all(&dest)?;
     }
-    copy_dir_recursive(&run_root, &dest)?;
+    std::fs::rename(&staged_record, &dest)?;
     println!("saved record: {}", dest.display());
     Ok(())
+}
+
+fn copy_portable_record(
+    run_root: &Path,
+    dest: &Path,
+    source_report: &serde_json::Value,
+) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dest.join("artifacts"))?;
+
+    let mut available = Vec::new();
+    let mut artifacts = serde_json::Map::new();
+    for kind in membench::artifacts::KNOWN_ARTIFACT_KINDS {
+        let Some((file_name, _)) = membench::artifacts::artifact_file(kind) else {
+            continue;
+        };
+        let source = run_root.join("artifacts").join(file_name);
+        let Ok(metadata) = std::fs::symlink_metadata(&source) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() {
+            anyhow::bail!("refusing symlinked public artifact {}", source.display());
+        }
+        if !metadata.is_file() {
+            continue;
+        }
+        let mut bytes = std::fs::read(&source)?;
+        if *kind == "score_summary" {
+            bytes = portable_score_summary(&bytes)?;
+        }
+        std::fs::write(dest.join("artifacts").join(file_name), &bytes)?;
+        available.push((*kind).to_string());
+        artifacts.insert(
+            (*kind).to_string(),
+            json!({
+                "bytes": bytes.len(),
+                "kind": kind,
+                "non_empty_lines": bytes.split(|byte| *byte == b'\n')
+                    .filter(|line| line.iter().any(|byte| !byte.is_ascii_whitespace()))
+                    .count(),
+                "path": format!("artifacts/{file_name}"),
+                "sha256": format!("{:x}", Sha256::digest(&bytes)),
+            }),
+        );
+    }
+
+    let mut params = read_json_value(&run_root.join("run-params.json"))?;
+    normalize_absolute_paths(&mut params);
+    params["run_root"] = json!(".");
+    params["portable_record"] = json!({
+        "native_state_included": false,
+        "path_normalization": "absolute local paths replaced with local://<basename>"
+    });
+    write_pretty_json(&dest.join("run-params.json"), &params)?;
+
+    let mut report = source_report.clone();
+    normalize_absolute_paths(&mut report);
+    report["run_params"] = params.clone();
+    report["artifacts"] = serde_json::Value::Object(artifacts);
+    let missing: Vec<String> = membench::artifacts::KNOWN_ARTIFACT_KINDS
+        .iter()
+        .filter(|kind| !available.iter().any(|present| present == **kind))
+        .map(|kind| (*kind).to_string())
+        .collect();
+    report["artifact_manifest"] = json!({
+        "available": available,
+        "missing": missing,
+        "native_state_available": false,
+        "native_state_note": "Portable record: executor-native vaults, workflow state, provider queues, raw outputs, and local debug files were intentionally omitted."
+    });
+    report["portable_record"] = json!({
+        "native_state_included": false,
+        "source_run_root": "omitted",
+        "path_normalization": "absolute local paths replaced with local://<basename>"
+    });
+    write_pretty_json(&dest.join("benchmark-report.json"), &report)?;
+
+    for name in ["review.json", "external-artifacts.json"] {
+        let source = run_root.join(name);
+        let Ok(metadata) = std::fs::symlink_metadata(&source) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() {
+            anyhow::bail!("refusing symlinked record metadata {}", source.display());
+        }
+        if metadata.is_file() {
+            std::fs::copy(source, dest.join(name))?;
+        }
+    }
+    Ok(())
+}
+
+fn portable_score_summary(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let mut summary: serde_json::Value = serde_json::from_slice(bytes)?;
+    for key in ["hypotheses_file", "hypotheses_path"] {
+        if summary.get(key).is_some() {
+            summary[key] = json!("artifacts/hypotheses.jsonl");
+        }
+    }
+    for key in ["scored_file", "scored_artifact"] {
+        if summary.get(key).is_some() {
+            summary[key] = json!("artifacts/scored.json");
+        }
+    }
+    for key in ["verdicts_file", "verdicts_artifact"] {
+        if summary.get(key).is_some() {
+            summary[key] = json!("artifacts/verdicts.jsonl");
+        }
+    }
+    if let Some(hashes) = summary
+        .get_mut("artifact_hashes")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        let original = std::mem::take(hashes);
+        for (path, hash) in original {
+            let file_name = Path::new(&path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| anyhow::anyhow!("invalid score artifact path {path}"))?;
+            let portable = match file_name {
+                "hypotheses.jsonl" => "artifacts/hypotheses.jsonl",
+                "verdicts.jsonl" => "artifacts/verdicts.jsonl",
+                "scored.json" => "artifacts/scored.json",
+                other => anyhow::bail!("unknown score artifact in score-summary.json: {other}"),
+            };
+            hashes.insert(portable.to_string(), hash);
+        }
+    }
+    normalize_absolute_paths(&mut summary);
+    let mut normalized = serde_json::to_vec_pretty(&summary)?;
+    normalized.push(b'\n');
+    Ok(normalized)
+}
+
+fn read_json_value(path: &Path) -> anyhow::Result<serde_json::Value> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|err| anyhow::anyhow!("failed to read {}: {err}", path.display()))?;
+    serde_json::from_str(&raw)
+        .map_err(|err| anyhow::anyhow!("failed to parse {}: {err}", path.display()))
+}
+
+fn write_pretty_json(path: &Path, value: &serde_json::Value) -> anyhow::Result<()> {
+    let mut bytes = serde_json::to_vec_pretty(value)?;
+    bytes.push(b'\n');
+    std::fs::write(path, bytes)?;
+    Ok(())
+}
+
+fn normalize_absolute_paths(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) if Path::new(text).is_absolute() => {
+            let leaf = Path::new(text)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("path");
+            *text = format!("local://{leaf}");
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                normalize_absolute_paths(value);
+            }
+        }
+        serde_json::Value::Object(values) => {
+            for value in values.values_mut() {
+                normalize_absolute_paths(value);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn record_run_root(
@@ -3872,6 +4064,11 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
         let embedder_factory = provider_runtime.embedding_factory(&run)?;
         let distiller_factory = provider_runtime.distiller_factory(&run)?;
         let consolidator_factory = provider_runtime.consolidator_factory(&run)?;
+        if run.consolidate_briefs && consolidator_factory.is_none() {
+            anyhow::bail!(
+                "--consolidate-briefs requires a truthy MEMBENCH_CONSOLIDATOR (for example `llm`); refusing a run whose manifest could never complete"
+            );
+        }
         let answer_factory = provider_runtime.answer_factory(&run)?;
         let answer_retry_factory = provider_runtime.answer_retry_factory(&run)?;
         let planner_factory = provider_runtime.query_planner_factory(&run)?;
@@ -7826,12 +8023,92 @@ mod tests {
         )
         .unwrap();
         std::fs::write(run_root.join("artifacts/hypotheses.jsonl"), "{}\n").unwrap();
+        std::fs::write(run_root.join("artifacts/verdicts.jsonl"), "{}\n").unwrap();
+        std::fs::write(run_root.join("artifacts/scored.json"), "{}\n").unwrap();
+        let empty_object_hash = format!("{:x}", Sha256::digest(b"{}\n"));
+        std::fs::write(
+            run_root.join("artifacts/score-summary.json"),
+            serde_json::to_vec_pretty(&json!({
+                "hypotheses_file": "/tmp/source/hypotheses.jsonl",
+                "hypotheses_hash": empty_object_hash,
+                "scored_artifact": "scores/scored.json",
+                "verdicts_artifact": "scores/verdicts.jsonl",
+                "artifact_hashes": {
+                    "scores/scored.json": empty_object_hash,
+                    "scores/verdicts.jsonl": empty_object_hash
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
 
-        save_record(run_root, records_root.clone(), None, false).unwrap();
+        std::fs::create_dir_all(run_root.join("vaults/q1")).unwrap();
+        std::fs::write(run_root.join("vaults/q1/private.txt"), "native\n").unwrap();
+        save_record(run_root, records_root.clone(), None, false, false).unwrap();
 
         let saved = records_root.join("symbiotic-memory/long-mem-eval/50/candidate");
         assert!(saved.join("benchmark-report.json").exists());
         assert!(saved.join("artifacts/hypotheses.jsonl").exists());
+        assert!(!saved.join("vaults").exists());
+        let report: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(saved.join("benchmark-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["artifact_manifest"]["native_state_available"], false);
+        assert_eq!(
+            report["artifacts"]["hypotheses"]["path"],
+            "artifacts/hypotheses.jsonl"
+        );
+        let score_summary: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(saved.join("artifacts/score-summary.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            score_summary["hypotheses_file"],
+            "artifacts/hypotheses.jsonl"
+        );
+        assert_eq!(
+            score_summary["artifact_hashes"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![
+                "artifacts/scored.json".to_string(),
+                "artifacts/verdicts.jsonl".to_string()
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_portable_save_does_not_replace_existing_record() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let run_root = dir.path().join("run");
+        let records_root = dir.path().join("records");
+        let saved = records_root.join("symbiotic-memory/long-mem-eval/1/candidate");
+        std::fs::create_dir_all(run_root.join("artifacts")).unwrap();
+        std::fs::create_dir_all(&saved).unwrap();
+        std::fs::write(saved.join("sentinel"), "previous record\n").unwrap();
+        std::fs::write(run_root.join("run-params.json"), "{}\n").unwrap();
+        std::fs::write(
+            run_root.join("benchmark-report.json"),
+            r#"{"system":"symbiotic-memory","benchmark":"long-mem-eval","run_name":"candidate","run_params":{"limit":1},"metrics":{"accuracy":{"total":1,"value":1.0}}}"#,
+        )
+        .unwrap();
+        let outside = dir.path().join("outside.jsonl");
+        std::fs::write(&outside, "{}\n").unwrap();
+        symlink(&outside, run_root.join("artifacts/hypotheses.jsonl")).unwrap();
+
+        let result = save_record(run_root, records_root, None, false, true);
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read_to_string(saved.join("sentinel")).unwrap(),
+            "previous record\n"
+        );
     }
 
     #[test]
@@ -8085,7 +8362,7 @@ mod tests {
     }
 
     #[test]
-    fn native_run_params_record_oracle_and_rerank_off_by_default() {
+    fn native_run_params_record_oracle_off_and_owner_default_reranker() {
         // Empty env file isolates the assertion from any repo-root .env.test.local.
         let dir = tempfile::tempdir().unwrap();
         let env_file = dir.path().join(".env.test.local");
@@ -8095,8 +8372,11 @@ mod tests {
 
         let params = symbiotic_memory_run_params(&run);
         assert_eq!(params["oracle_gold"], serde_json::json!(false));
-        assert_eq!(params["rerank"]["enabled"], serde_json::json!(false));
-        assert!(params["configured_models"]["rerank"]["model"].is_null());
+        assert_eq!(params["rerank"]["enabled"], serde_json::json!(true));
+        assert_eq!(
+            params["configured_models"]["rerank"]["model"],
+            serde_json::json!("nvidia/llama-nemotron-rerank-vl-1b-v2:free")
+        );
     }
 
     #[test]

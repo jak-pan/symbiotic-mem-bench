@@ -233,11 +233,16 @@ cargo run --bin membench -- save-record \
   --run-root runs/symbiotic-memory/long-mem-eval/500/baseline-clean
 ```
 
+The command is portable by default: it copies normalized metadata and known public artifacts,
+rewrites artifact paths to the record, and omits executor-native vaults, queues, raw outputs, and
+debug state. Absolute machine-local metadata paths are disclosed as `local://<basename>`. Use
+`--include-native-state` only for an intentional local/private archive; that mode can be many GiB
+and may contain raw prompts or debug data that must not be published.
+
 Use `--force` only when intentionally replacing a record with a corrected version.
 
-Follow-up task: `docs/canonical-record-storage-task.md` tracks the plan for promoting one canonical
-run to `records/` while storing oversized native state externally with hashes and restore
-instructions.
+`docs/canonical-record-storage-task.md` tracks promotion of the first audited 500-question canonical
+run and optional external retention of oversized native state.
 
 Summarize queue timing from queue event JSONL:
 

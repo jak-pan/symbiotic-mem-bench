@@ -1,0 +1,55 @@
+{
+  "elapsed_ms": 1786,
+  "hypotheses_file": "artifacts/hypotheses.jsonl",
+  "judge_model": "deepseek-v4-flash",
+  "judge_prompt_mode": "semantic-shared-compact",
+  "metrics": {
+    "counts": {
+      "abstention_correct": 25,
+      "abstention_total": 48,
+      "judge_errors": 0,
+      "scored": 500,
+      "total_correct": 437
+    },
+    "judge_model": "deepseek-v4-flash",
+    "judge_prompt_mode": "semantic-shared-compact",
+    "overall_accuracy": 0.874,
+    "per_question_type": {
+      "knowledge-update": {
+        "accuracy": 0.8974358974358975,
+        "correct": 70,
+        "total": 78
+      },
+      "multi-session": {
+        "accuracy": 0.8120300751879699,
+        "correct": 108,
+        "total": 133
+      },
+      "single-session-assistant": {
+        "accuracy": 0.9464285714285714,
+        "correct": 53,
+        "total": 56
+      },
+      "single-session-preference": {
+        "accuracy": 0.9,
+        "correct": 27,
+        "total": 30
+      },
+      "single-session-user": {
+        "accuracy": 0.9,
+        "correct": 63,
+        "total": 70
+      },
+      "temporal-reasoning": {
+        "accuracy": 0.8721804511278195,
+        "correct": 116,
+        "total": 133
+      }
+    },
+    "task_averaged_accuracy": 0.8880124991967097
+  },
+  "schema_version": 1,
+  "scored_file": "artifacts/scored.json",
+  "scorer": "queued-longmemeval-deepseek-v4-flash",
+  "verdicts_file": "artifacts/verdicts.jsonl"
+}

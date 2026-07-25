@@ -1,0 +1,12 @@
+{
+  "schema": "membench.record_review.v1",
+  "reviewer": "Codex independent canonical-record audit",
+  "reviewed_at": "2026-07-24",
+  "verdict": "pass",
+  "artifact_sha256": {
+    "hypotheses": "c5004aa9b8f9b52bb573581eb183f9e928fbfcc4fecd443a9aae851308272e18",
+    "verdicts": "385a97b1732dbdca724df51033c783ad75a62b4f3336b9d8612e4cea904f9adf",
+    "scored": "b545694a51b9ce20ca71d694b860a54d6e0cc76f3dc0e61d1a5c7dcbae620f8a"
+  },
+  "notes": "Checked 500/500 question-ID joins across dataset, hypotheses, verdicts, and provenance; duplicate/missing IDs; score totals and per-type totals; clean run flags; trace-backed provider provenance; recorded artifact hashes; secret and absolute-path scans; and a deterministic correct/incorrect sample from each of the six question types. Native vault, queue, raw, and debug state is intentionally omitted from this public record."
+}

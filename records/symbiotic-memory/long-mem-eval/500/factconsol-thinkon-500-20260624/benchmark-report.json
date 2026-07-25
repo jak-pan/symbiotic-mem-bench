@@ -1,0 +1,360 @@
+{
+  "artifact_manifest": {
+    "available": [
+      "hypotheses",
+      "verdicts",
+      "partial_verdicts",
+      "provenance",
+      "memory_traces",
+      "model_traces",
+      "step_analytics",
+      "scored",
+      "score_summary"
+    ],
+    "missing": [
+      "gold_eval"
+    ],
+    "native_state_available": false,
+    "native_state_note": "Portable record: executor-native vaults, workflow state, provider queues, raw outputs, and local debug files were intentionally omitted."
+  },
+  "artifacts": {
+    "hypotheses": {
+      "bytes": 200055,
+      "kind": "hypotheses",
+      "non_empty_lines": 500,
+      "path": "artifacts/hypotheses.jsonl",
+      "sha256": "c5004aa9b8f9b52bb573581eb183f9e928fbfcc4fecd443a9aae851308272e18"
+    },
+    "memory_traces": {
+      "bytes": 76849446,
+      "kind": "memory_traces",
+      "non_empty_lines": 63897,
+      "path": "artifacts/memory-traces.jsonl",
+      "sha256": "3a7a2aceae8b83defec52ad1c747ad0db99565b032243d0c67621461b35fb84d"
+    },
+    "model_traces": {
+      "bytes": 46636499,
+      "kind": "model_traces",
+      "non_empty_lines": 134183,
+      "path": "artifacts/model-traces.jsonl",
+      "sha256": "592352e1fb135b84378b98ea1fa3f4c2f20153ff16df4433d522da8c330a48ff"
+    },
+    "partial_verdicts": {
+      "bytes": 199862,
+      "kind": "partial_verdicts",
+      "non_empty_lines": 500,
+      "path": "artifacts/partial-verdicts.jsonl",
+      "sha256": "bd822b5dcdc38f5678d336063f165ce97ba71fbfbfa7832a0f620ab1846c0b9f"
+    },
+    "provenance": {
+      "bytes": 1407458,
+      "kind": "provenance",
+      "non_empty_lines": 500,
+      "path": "artifacts/provenance.jsonl",
+      "sha256": "a170799b295a229fe3fd66f25470edd1ebbef6c4fdad107819a712af3fc6cd78"
+    },
+    "score_summary": {
+      "bytes": 1424,
+      "kind": "score_summary",
+      "non_empty_lines": 55,
+      "path": "artifacts/score-summary.json",
+      "sha256": "a605cb55b73e002aec31fa4cad8e39bc30844cbc4e4dbfefc76b9f1ddf224a83"
+    },
+    "scored": {
+      "bytes": 994,
+      "kind": "scored",
+      "non_empty_lines": 45,
+      "path": "artifacts/scored.json",
+      "sha256": "b545694a51b9ce20ca71d694b860a54d6e0cc76f3dc0e61d1a5c7dcbae620f8a"
+    },
+    "step_analytics": {
+      "bytes": 11906814,
+      "kind": "step_analytics",
+      "non_empty_lines": 424030,
+      "path": "artifacts/step-analytics.json",
+      "sha256": "7c59956ffe4fb355071225b6550bf6d9a3648868e2271a4dc4e2a9d0e78f3c63"
+    },
+    "verdicts": {
+      "bytes": 199862,
+      "kind": "verdicts",
+      "non_empty_lines": 500,
+      "path": "artifacts/verdicts.jsonl",
+      "sha256": "385a97b1732dbdca724df51033c783ad75a62b4f3336b9d8612e4cea904f9adf"
+    }
+  },
+  "benchmark": "long-mem-eval",
+  "cohort": {
+    "dataset_fingerprint": "d8a772212d40150b75664719d3d078268bd665ce0988ca894c7064de97465c4e",
+    "judge_model": "deepseek-v4-flash",
+    "judge_prompt_mode": "semantic-shared-compact"
+  },
+  "config_signature": "5e090392102a57fcfccb205a14aa9c0a2e8bd4feaaf4eabe0f7440fd1a7817cc",
+  "created_at": "2026-06-24T11:38:04.948570+00:00",
+  "metrics": {
+    "abstention_accuracy": {
+      "correct": 25,
+      "total": 48,
+      "value": 0.5208333333333334
+    },
+    "accuracy": {
+      "correct": 437,
+      "total": 500,
+      "value": 0.874
+    },
+    "cache": {
+      "cached_input_tokens": 75672320,
+      "prompt_cache_hits": 0,
+      "prompt_cache_misses": 26933,
+      "prompt_cache_partial_hits": 17797,
+      "response_cache_hits": 0,
+      "roles": [],
+      "uncached_input_tokens": 97339171
+    },
+    "cost_micro_usd": 10444152,
+    "task_averaged_accuracy": 0.8880124991967097
+  },
+  "models": {
+    "answer": "deepseek-v4-flash",
+    "distill": "deepseek-v4-flash",
+    "embed": "qwen/qwen3-embedding-8b",
+    "judge": "deepseek-v4-flash"
+  },
+  "portable_record": {
+    "native_state_included": false,
+    "path_normalization": "absolute local paths replaced with local://<basename>",
+    "source_run_root": "omitted"
+  },
+  "run_kind": "native",
+  "run_name": "factconsol-thinkon-500-20260624",
+  "run_params": {
+    "answer_gap_retry": false,
+    "answer_only": false,
+    "answer_output": true,
+    "answer_unavailable_retry": false,
+    "answer_verifier": false,
+    "answerer": true,
+    "benchmark": "long-mem-eval",
+    "chat_http1_only": false,
+    "chat_http_client_pool_size": null,
+    "chat_http_connect_timeout_secs": null,
+    "chat_http_pool_max_idle_per_host": null,
+    "chat_http_tcp_keepalive_secs": null,
+    "chat_http_timeout_secs": null,
+    "configured_models": {
+      "answer": {
+        "model": "deepseek-v4-flash",
+        "operation": "chat",
+        "operator": "deepseek",
+        "queue_id": "chat:deepseek:deepseek-v4-flash"
+      },
+      "chat_model": "none",
+      "chat_provider": "disabled",
+      "distill": {
+        "model": "deepseek-v4-flash",
+        "operation": "chat",
+        "operator": "deepseek",
+        "queue_id": "chat:deepseek:deepseek-v4-flash"
+      },
+      "embed": {
+        "model": "qwen/qwen3-embedding-8b",
+        "operation": "embedding",
+        "operator": "openrouter",
+        "queue_id": "embedding:openrouter:qwen/qwen3-embedding-8b"
+      },
+      "embedding_model": "hash-embedding-v1",
+      "embedding_provider": "hash",
+      "prompt_cache": true,
+      "query_planner": {
+        "model": "deepseek-v4-flash",
+        "operation": "chat",
+        "operator": "deepseek",
+        "queue_id": "chat:deepseek:deepseek-v4-flash"
+      }
+    },
+    "configured_workflow_max_in_flight": 10,
+    "consolidate_briefs": true,
+    "dataset": "runs/inputs/longmemeval-cleaned/longmemeval_s_cleaned.json",
+    "distill_prompt": "distill",
+    "distiller": "llm",
+    "embed_batch_max_chars": null,
+    "embed_batch_size": null,
+    "embed_max_chars": null,
+    "embedder": "openrouter",
+    "env_file": null,
+    "ephemeral_smoke_run": false,
+    "evidence_ledger": false,
+    "fresh": true,
+    "generative_answerer_enabled": true,
+    "ingest_diagnostic": null,
+    "ingest_diagnostic_mode": null,
+    "ingest_stop_after_raw_embed": false,
+    "judge_model": "deepseek-v4-flash",
+    "judge_operator": "deepseek",
+    "judge_workers": 400,
+    "limit": 500,
+    "memory_config": "config/symbiotic-memory/longmemeval-raw-light.yaml",
+    "memory_manifest": "../symbiotic-memory/Cargo.toml",
+    "openrouter_embed_input_type": null,
+    "openrouter_embed_send_default_input_type": false,
+    "openrouter_http1_only": true,
+    "openrouter_http_client_pool_size": "32",
+    "openrouter_http_connect_timeout_secs": null,
+    "openrouter_http_pool_max_idle_per_host": "32",
+    "openrouter_http_tcp_keepalive_secs": null,
+    "oracle": null,
+    "portable_record": {
+      "native_state_included": false,
+      "path_normalization": "absolute local paths replaced with local://<basename>"
+    },
+    "prewarm_judge_cache": 0,
+    "prewarm_pause_secs": 10,
+    "prompt_dir": "local://prompts-v3",
+    "provider_queue_available": true,
+    "provider_queue_debug_requests": false,
+    "provider_queue_dir": null,
+    "query_planner": "flash",
+    "resume": false,
+    "role_settings": {
+      "answer": {
+        "active": true,
+        "input_units_per_minute": null,
+        "logical_retry_attempts": 4,
+        "max_in_flight": 2000,
+        "max_tokens": null,
+        "model": "deepseek-v4-flash",
+        "operation": "chat",
+        "operator": "deepseek",
+        "queue_id": "chat:deepseek:deepseek-v4-flash",
+        "reasoning_effort": null,
+        "requests_per_minute": null,
+        "retry_attempts": 4,
+        "thinking": "enabled",
+        "timeout_seconds": 600
+      },
+      "distill": {
+        "active": true,
+        "input_units_per_minute": null,
+        "logical_retry_attempts": 4,
+        "max_in_flight": 2000,
+        "max_tokens": 8192,
+        "model": "deepseek-v4-flash",
+        "operation": "chat",
+        "operator": "deepseek",
+        "queue_id": "chat:deepseek:deepseek-v4-flash",
+        "reasoning_effort": null,
+        "requests_per_minute": null,
+        "retry_attempts": 4,
+        "thinking": "disabled",
+        "timeout_seconds": 600
+      },
+      "embed": {
+        "active": true,
+        "input_units_per_minute": null,
+        "logical_retry_attempts": 6,
+        "max_in_flight": 1000,
+        "max_tokens": null,
+        "model": "qwen/qwen3-embedding-8b",
+        "operation": "embedding",
+        "operator": "openrouter",
+        "queue_id": "embedding:openrouter:qwen/qwen3-embedding-8b",
+        "reasoning_effort": null,
+        "requests_per_minute": null,
+        "retry_attempts": 6,
+        "thinking": null,
+        "timeout_seconds": 300
+      },
+      "judge": {
+        "active": true,
+        "input_units_per_minute": null,
+        "logical_retry_attempts": 4,
+        "max_in_flight": 2000,
+        "max_tokens": 64,
+        "model": "deepseek-v4-flash",
+        "operation": "chat",
+        "operator": "deepseek",
+        "queue_id": "chat:deepseek:deepseek-v4-flash",
+        "reasoning_effort": null,
+        "requests_per_minute": null,
+        "retry_attempts": 4,
+        "thinking": "disabled",
+        "timeout_seconds": 600
+      },
+      "query_planner": {
+        "active": true,
+        "input_units_per_minute": null,
+        "logical_retry_attempts": 4,
+        "max_in_flight": 2000,
+        "max_tokens": 512,
+        "model": "deepseek-v4-flash",
+        "operation": "chat",
+        "operator": "deepseek",
+        "queue_id": "chat:deepseek:deepseek-v4-flash",
+        "reasoning_effort": null,
+        "requests_per_minute": null,
+        "retry_attempts": 4,
+        "thinking": "disabled",
+        "timeout_seconds": 600
+      }
+    },
+    "routed": false,
+    "run_kind": "native",
+    "run_name": "factconsol-thinkon-500-20260624",
+    "run_root": ".",
+    "runtime_models": {
+      "answer": "queued:deepseek:deepseek-v4-flash",
+      "distill": "queued:deepseek:deepseek-v4-flash",
+      "embed": "queued:openrouter:qwen/qwen3-embedding-8b",
+      "judge": "queued:deepseek:deepseek-v4-flash",
+      "query_planner": "queued:deepseek:deepseek-v4-flash"
+    },
+    "runtime_provider_note": "Configured models come from the requested memory config; runtime models describe the providers this membench adapter actually invoked.",
+    "sample": "stratified",
+    "schema": "membench.run_params.v1",
+    "score": true,
+    "score_output": true,
+    "scorer": "queued-longmemeval-deepseek-v4-flash",
+    "source_vault_root": null,
+    "stop_after_raw_embed": false,
+    "store": "zvec-hybrid",
+    "symem_bin": null,
+    "system": "symbiotic-memory",
+    "thinking": {
+      "answer": "enabled",
+      "distill": "disabled",
+      "judge": "disabled",
+      "query_planner": "disabled",
+      "summary": "distill:disabled,query-planner:disabled,answer:enabled,judge:disabled"
+    },
+    "transport": {
+      "chat": {
+        "client_pool_size": null,
+        "connect_timeout_secs": null,
+        "http1_only": false,
+        "label": "h2",
+        "pool_max_idle_per_host": null,
+        "provider": "deepseek",
+        "tcp_keepalive_secs": null,
+        "timeout_secs": null
+      },
+      "embed": {
+        "client_pool_size": "32",
+        "connect_timeout_secs": null,
+        "http1_only": true,
+        "label": "h1 32x32",
+        "pool_max_idle_per_host": "32",
+        "provider": "openrouter",
+        "tcp_keepalive_secs": null
+      }
+    },
+    "workflow": {
+      "configured_max_in_flight": 10,
+      "env_override": 50,
+      "max_in_flight": 50
+    },
+    "workflow_max_in_flight": 50,
+    "workflow_max_in_flight_env_override": 50,
+    "workflow_queue_available": true
+  },
+  "schema": "membench.report.v1",
+  "system": "symbiotic-memory"
+}
