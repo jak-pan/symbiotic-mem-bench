@@ -2,35 +2,44 @@
 
 ## Status
 
-In progress. The selected candidate is
-`factconsol-thinkon-500-20260624` (437/500, `0.874` overall accuracy). Its scoring artifacts,
-question-ID joins, provider-trace provenance, and recorded hashes passed the first independent
-integrity audit. Final promotion still requires portable-record validation, the committed review
-attestation, leaderboard export verification, and the mandatory opposite-model review.
+Portable promotion complete. `factconsol-thinkon-500-20260624` is committed under `records/`
+and is the verified rank-1 LongMemEval-S row at 437/500 (`0.874` overall accuracy; `0.888012499`
+task-averaged accuracy). Its portable artifacts, question-ID joins, provider-trace provenance,
+recorded hashes, public hygiene, and independent `review.json` attestation have been validated.
+The deterministic leaderboard snapshot matches `records/` and publishes this row with no
+eligibility failures.
+
+The mandatory opposite-model/K3 release approval remains pending. That is a release-process
+gate, not a missing record artifact or a reason to hide the verified result. Retaining the much
+larger native-state substrate externally is optional and is not required for the public record
+or leaderboard.
 
 ## Problem
 
-`records/` is the tracked, portable registry for curated benchmark results, but full native
+`records/` is the tracked, portable registry for curated benchmark results, while full native
 Symbiotic Memory runs can be too large for GitHub when they include `vaults/`, provider queues, raw
-debug files, and trace-heavy state. We still need a canonical record that future benchmark runs can
-compare against and a canonical ingested vault substrate that answer-only reruns can reuse.
+debug files, and trace-heavy state. The canonical portable record now supports public comparison.
+An external ingested vault substrate would additionally support answer-only reruns, but retaining
+one is an optional follow-up.
 
 ## Goal
 
-Promote one selected LongMemEval S run into a canonical record while keeping the repository small and
-reproducible.
+The public, portable goal is complete: one selected LongMemEval-S run is promoted as a canonical
+record while keeping the repository bounded and reproducible.
 
-The promoted record should provide:
+The committed record provides:
 
 - normalized public artifacts in the existing `records/{system}/{benchmark}/{limit}/{name}/` shape;
-- enough metadata to identify the exact external native-state bundle;
-- a reusable `source_vault_root` location for answer-only reruns;
-- hashes, byte sizes, and restore instructions for external artifacts;
-- dashboard compatibility through the existing record and run schema.
+- artifact hashes, byte sizes, score provenance, and independent review metadata;
+- dashboard compatibility through the existing record and run schema;
+- no dependency on untracked native state for scoring, review, or ranking.
 
-## Proposed Shape
+If native state is retained later, the optional follow-up should provide an exact external bundle
+identity, hashes, byte sizes, restore instructions, and a reusable `source_vault_root`.
 
-Track this in Git:
+## Actual Tracked Shape
+
+Tracked in Git:
 
 ```text
 records/symbiotic-memory/long-mem-eval/500/{record-name}/
@@ -46,10 +55,13 @@ records/symbiotic-memory/long-mem-eval/500/{record-name}/
     score-summary.json
     memory-traces.jsonl
     model-traces.jsonl
-  external-artifacts.json
+    step-analytics.json
 ```
 
-Store externally:
+The promoted record intentionally has no `external-artifacts.json`: no external native-state
+bundle is currently part of the release evidence.
+
+An optional future external bundle could use this shape:
 
 ```text
 native-state.tar.zst
@@ -59,7 +71,7 @@ native-state.tar.zst
   raw/
 ```
 
-The tracked `external-artifacts.json` should include:
+If created, a tracked `external-artifacts.json` should include:
 
 - storage provider and URL or object key;
 - SHA-256 digest and byte size;
@@ -72,21 +84,28 @@ The tracked `external-artifacts.json` should include:
 
 ## Acceptance Criteria
 
-- The promoted record passes `src/eligibility.rs` — i.e. it appears in a ranked cohort of
+- [x] The promoted record passes `src/eligibility.rs` — it appears in a ranked cohort of
   `cargo run --bin membench-leaderboard -- export --records-root records`, not in `unranked`.
   That requires the scoring artifacts on disk, provider traces, a full-scale question count,
   recorded cohort identity, and a `review.json` attestation written *after* an independent
   no-cheating review (`docs/longmemeval-methodology.md`).
-- `membench explore` can show the tracked record without downloading external state.
-- Dashboard can compare the tracked record to new runs from `artifacts/`.
-- A documented restore command can place native state under ignored local storage.
-- A documented answer-only command can use the restored vault root with `--source-vault-root`.
-- The record contains no secrets, `.env` content, or unredacted raw provider credentials.
-- If raw prompts or raw source data are included externally, the manifest marks the bundle
+- [x] `membench explore` can show the tracked record without downloading external state.
+- [x] Dashboard can compare the tracked record to new runs from `artifacts/`.
+- [x] The record contains no secrets, `.env` content, unredacted provider credentials, absolute
+  local paths, symlinks, or forbidden native-state directories under the bounded public scan.
+- [x] The committed snapshot is deterministic, matches `records/`, and publishes the record as
+  verified rank 1 at 437/500.
+- [ ] **Optional, only if native state is retained:** a documented restore command can place
+  native state under ignored local storage.
+- [ ] **Optional, only if native state is retained:** a documented answer-only command can use
+  the restored vault root with `--source-vault-root`.
+- [ ] **Optional, only if native state is retained:** if raw prompts or raw source data are
+  included externally, the manifest marks the bundle
   local/private and not suitable for public mirroring.
 
-## Open Decisions
+## Remaining Decisions
 
+- Mandatory opposite-model/K3 release approval.
 - External storage target: release asset, object storage bucket, Hugging Face dataset, or other.
 - Whether the full native bundle should include raw model prompts or only normalized traces.
 - Whether `save-record` should gain a `--external-state` mode that writes
@@ -94,14 +113,20 @@ The tracked `external-artifacts.json` should include:
 - Whether restored vault substrates should live under `runs/inputs/vault-roots/` or a separate
   ignored `state/` tree.
 
-## Suggested Implementation Steps
+The four native-state decisions above are optional unless answer-only reuse of this exact substrate
+becomes a release requirement.
 
-1. Complete the no-cheating and public-hygiene review of the selected run.
-2. Validate the safe-by-default portable `save-record`; native state is copied only with
+## Completion Ledger
+
+1. [x] Complete the no-cheating and public-hygiene review of the selected run.
+2. [x] Validate the safe-by-default portable `save-record`; native state is copied only with
    `--include-native-state`.
-3. Add an `external-artifacts.json` schema if the native vault substrate will be retained for
-   answer-only reuse.
-4. Add a restore/check command or documented script for any retained external substrate.
-5. Promote the selected record to `records/` and commit its review attestation.
-6. Export and independently verify the ranked leaderboard snapshot.
-7. If retained, upload the native-state bundle, verify hashes, and run an answer-only restore smoke.
+3. [x] Promote the selected record to `records/` and commit its review attestation.
+4. [x] Export and independently verify the ranked leaderboard snapshot.
+5. [ ] Obtain the mandatory opposite-model/K3 release approval.
+6. [ ] **Optional:** add an `external-artifacts.json` schema if the native vault substrate will
+   be retained for answer-only reuse.
+7. [ ] **Optional:** add a restore/check command or documented script for any retained external
+   substrate.
+8. [ ] **Optional:** upload the native-state bundle, verify hashes, and run an answer-only
+   restore smoke.

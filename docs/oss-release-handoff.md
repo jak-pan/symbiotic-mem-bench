@@ -24,13 +24,19 @@ external action; the code-side work is done and gated in CI.
    `--features symbiotic-memory-adapter` builds and runs against the exact pins with no
    sibling checkout and no `.cargo/config.toml` override. The override block in
    `docs/environment.md` remains available for co-development, not as a requirement.
+3. **Mandatory opposite-model release approval.** The promoted record has passed its
+   independent integrity/no-cheating review and the machine-enforced eligibility gate. The
+   separate K3 review remains required by the release process before announcement; it is not
+   missing evidence in the published record and does not change the row's `verified` status.
 
 ## Decisions pending
 
-- **Canonical 500Q record.** Which run to promote, and where its native-state bundle lives
-  (release asset vs bucket vs HF dataset) — open decisions in
-  `docs/canonical-record-storage-task.md`. Until promoted, the leaderboard publishes no
-  ranked score (see `docs/longmemeval-methodology.md`).
+- **Optional external native state.** The portable canonical record is complete without
+  `vaults/`, workflow state, provider queues, raw payloads, or debug state. Decide whether the
+  much larger native substrate should also be retained for answer-only reuse and, if so,
+  whether it belongs in a release asset, object-storage bucket, or Hugging Face dataset. This
+  is not a blocker for the ranked public record; see
+  `docs/canonical-record-storage-task.md`.
 - **Landing deploy target.** The dashboard `dist/` is static-host ready with the snapshot
   fallback; choose host and domain, deploy only from a tagged commit.
 - **Repository naming.** The crate is `membench`; the repo URL is still
@@ -50,7 +56,11 @@ external action; the code-side work is done and gated in CI.
   (benchmark, size, question set, judge, judge prompt mode).
 - `membench.leaderboard.v1` export with per-row verification and recomputable
   `records_digest` provenance; truthful static leaderboard landing (explicit snapshot mode,
-  no API polling and no error UI on a static host, verified cohorts empty until a record
-  passes the review gate).
+  no API polling and no error UI on a static host). The promoted
+  `factconsol-thinkon-500-20260624` record is the verified rank-1 row at 437/500
+  (`0.874`); the snapshot freshness gate validates it against `records/`.
+- Safe-by-default portable promotion, public-hygiene validation, committed independent
+  `review.json` attestation, and deterministic snapshot verification for the canonical 500Q
+  record. Native state is intentionally excluded from the public record.
 - OSS docs: `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, `RELEASING.md`,
   `docs/longmemeval-methodology.md`.
