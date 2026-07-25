@@ -131,6 +131,7 @@ pub struct RecordFacts<'a> {
     pub is_meta_record: bool,
     pub oracle_gold: bool,
     pub is_trial_run: bool,
+    pub leaderboard_eligible: bool,
     pub accuracy: Option<f64>,
     pub accuracy_total: Option<u64>,
     /// Declared cohort size (the benchmark's question count for this record).
@@ -161,6 +162,12 @@ pub fn evaluate(facts: &RecordFacts) -> Eligibility {
         failures.push(GateFailure::new(
             "clean-flags",
             "TRIAL-flagged diagnostic run, not a benchmark claim",
+        ));
+    }
+    if !facts.leaderboard_eligible {
+        failures.push(GateFailure::new(
+            "clean-flags",
+            "run protocol explicitly prohibits leaderboard promotion",
         ));
     }
 
@@ -494,6 +501,7 @@ mod tests {
             is_meta_record: false,
             oracle_gold: false,
             is_trial_run: false,
+            leaderboard_eligible: true,
             accuracy: Some(0.9),
             accuracy_total: Some(500),
             limit: Some(500),
@@ -599,6 +607,19 @@ mod tests {
         let verdict = evaluate(&facts);
         assert!(!verdict.eligible);
         assert_eq!(gates(&verdict), vec!["clean-flags", "clean-flags"]);
+    }
+
+    #[test]
+    fn protocol_can_prohibit_leaderboard_promotion() {
+        let fixture = Fixture::complete();
+        let mut facts = facts(fixture.dir.path());
+        facts.leaderboard_eligible = false;
+        let verdict = evaluate(&facts);
+        assert!(!verdict.eligible);
+        assert!(verdict.failures.iter().any(|failure| {
+            failure.gate == "clean-flags"
+                && failure.detail.contains("prohibits leaderboard promotion")
+        }));
     }
 
     #[test]

@@ -567,10 +567,10 @@ where
     }
     let mut output = read_existing_hypotheses(out_path)?;
     let mut completed: BTreeSet<_> = output.iter().map(|row| row.question_id.clone()).collect();
-    let mut output_file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(out_path)?;
+    anyhow::ensure!(
+        completed.len() == output.len(),
+        "shared-corpus hypotheses contain duplicate question ids"
+    );
 
     let mut corpus_map = BTreeMap::new();
     for (key, source) in corpora {
@@ -580,7 +580,9 @@ where
         }
     }
     let mut questions_by_corpus: BTreeMap<String, Vec<SharedCorpusQuestion>> = BTreeMap::new();
+    let mut selected_question_count = 0usize;
     for question in questions {
+        selected_question_count += 1;
         corpus_vault_component(&question.corpus_key)?;
         questions_by_corpus
             .entry(question.corpus_key.clone())
@@ -592,6 +594,25 @@ where
             anyhow::bail!("shared-corpus questions reference missing corpus '{key}'");
         }
     }
+    let selected_ids: BTreeSet<_> = questions_by_corpus
+        .values()
+        .flatten()
+        .map(|question| question.id.clone())
+        .collect();
+    anyhow::ensure!(
+        selected_ids.len() == selected_question_count,
+        "shared-corpus selection contains duplicate question ids"
+    );
+    let stale_ids: Vec<_> = completed.difference(&selected_ids).cloned().collect();
+    anyhow::ensure!(
+        stale_ids.is_empty(),
+        "shared-corpus hypotheses contain question ids outside the current selection: {}",
+        stale_ids.join(", ")
+    );
+    let mut output_file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(out_path)?;
 
     let RerankCascade {
         main: reranker_main,
@@ -623,14 +644,23 @@ where
         if reusable {
             eprintln!("[shared-corpus] reusing complete corpus '{corpus_key}'");
         } else {
-            if existing.is_some() {
+            if existing.as_ref().is_some_and(|manifest| {
+                manifest.source_hash != source_hash
+                    || manifest.policy_version != active_manifest_tag()
+            }) {
                 anyhow::bail!(
-                    "shared corpus '{corpus_key}' manifest is stale or incomplete; use a fresh run root"
+                    "shared corpus '{corpus_key}' manifest has a different source hash or benchmark \
+                     identity; use a fresh run root"
                 );
             }
             eprintln!(
-                "[shared-corpus] ingesting corpus '{corpus_key}' once ({} turns)",
-                source.turns.len()
+                "[shared-corpus] {} corpus '{corpus_key}' ({} turns)",
+                if existing.is_some() {
+                    "resuming"
+                } else {
+                    "ingesting"
+                },
+                source.turns.len(),
             );
             IngestPipeline::new(store.clone(), embedder_factory(), distiller_factory())
                 .with_distill_config(kit_config().distill.clone())
@@ -2307,6 +2337,16 @@ pub fn clear_score_artifacts(
 
     removed += remove_score_artifact_if_exists(&run_root.join("score-summary.json"))?;
     removed += remove_score_artifact_if_exists(&run_root.join("scores"))?;
+    for directory in ["raw", "artifacts"] {
+        for file_name in [
+            "verdicts.jsonl",
+            "partial-verdicts.jsonl",
+            "scored.json",
+            "score-summary.json",
+        ] {
+            removed += remove_score_artifact_if_exists(&run_root.join(directory).join(file_name))?;
+        }
+    }
 
     let hypotheses = hypotheses_path.to_string_lossy();
     for suffix in [".scored.json", ".verdicts.jsonl", ".partial.verdicts.jsonl"] {
@@ -3637,6 +3677,156 @@ mod tests {
 
     #[cfg(feature = "symbiotic-memory-adapter")]
     #[tokio::test]
+    async fn shared_corpus_resumes_incomplete_same_identity_manifest() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use symbiotic_memory::config::RecallPolicy;
+        use symbiotic_memory::providers::DisabledChatProvider;
+
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("hyps.jsonl");
+        let row = LongMemEvalRecord {
+            question_id: "corpus:web".to_string(),
+            question_type: None,
+            question: String::new(),
+            question_date: None,
+            answer: None,
+            answer_session_ids: Vec::new(),
+            haystack_dates: vec!["1970/01/01 00:00".to_string()],
+            haystack_session_ids: vec!["trajectory-1".to_string()],
+            haystack_sessions: vec![vec![LongMemEvalMessage {
+                role: "user".to_string(),
+                content: "I bought 4 pens.".to_string(),
+                has_answer: false,
+            }]],
+        };
+        let corpus = longmemeval_to_source(&row);
+        let question = SharedCorpusQuestion {
+            id: "q-shared-resume".to_string(),
+            question: "How many pens did I buy?".to_string(),
+            question_type: Some("count".to_string()),
+            reference_date: None,
+            corpus_key: "web".to_string(),
+        };
+        let policy = RecallPolicy {
+            answerer_enabled: false,
+            ..RecallPolicy::default()
+        };
+        let fail_fact_embeddings = Arc::new(AtomicBool::new(true));
+        let distill_calls = Arc::new(AtomicUsize::new(0));
+
+        let first = run_shared_corpus_with_planner(
+            vec![("web".to_string(), corpus.clone())],
+            vec![question.clone()],
+            dir.path(),
+            {
+                let fail_fact_embeddings = fail_fact_embeddings.clone();
+                move || ControlledEmbeddingProvider {
+                    fail_fact_embeddings: fail_fact_embeddings.clone(),
+                }
+            },
+            {
+                let distill_calls = distill_calls.clone();
+                move || CountingDistiller {
+                    calls: distill_calls.clone(),
+                }
+            },
+            || DisabledChatProvider,
+            None,
+            RerankCascade::default(),
+            None,
+            policy.clone(),
+            &out,
+            IngestDiagnosticMode::None,
+        )
+        .await;
+        assert!(first.is_err());
+        assert_eq!(distill_calls.load(Ordering::SeqCst), 1);
+        let manifest_path = dir.path().join("corpus-vaults/web/manifest.json");
+        let manifest = MemoryRunManifest::load(&manifest_path)
+            .unwrap()
+            .expect("failed ingest must leave a resumable manifest");
+        assert!(!post_ingest_complete(&manifest, false));
+
+        fail_fact_embeddings.store(false, Ordering::SeqCst);
+        let resumed = run_shared_corpus_with_planner(
+            vec![("web".to_string(), corpus)],
+            vec![question],
+            dir.path(),
+            {
+                let fail_fact_embeddings = fail_fact_embeddings.clone();
+                move || ControlledEmbeddingProvider {
+                    fail_fact_embeddings: fail_fact_embeddings.clone(),
+                }
+            },
+            {
+                let distill_calls = distill_calls.clone();
+                move || CountingDistiller {
+                    calls: distill_calls.clone(),
+                }
+            },
+            || DisabledChatProvider,
+            None,
+            RerankCascade::default(),
+            None,
+            policy,
+            &out,
+            IngestDiagnosticMode::None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(resumed.len(), 1);
+        assert_eq!(distill_calls.load(Ordering::SeqCst), 1);
+        let manifest = MemoryRunManifest::load(manifest_path)
+            .unwrap()
+            .expect("resumed ingest must retain manifest");
+        assert!(post_ingest_complete(&manifest, false));
+
+        let changed_selection = run_shared_corpus_with_planner(
+            vec![("web".to_string(), longmemeval_to_source(&row))],
+            vec![SharedCorpusQuestion {
+                id: "q-different-limit".to_string(),
+                question: "Different selection?".to_string(),
+                question_type: None,
+                reference_date: None,
+                corpus_key: "web".to_string(),
+            }],
+            dir.path(),
+            {
+                let fail_fact_embeddings = fail_fact_embeddings.clone();
+                move || ControlledEmbeddingProvider {
+                    fail_fact_embeddings: fail_fact_embeddings.clone(),
+                }
+            },
+            {
+                let distill_calls = distill_calls.clone();
+                move || CountingDistiller {
+                    calls: distill_calls.clone(),
+                }
+            },
+            || DisabledChatProvider,
+            None,
+            RerankCascade::default(),
+            None,
+            RecallPolicy {
+                answerer_enabled: false,
+                ..RecallPolicy::default()
+            },
+            &out,
+            IngestDiagnosticMode::None,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            changed_selection
+                .to_string()
+                .contains("outside the current selection")
+        );
+    }
+
+    #[cfg(feature = "symbiotic-memory-adapter")]
+    #[tokio::test]
     async fn benchmark_writes_archive_before_manifest_success() {
         use symbiotic_memory::config::RecallPolicy;
         use symbiotic_memory::ingest::PassthroughDistiller;
@@ -4135,15 +4325,28 @@ mod tests {
         fs::write(run_root.join("hyp.jsonl.scored.json"), "{}").unwrap();
         fs::write(run_root.join("hyp.jsonl.verdicts.jsonl"), "{}\n").unwrap();
         fs::write(run_root.join("hyp.jsonl.partial.verdicts.jsonl"), "{}\n").unwrap();
+        for directory in ["raw", "artifacts"] {
+            fs::create_dir_all(run_root.join(directory)).unwrap();
+            for file_name in [
+                "verdicts.jsonl",
+                "partial-verdicts.jsonl",
+                "scored.json",
+                "score-summary.json",
+            ] {
+                fs::write(run_root.join(directory).join(file_name), "{}\n").unwrap();
+            }
+        }
 
         let removed = clear_score_artifacts(run_root, &hypotheses_path).unwrap();
 
-        assert_eq!(removed, 5);
+        assert_eq!(removed, 13);
         assert!(!run_root.join("score-summary.json").exists());
         assert!(!run_root.join("scores").exists());
         assert!(!run_root.join("hyp.jsonl.scored.json").exists());
         assert!(!run_root.join("hyp.jsonl.verdicts.jsonl").exists());
         assert!(!run_root.join("hyp.jsonl.partial.verdicts.jsonl").exists());
+        assert!(!run_root.join("raw/verdicts.jsonl").exists());
+        assert!(!run_root.join("artifacts/score-summary.json").exists());
         assert!(hypotheses_path.exists());
     }
 

@@ -1368,6 +1368,13 @@ fn run_selected_benchmark(cli: Cli) -> anyhow::Result<()> {
         "long-mem-eval",
         "--benchmark or --long-mem-eval",
     )?;
+    if benchmark == "longmemeval-v2" {
+        anyhow::bail!(
+            "official LongMemEval-V2 is multimodal and is not supported by the current adapter; \
+             use the upstream harness for official scores or select 'longmemeval-v2-text' for the \
+             explicitly non-equivalent, non-promotable text projection"
+        );
+    }
 
     // Gold-oracle mode is consumed per-question inside the in-process adapter via MEMBENCH_ORACLE_GOLD;
     // the `--oracle-gold` flag just exports it here. Safe to set_var now: this runs single-threaded,
@@ -3986,11 +3993,10 @@ fn validate_provider_role_selection(run: &SymbioticMemoryCliRun) -> anyhow::Resu
 
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow::Result<()> {
-    let _paid_run_lock = if requires_paid_provider_lock(&run) {
-        Some(PaidProviderRunLock::acquire(&run)?)
-    } else {
-        None
-    };
+    if run.benchmark == "longmemeval-v2-text" {
+        hydrate_v2_projection_env(&run);
+        membench::benchmark::validate_longmemeval_v2_text_release(&run.dataset)?;
+    }
     if run.fresh && run.run_root.exists() {
         std::fs::remove_dir_all(&run.run_root)?;
     }
@@ -4031,7 +4037,6 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
         thinking_summary_label(&run),
     );
 
-    let provider_runtime = ProviderRuntime::new(&run, &config)?;
     let loader = membench::benchmark::loader_for(&run.benchmark)
         .ok_or_else(|| anyhow::anyhow!("no loader registered for {}", run.benchmark))?;
     membench::symbiotic_memory_adapter::set_active_manifest_tag(loader.manifest_tag())?;
@@ -4072,6 +4077,22 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
             )
         }
     };
+    if run.score || run.rejudge {
+        membench::symbiotic_memory_adapter::clear_score_artifacts(
+            &run.run_root,
+            native_hypotheses_path(&run.run_root),
+        )?;
+        preflight_v2_score_targets(&run, &rows)?;
+    }
+    // Provider construction and paid-run locking intentionally happen only after the benchmark
+    // schema, selection, and evaluator support have been validated. A full v2-text score contains
+    // unsupported LLM checker heads and must fail here without spending on ingest or answers.
+    let _paid_run_lock = if requires_paid_provider_lock(&run) {
+        Some(PaidProviderRunLock::acquire(&run)?)
+    } else {
+        None
+    };
+    let provider_runtime = ProviderRuntime::new(&run, &config)?;
     if scope == membench::benchmark::HaystackScope::SharedCorpus {
         if run.source_vault_root.is_some()
             || run.answer_only
@@ -4100,7 +4121,7 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
             "[longmemeval] --rejudge: re-grading {} stored answers (no re-answer)",
             rows.len()
         );
-        if run.benchmark == "longmemeval-v2" {
+        if run.benchmark == "longmemeval-v2-text" {
             score_v2_native(&run, &rows, &hypotheses_path)?;
         } else {
             let runtime = tokio::runtime::Runtime::new()?;
@@ -4339,7 +4360,7 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
         );
     }
     if run.score {
-        if run.benchmark == "longmemeval-v2" {
+        if run.benchmark == "longmemeval-v2-text" {
             score_v2_native(&run, &rows, &hypotheses_path)?;
         } else {
             let judge_factory = provider_runtime.judge_factory(&run)?;
@@ -4375,6 +4396,65 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
             "ephemeral local smoke run succeeded; removed {}",
             root.display()
         );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn hydrate_v2_projection_env(run: &SymbioticMemoryCliRun) {
+    // The benchmark loader is a library plug-in and reads this bounded, non-secret projection
+    // configuration from process env. Resolve the CLI env-file exactly once before loading so its
+    // caps/tier cannot diverge from the values recorded in run params.
+    for key in [
+        "MEMBENCH_V2_HAYSTACK",
+        "MEMBENCH_V2_MAX_TRAJ",
+        "MEMBENCH_V2_MAX_STATES",
+    ] {
+        if let Some(value) = run_env_value(run, key) {
+            // SAFETY: native benchmark setup is single-threaded here, before the Tokio runtime or
+            // provider workers are created.
+            unsafe {
+                std::env::set_var(key, value);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn preflight_v2_score_targets(
+    run: &SymbioticMemoryCliRun,
+    rows: &[membench::symbiotic_memory_adapter::LongMemEvalRecord],
+) -> anyhow::Result<()> {
+    if run.benchmark != "longmemeval-v2-text" {
+        return Ok(());
+    }
+    use membench::benchmark::{GradeOutcome, grade_v2};
+    let loader = membench::benchmark::loader_for(&run.benchmark)
+        .ok_or_else(|| anyhow::anyhow!("no loader registered for {}", run.benchmark))?;
+    let targets = loader.grade_targets(run.oracle.as_deref().unwrap_or(&run.dataset))?;
+    for row in rows {
+        let target = targets.get(&row.question_id).ok_or_else(|| {
+            anyhow::anyhow!(
+                "v2-text grade target missing for question '{}'",
+                row.question_id
+            )
+        })?;
+        let spec = target.eval_function.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "v2-text question '{}' has no eval_function",
+                row.question_id
+            )
+        })?;
+        match grade_v2(spec, "preflight", "preflight")? {
+            GradeOutcome::Deterministic(_) => {}
+            GradeOutcome::Unsupported(checker) => anyhow::bail!(
+                "LongMemEval-v2-text scoring preflight rejected checker '{}' for question '{}'; \
+                 no provider, ingest, or answer work was started. Run without --score or select \
+                 only deterministic evaluator rows",
+                checker.id(),
+                row.question_id
+            ),
+        }
     }
     Ok(())
 }
@@ -5890,20 +5970,27 @@ fn score_v2_native(
     let targets = loader.grade_targets(run.oracle.as_deref().unwrap_or(&run.dataset))?;
     let selected_ids: BTreeSet<_> = rows.iter().map(|row| row.question_id.clone()).collect();
     let hypotheses = read_native_hypotheses(hypotheses_path)?;
-    let raw_dir = native_raw_dir(&run.run_root);
-    std::fs::create_dir_all(&raw_dir)?;
-    let verdicts_path = raw_dir.join("verdicts.jsonl");
-    let scored_path = raw_dir.join("scored.json");
-    let summary_path = raw_dir.join("score-summary.json");
+    let hypothesis_ids: BTreeSet<_> = hypotheses
+        .iter()
+        .map(|hypothesis| hypothesis.question_id.clone())
+        .collect();
+    anyhow::ensure!(
+        hypothesis_ids.len() == hypotheses.len(),
+        "LongMemEval-v2-text hypotheses contain duplicate question ids"
+    );
+    anyhow::ensure!(
+        hypothesis_ids == selected_ids,
+        "LongMemEval-v2-text hypotheses do not exactly match the selected question ids \
+         (hypotheses={} selected={})",
+        hypothesis_ids.len(),
+        selected_ids.len()
+    );
 
     let started = std::time::Instant::now();
     let mut verdicts = Vec::new();
     let mut deterministic_count = 0u64;
 
     for hypothesis in hypotheses {
-        if !selected_ids.contains(&hypothesis.question_id) {
-            continue;
-        }
         let target = targets.get(&hypothesis.question_id).ok_or_else(|| {
             anyhow::anyhow!(
                 "v2 grade target missing for question '{}'",
@@ -5919,36 +6006,38 @@ fn score_v2_native(
             .as_deref()
             .is_some_and(|value| value.contains("abs"));
         match target.eval_function.as_deref() {
-            Some(eval_function) => match grade_v2(eval_function, &answer, &hypothesis.hypothesis) {
-                GradeOutcome::Deterministic(label) => {
-                    deterministic_count += 1;
-                    verdicts.push(NativeVerdict {
-                        question_id: hypothesis.question_id,
-                        question_type,
-                        question: hypothesis.question,
-                        answer,
-                        hypothesis: hypothesis.hypothesis,
-                        judge_raw: format!("deterministic:{eval_function}"),
-                        judge_system_prompt: None,
-                        judge_user_prompt: None,
-                        autoeval_label: NativeAutoEvalLabel {
-                            model: "deterministic".to_string(),
+            Some(eval_function) => {
+                match grade_v2(eval_function, &answer, &hypothesis.hypothesis)? {
+                    GradeOutcome::Deterministic(label) => {
+                        deterministic_count += 1;
+                        verdicts.push(NativeVerdict {
+                            question_id: hypothesis.question_id,
+                            question_type,
+                            question: hypothesis.question,
+                            answer,
+                            hypothesis: hypothesis.hypothesis,
+                            judge_raw: format!("deterministic:{eval_function}"),
+                            judge_system_prompt: None,
+                            judge_user_prompt: None,
+                            autoeval_label: NativeAutoEvalLabel {
+                                model: "deterministic".to_string(),
+                                label,
+                            },
                             label,
-                        },
-                        label,
-                        is_abstention: is_abstention_question,
-                        error: None,
-                    });
-                }
-                GradeOutcome::Unsupported(checker) => {
-                    anyhow::bail!(
-                        "unsupported LongMemEval-v2 checker '{}' for question '{}'; official \
+                            is_abstention: is_abstention_question,
+                            error: None,
+                        });
+                    }
+                    GradeOutcome::Unsupported(checker) => {
+                        anyhow::bail!(
+                            "unsupported LongMemEval-v2 checker '{}' for question '{}'; official \
                          checker semantics are not implemented, so scoring refuses to publish",
-                        checker.id(),
-                        hypothesis.question_id
-                    );
+                            checker.id(),
+                            hypothesis.question_id
+                        );
+                    }
                 }
-            },
+            }
             None => {
                 anyhow::bail!(
                     "LongMemEval-v2 question '{}' has no eval_function; scoring refuses to publish",
@@ -5964,7 +6053,6 @@ fn score_v2_native(
         lines.push_str(&serde_json::to_string(verdict)?);
         lines.push('\n');
     }
-    std::fs::write(&verdicts_path, lines)?;
 
     let scored_count = verdicts.len() as u64;
     if scored_count != rows.len() as u64 {
@@ -6024,24 +6112,45 @@ fn score_v2_native(
         },
         "per_question_type": per_question_type,
     });
-    std::fs::write(
-        &scored_path,
-        serde_json::to_string_pretty(&scored_json)? + "\n",
-    )?;
-    std::fs::write(
-        &summary_path,
-        serde_json::to_string_pretty(&json!({
-            "schema_version": 1,
-            "scorer": "longmemeval-v2-eval-function",
-            "judge_model": scored_json["judge_model"],
-            "judge_prompt_mode": scored_json["judge_prompt_mode"],
-            "hypotheses_file": portable_path(hypotheses_path),
-            "verdicts_file": portable_path(&verdicts_path),
-            "scored_file": portable_path(&scored_path),
-            "elapsed_ms": started.elapsed().as_millis() as u64,
-            "metrics": scored_json,
-        }))? + "\n",
-    )?;
+    let scored_bytes = serde_json::to_string_pretty(&scored_json)? + "\n";
+    let raw_dir = native_raw_dir(&run.run_root);
+    std::fs::create_dir_all(&raw_dir)?;
+    let verdicts_path = raw_dir.join("verdicts.jsonl");
+    let scored_path = raw_dir.join("scored.json");
+    let summary_path = raw_dir.join("score-summary.json");
+    let hypotheses_hash = membench::stable_hash(&std::fs::read(hypotheses_path)?);
+    let verdicts_hash = membench::stable_hash(lines.as_bytes());
+    let scored_hash = membench::stable_hash(scored_bytes.as_bytes());
+    let summary_bytes = serde_json::to_string_pretty(&json!({
+        "schema_version": 1,
+        "scorer": "longmemeval-v2-text-eval-function",
+        "judge_model": scored_json["judge_model"],
+        "judge_prompt_mode": scored_json["judge_prompt_mode"],
+        "hypotheses_file": portable_path(hypotheses_path),
+        "hypotheses_hash": hypotheses_hash,
+        "verdicts_file": portable_path(&verdicts_path),
+        "scored_file": portable_path(&scored_path),
+        "artifact_hashes": {
+            "artifacts/verdicts.jsonl": verdicts_hash,
+            "artifacts/scored.json": scored_hash,
+        },
+        "elapsed_ms": started.elapsed().as_millis() as u64,
+        "metrics": scored_json,
+    }))? + "\n";
+    write_bytes_atomic(&verdicts_path, lines.as_bytes())?;
+    write_bytes_atomic(&scored_path, scored_bytes.as_bytes())?;
+    write_bytes_atomic(&summary_path, summary_bytes.as_bytes())?;
+    Ok(())
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(tmp, path)?;
     Ok(())
 }
 
@@ -6645,6 +6754,30 @@ fn symbiotic_memory_run_params(run: &SymbioticMemoryCliRun) -> serde_json::Value
         "ephemeral_smoke_run".to_string(),
         json!(run.ephemeral_smoke_run),
     );
+    if run.benchmark == "longmemeval-v2-text" {
+        let projection_dataset =
+            membench::benchmark::longmemeval_v2_text_projection_metadata(&run.dataset)
+                .unwrap_or_else(|error| json!({"validation_error": error.to_string()}));
+        object.insert("official_equivalent".to_string(), json!(false));
+        object.insert("leaderboard_eligible".to_string(), json!(false));
+        object.insert(
+            "benchmark_protocol".to_string(),
+            json!({
+                "name": "LongMemEval-V2 text-only projection",
+                "projection_version": 1,
+                "official_tier": std::env::var("MEMBENCH_V2_HAYSTACK")
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| "small".to_string()),
+                "query_images": "excluded",
+                "trajectory_screenshots": "locator-only",
+                "max_trajectories": std::env::var("MEMBENCH_V2_MAX_TRAJ").ok(),
+                "max_states": std::env::var("MEMBENCH_V2_MAX_STATES").ok(),
+                "promotion_prohibited": true,
+                "dataset_projection": projection_dataset,
+            }),
+        );
+    }
     params
 }
 
@@ -6957,12 +7090,12 @@ fn resolved_role_settings(
 }
 
 fn uses_model_judge(run: &SymbioticMemoryCliRun) -> bool {
-    run.score && run.benchmark != "longmemeval-v2"
+    run.score && run.benchmark != "longmemeval-v2-text"
 }
 
 fn effective_scorer(run: &SymbioticMemoryCliRun) -> &str {
-    if run.score && run.benchmark == "longmemeval-v2" {
-        "longmemeval-v2-eval-function"
+    if run.score && run.benchmark == "longmemeval-v2-text" {
+        "longmemeval-v2-text-eval-function"
     } else {
         &run.scorer
     }
@@ -8768,15 +8901,15 @@ mod tests {
     #[test]
     fn native_run_params_preserve_selected_v2_benchmark() {
         let mut run = sample_run(None);
-        run.benchmark = "longmemeval-v2".to_string();
-        run.run_root = PathBuf::from("runs/symbiotic-memory/longmemeval-v2/2/sample");
+        run.benchmark = "longmemeval-v2-text".to_string();
+        run.run_root = PathBuf::from("runs/symbiotic-memory/longmemeval-v2-text/2/sample");
         run.score = true;
         run.distiller = "heuristic".to_string();
         run.embedder = "hash".to_string();
         run.answerer = false;
         let params = symbiotic_memory_run_params(&run);
-        assert_eq!(params["benchmark"], "longmemeval-v2");
-        assert_eq!(params["scorer"], "longmemeval-v2-eval-function");
+        assert_eq!(params["benchmark"], "longmemeval-v2-text");
+        assert_eq!(params["scorer"], "longmemeval-v2-text-eval-function");
         assert_eq!(
             params["runtime_models"]["judge"],
             "local:deterministic-v2-eval-function"
@@ -8793,8 +8926,10 @@ mod tests {
             serde_json::json!({
                 "id": "q1",
                 "domain": "web",
+                "environment": "webarena",
                 "question_type": "errors-gotchas",
                 "question": "What happened?",
+                "image": null,
                 "answer": "expected",
                 "eval_function": "llm_gotchas_checker|require_non_empty=true"
             })
@@ -8816,7 +8951,7 @@ mod tests {
         )
         .unwrap();
         let mut run = sample_run(None);
-        run.benchmark = "longmemeval-v2".to_string();
+        run.benchmark = "longmemeval-v2-text".to_string();
         run.dataset = root.path().to_path_buf();
         run.run_root = root.path().join("run");
         run.score = true;
@@ -8837,6 +8972,75 @@ mod tests {
         assert!(error.to_string().contains("refuses to publish"));
         assert!(!run.run_root.join("raw/verdicts.jsonl").exists());
         assert!(!run.run_root.join("raw/scored.json").exists());
+    }
+
+    #[cfg(feature = "symbiotic-memory-adapter")]
+    #[test]
+    fn v2_scorer_publishes_complete_hash_bound_artifacts() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("questions.jsonl"),
+            serde_json::json!({
+                "id": "q1",
+                "domain": "web",
+                "environment": "webarena",
+                "question_type": "static-environment",
+                "question": "What happened?",
+                "image": null,
+                "answer": "alpha-beta",
+                "eval_function": "norm_phrase_set_match|lower=true|normalize_hyphen=true|strip_punct=true|separators=,;|require_non_empty=true"
+            })
+            .to_string()
+                + "\n",
+        )
+        .unwrap();
+        let hypotheses = root.path().join("hypotheses.jsonl");
+        std::fs::write(
+            &hypotheses,
+            serde_json::json!({
+                "question_id": "q1",
+                "question_type": "static-environment",
+                "question": "What happened?",
+                "hypothesis": "extra alpha beta context"
+            })
+            .to_string()
+                + "\n",
+        )
+        .unwrap();
+        let mut run = sample_run(None);
+        run.benchmark = "longmemeval-v2-text".to_string();
+        run.dataset = root.path().to_path_buf();
+        run.run_root = root.path().join("run");
+        run.score = true;
+        let rows = vec![membench::symbiotic_memory_adapter::LongMemEvalRecord {
+            question_id: "q1".to_string(),
+            question_type: Some("static-environment".to_string()),
+            question: "What happened?".to_string(),
+            question_date: None,
+            answer: None,
+            answer_session_ids: Vec::new(),
+            haystack_dates: Vec::new(),
+            haystack_session_ids: Vec::new(),
+            haystack_sessions: Vec::new(),
+        }];
+
+        score_v2_native(&run, &rows, &hypotheses).unwrap();
+        let raw = run.run_root.join("raw");
+        let summary: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(raw.join("score-summary.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            summary["hypotheses_hash"],
+            membench::stable_hash(&std::fs::read(&hypotheses).unwrap())
+        );
+        assert_eq!(
+            summary["artifact_hashes"]["artifacts/verdicts.jsonl"],
+            membench::stable_hash(&std::fs::read(raw.join("verdicts.jsonl")).unwrap())
+        );
+        assert_eq!(
+            summary["artifact_hashes"]["artifacts/scored.json"],
+            membench::stable_hash(&std::fs::read(raw.join("scored.json")).unwrap())
+        );
     }
 
     #[test]

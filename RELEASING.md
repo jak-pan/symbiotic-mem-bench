@@ -23,7 +23,8 @@
 2. **Adapter CLI gate, manual until the dependency is public:**
    `./scripts/check-adapter-build.sh` on a machine with access to
    `jak-pan/symbiotic-memory`. This is the only check that the documented `membench` CLI
-   builds *and runs* against the pinned revisions. CI runs it automatically only when the
+   builds *and runs* against the pinned revisions; it also runs the mandatory
+   `benchmark_v2` projection/evaluator contract test. CI runs it automatically only when the
    repository has a read-only `SYMBIOTIC_MEMORY_DEPLOY_KEY` secret; without that
    secret the job is skipped and the path is unverified in CI. Do not tag a release
    without running it somewhere.

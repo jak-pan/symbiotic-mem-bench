@@ -131,3 +131,5 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: adapter CLI builds against the pinned revisions
         run: ./scripts/check-adapter-build.sh
+      - name: LongMemEval-V2 text projection contract
+        run: cargo test --features symbiotic-memory-adapter --test benchmark_v2
