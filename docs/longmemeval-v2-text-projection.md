@@ -5,7 +5,8 @@
 text-only Symbiotic Memory adapter can exercise the released trajectory corpus safely while the
 multimodal adapter boundary is built.
 
-It is **not** an official LongMemEval-V2 tier:
+It is **experimental and never an official LongMemEval-V2 tier** — numbers from this lane must
+not be reported as official LongMemEval-V2 results:
 
 - questions with a non-null query `image` are excluded;
 - trajectory screenshot locators are preserved in projected turns, but image bytes are not passed
@@ -44,8 +45,9 @@ haystacks, referenced trajectories, and required text/metadata fields before pro
 ## No-score execution
 
 The full text projection contains evaluator heads that require the official LLM checker. Membench
-does not substitute a generic judge. A full `--score` run therefore fails during preflight, before
-provider construction, ingest, or answering. Run it unscored to inspect recall behavior:
+does not substitute a generic judge. A full `--score` run therefore fails during preflight — before
+provider construction, ingest, answering, or any run-root mutation, so an existing score bundle
+survives the rejected launch untouched. Run it unscored to inspect recall behavior:
 
 ```sh
 cargo run --features symbiotic-memory-adapter --bin membench -- \
@@ -55,7 +57,22 @@ cargo run --features symbiotic-memory-adapter --bin membench -- \
   --no-score
 ```
 
+`--no-score` skips scoring only. Ingest, distillation, embedding, and answering still run through
+the configured paid providers by default, so a `--no-score` run still spends provider money and
+still takes the paid-run lock. Use `--smoke` for a local, no-network, no-cost pipeline check.
+
 For bounded local pipeline checks only, `MEMBENCH_V2_MAX_TRAJ` and
 `MEMBENCH_V2_MAX_STATES` accept positive integers. Any capped run remains explicitly non-promotable.
 The Medium tier is currently rejected because its question-specific corpora do not match the
 adapter's shared-corpus execution model.
+
+## Score bundle publish
+
+A scored run publishes `verdicts.jsonl`, `scored.json`, and `score-summary.json`. Each file is
+staged fully, then renamed into place individually, with the hash-binding `score-summary.json`
+renamed last as the bundle's commit point. The renames are sequential — the bundle as a whole is
+**not** one atomic unit. The guarantee is fail-closed ranking, not atomicity: the eligibility gates
+reject a record with a missing or empty scoring artifact, reject a `score-summary.json` whose
+recorded hashes no longer match the artifacts on disk, and reject every `longmemeval-v2-text`
+record categorically (`leaderboard_eligible: false`), so a partial or torn publish can never become
+leaderboard-eligible.

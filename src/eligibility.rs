@@ -665,6 +665,40 @@ mod tests {
     }
 
     #[test]
+    fn partially_published_score_bundle_is_not_eligible() {
+        // The torn-publish shape: verdicts renamed into place, scored.json never landed.
+        let fixture = Fixture::complete();
+        std::fs::remove_file(fixture.artifact("scored.json")).unwrap();
+        let verdict = evaluate(&facts(fixture.root()));
+        assert!(!verdict.eligible);
+        assert_eq!(verdict.missing_artifacts, vec!["scored"]);
+        assert!(gates(&verdict).contains(&"scoring-artifacts"));
+    }
+
+    #[test]
+    fn stale_summary_from_a_torn_republish_is_not_eligible() {
+        // A republish that died between renames: verdicts and scored are new, but the
+        // hash-binding summary still describes the previous bundle.
+        let fixture = Fixture::complete();
+        fixture.write_score_summary();
+        std::fs::write(
+            fixture.artifact("verdicts.jsonl"),
+            "{\"question_id\":\"q1\",\"correct\":true}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            fixture.artifact("scored.json"),
+            "{\"judge_model\":\"new\"}\n",
+        )
+        .unwrap();
+        fixture.write_review("pass");
+
+        let verdict = evaluate(&facts(fixture.root()));
+        assert!(!verdict.eligible);
+        assert!(gates(&verdict).contains(&"score-summary-hashes"));
+    }
+
+    #[test]
     fn missing_provider_traces_block_ranking() {
         let fixture = Fixture::complete();
         std::fs::remove_file(fixture.artifact("model-traces.jsonl")).unwrap();

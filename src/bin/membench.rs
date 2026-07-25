@@ -3997,13 +3997,6 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
         hydrate_v2_projection_env(&run);
         membench::benchmark::validate_longmemeval_v2_text_release(&run.dataset)?;
     }
-    if run.fresh && run.run_root.exists() {
-        std::fs::remove_dir_all(&run.run_root)?;
-    }
-    std::fs::create_dir_all(&run.run_root)?;
-    if run.answer_only && !run.resume {
-        clear_answer_only_run_outputs(&run.run_root)?;
-    }
     let config = run
         .memory_config
         .as_ref()
@@ -4012,7 +4005,6 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
         .unwrap_or_default();
     let workflow_max_in_flight =
         effective_workflow_max_in_flight_for_run(&run, Some(config.queue.workflow_max_in_flight));
-    write_run_params(&run.run_root, &symbiotic_memory_run_params(&run))?;
     eprintln!(
         "[longmemeval] launch settings workflow_max_in_flight={} embed_transport={} chat_transport={} thinking={}",
         workflow_max_in_flight,
@@ -4077,16 +4069,11 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
             )
         }
     };
-    if run.score || run.rejudge {
-        membench::symbiotic_memory_adapter::clear_score_artifacts(
-            &run.run_root,
-            native_hypotheses_path(&run.run_root),
-        )?;
-        preflight_v2_score_targets(&run, &rows)?;
-    }
+    preflight_then_prepare_run_root(&run, &rows)?;
     // Provider construction and paid-run locking intentionally happen only after the benchmark
     // schema, selection, and evaluator support have been validated. A full v2-text score contains
-    // unsupported LLM checker heads and must fail here without spending on ingest or answers.
+    // unsupported LLM checker heads and must fail during the preflight above — before any
+    // run-root mutation and without spending on ingest or answers.
     let _paid_run_lock = if requires_paid_provider_lock(&run) {
         Some(PaidProviderRunLock::acquire(&run)?)
     } else {
@@ -4418,6 +4405,37 @@ fn hydrate_v2_projection_env(run: &SymbioticMemoryCliRun) {
             }
         }
     }
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+/// The scoring preflight followed by the first run-root mutations of a native run.
+///
+/// Order is the contract: `preflight_v2_score_targets` runs before the `--fresh` reset, the
+/// answer-only output clearing, `write_run_params`, and `clear_score_artifacts`, so a
+/// `--score`/`--rejudge` launch rejected for an unsupported official checker leaves an existing
+/// run root — previous score bundle and `run-params.json` included — untouched.
+fn preflight_then_prepare_run_root(
+    run: &SymbioticMemoryCliRun,
+    rows: &[membench::symbiotic_memory_adapter::LongMemEvalRecord],
+) -> anyhow::Result<()> {
+    if run.score || run.rejudge {
+        preflight_v2_score_targets(run, rows)?;
+    }
+    if run.fresh && run.run_root.exists() {
+        std::fs::remove_dir_all(&run.run_root)?;
+    }
+    std::fs::create_dir_all(&run.run_root)?;
+    if run.answer_only && !run.resume {
+        clear_answer_only_run_outputs(&run.run_root)?;
+    }
+    write_run_params(&run.run_root, &symbiotic_memory_run_params(run))?;
+    if run.score || run.rejudge {
+        membench::symbiotic_memory_adapter::clear_score_artifacts(
+            &run.run_root,
+            native_hypotheses_path(&run.run_root),
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
@@ -6137,20 +6155,33 @@ fn score_v2_native(
         "elapsed_ms": started.elapsed().as_millis() as u64,
         "metrics": scored_json,
     }))? + "\n";
-    write_bytes_atomic(&verdicts_path, lines.as_bytes())?;
-    write_bytes_atomic(&scored_path, scored_bytes.as_bytes())?;
-    write_bytes_atomic(&summary_path, summary_bytes.as_bytes())?;
+    publish_score_bundle(&[
+        (verdicts_path.as_path(), lines.as_bytes()),
+        (scored_path.as_path(), scored_bytes.as_bytes()),
+        (summary_path.as_path(), summary_bytes.as_bytes()),
+    ])?;
     Ok(())
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
-fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+/// Stage every file of a score bundle as a `.tmp` sibling first, then rename in argument order,
+/// so a failed write (for example a full disk) publishes nothing. Callers put the hash-binding
+/// `score-summary.json` last: its rename is the bundle's commit point. The renames themselves stay
+/// sequential — the bundle is NOT one atomic unit; an interrupted publish is caught by the ranking
+/// gates (missing/empty artifact, score-summary hash mismatch), not made impossible here.
+fn publish_score_bundle(files: &[(&Path, &[u8])]) -> anyhow::Result<()> {
+    let mut staged = Vec::with_capacity(files.len());
+    for (path, bytes) in files {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, bytes)?;
+        staged.push((tmp, *path));
     }
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(tmp, path)?;
+    for (tmp, path) in staged {
+        std::fs::rename(tmp, path)?;
+    }
     Ok(())
 }
 
@@ -9041,6 +9072,127 @@ mod tests {
             summary["artifact_hashes"]["artifacts/scored.json"],
             membench::stable_hash(&std::fs::read(raw.join("scored.json")).unwrap())
         );
+    }
+
+    #[cfg(feature = "symbiotic-memory-adapter")]
+    fn write_v2_question_fixture(dir: &Path, eval_function: &str) {
+        std::fs::write(
+            dir.join("questions.jsonl"),
+            serde_json::json!({
+                "id": "q1",
+                "domain": "web",
+                "environment": "webarena",
+                "question_type": "static-environment",
+                "question": "What happened?",
+                "image": null,
+                "answer": "expected",
+                "eval_function": eval_function
+            })
+            .to_string()
+                + "\n",
+        )
+        .unwrap();
+    }
+
+    #[cfg(feature = "symbiotic-memory-adapter")]
+    fn v2_row(question_id: &str) -> membench::symbiotic_memory_adapter::LongMemEvalRecord {
+        membench::symbiotic_memory_adapter::LongMemEvalRecord {
+            question_id: question_id.to_string(),
+            question_type: Some("static-environment".to_string()),
+            question: "What happened?".to_string(),
+            question_date: None,
+            answer: None,
+            answer_session_ids: Vec::new(),
+            haystack_dates: Vec::new(),
+            haystack_session_ids: Vec::new(),
+            haystack_sessions: Vec::new(),
+        }
+    }
+
+    #[cfg(feature = "symbiotic-memory-adapter")]
+    fn scored_v2_run(root: &Path) -> SymbioticMemoryCliRun {
+        let mut run = sample_run(None);
+        run.benchmark = "longmemeval-v2-text".to_string();
+        run.dataset = root.to_path_buf();
+        run.run_root = root.join("run");
+        run.score = true;
+        run.fresh = false;
+        run.answer_only = false;
+        run.resume = false;
+        run
+    }
+
+    #[cfg(feature = "symbiotic-memory-adapter")]
+    #[test]
+    fn rejected_v2_score_preflight_preserves_existing_score_bundle() {
+        let root = tempfile::tempdir().unwrap();
+        write_v2_question_fixture(root.path(), "llm_gotchas_checker|require_non_empty=true");
+        let run = scored_v2_run(root.path());
+        let existing = [
+            (run.run_root.join("run-params.json"), "{\"prior\":true}\n"),
+            (
+                run.run_root.join("raw/verdicts.jsonl"),
+                "{\"question_id\":\"q1\"}\n",
+            ),
+            (
+                run.run_root.join("raw/scored.json"),
+                "{\"prior_score\":1}\n",
+            ),
+            (
+                run.run_root.join("raw/score-summary.json"),
+                "{\"prior_summary\":1}\n",
+            ),
+            (
+                run.run_root.join("artifacts/scored.json"),
+                "{\"prior_score\":1}\n",
+            ),
+        ];
+        for (path, content) in &existing {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, content).unwrap();
+        }
+
+        let error = preflight_then_prepare_run_root(&run, &[v2_row("q1")]).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("rejected checker 'llm_gotchas_checker'"),
+            "unexpected error: {error}"
+        );
+        for (path, content) in &existing {
+            assert_eq!(
+                std::fs::read_to_string(path).unwrap(),
+                *content,
+                "{} must survive a rejected scoring preflight untouched",
+                path.display()
+            );
+        }
+    }
+
+    #[cfg(feature = "symbiotic-memory-adapter")]
+    #[test]
+    fn accepted_v2_score_preflight_still_clears_stale_score_bundle() {
+        let root = tempfile::tempdir().unwrap();
+        write_v2_question_fixture(
+            root.path(),
+            "norm_phrase_set_match|lower=true|require_non_empty=true",
+        );
+        let run = scored_v2_run(root.path());
+        let stale = run.run_root.join("raw/scored.json");
+        std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        std::fs::write(&stale, "{\"prior_score\":1}\n").unwrap();
+
+        preflight_then_prepare_run_root(&run, &[v2_row("q1")]).unwrap();
+
+        assert!(
+            !stale.exists(),
+            "stale score artifacts are still cleared after an accepted preflight"
+        );
+        let params: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(run.run_root.join("run-params.json")).unwrap())
+                .unwrap();
+        assert_eq!(params["benchmark"], "longmemeval-v2-text");
     }
 
     #[test]
