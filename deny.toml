@@ -1,6 +1,5 @@
 # Dependency policy for membench. Audited in CI (`cargo deny check`).
-# Scope: the default + `server` feature graph (the adapter feature currently
-# requires sibling-override deps; see docs/environment.md).
+# Scope: the full release graph, including the credentialed adapter feature.
 
 [graph]
 all-features = false
@@ -17,6 +16,9 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "BSD-3-Clause",
     "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT-0",
     "Unicode-3.0",
     "Zlib",
     "Unlicense",
