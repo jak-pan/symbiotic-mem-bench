@@ -2777,7 +2777,7 @@ mod tests {
             embedding_timeout_seconds,
         ) in cases
         {
-            let config = symbiotic_memory::MemoryConfig::load_yaml(root.join(path)).unwrap();
+            let config = symbiotic_memory::EngineConfig::load_yaml(root.join(path)).unwrap();
             let resolved = config
                 .queue
                 .resolve_provider_queue(&config.providers.embedding);

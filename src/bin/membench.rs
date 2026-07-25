@@ -3679,7 +3679,7 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
     let config = run
         .memory_config
         .as_ref()
-        .map(symbiotic_memory::MemoryConfig::load_yaml)
+        .map(symbiotic_memory::EngineConfig::load_yaml)
         .transpose()?
         .unwrap_or_default();
     let workflow_max_in_flight =
@@ -4303,7 +4303,7 @@ fn remove_path_if_exists(path: &Path) -> anyhow::Result<()> {
 
 #[cfg(feature = "symbiotic-memory-adapter")]
 struct ProviderRuntime {
-    config: symbiotic_memory::MemoryConfig,
+    config: symbiotic_memory::EngineConfig,
     queue_registry: symbiotic_memory::QueueRegistry,
     queue_store: Arc<dyn symbiotic_memory::QueueEventStore>,
     queue_trace_writer: Arc<symbiotic_memory::AsyncJsonlQueueEventStore>,
@@ -4317,7 +4317,7 @@ struct ProviderRuntime {
 impl ProviderRuntime {
     fn new(
         run: &SymbioticMemoryCliRun,
-        config: &symbiotic_memory::MemoryConfig,
+        config: &symbiotic_memory::EngineConfig,
     ) -> anyhow::Result<Self> {
         let provider_queue_dir = run
             .provider_queue_dir
@@ -5827,7 +5827,7 @@ fn effective_workflow_max_in_flight_for_run(
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn configured_workflow_max_in_flight(run: &SymbioticMemoryCliRun) -> Option<usize> {
     let path = run.memory_config.as_ref()?;
-    symbiotic_memory::MemoryConfig::load_yaml(path)
+    symbiotic_memory::EngineConfig::load_yaml(path)
         .ok()
         .map(|config| config.queue.workflow_max_in_flight)
 }
@@ -6104,7 +6104,7 @@ fn configured_provider_models(run: &SymbioticMemoryCliRun) -> serde_json::Value 
     #[cfg(feature = "symbiotic-memory-adapter")]
     {
         if let Some(path) = &run.memory_config
-            && let Ok(config) = symbiotic_memory::MemoryConfig::load_yaml(path)
+            && let Ok(config) = symbiotic_memory::EngineConfig::load_yaml(path)
         {
             return json!({
                 "distill": provider_binding_for_role(run, "DISTILL", &config.providers.distill),
@@ -6247,7 +6247,7 @@ fn runtime_provider_bindings(
 ) -> serde_json::Value {
     #[cfg(feature = "symbiotic-memory-adapter")]
     if let Some(path) = &run.memory_config
-        && let Ok(config) = symbiotic_memory::MemoryConfig::load_yaml(path)
+        && let Ok(config) = symbiotic_memory::EngineConfig::load_yaml(path)
     {
         let distill = provider_adapter_for_role(run, "DISTILL", &config.providers.distill);
         let embed = effective_embedding_adapter(run, &config.providers.embedding);
@@ -6327,7 +6327,7 @@ fn resolved_role_settings(
 
     #[cfg(feature = "symbiotic-memory-adapter")]
     if let Some(path) = &run.memory_config
-        && let Ok(config) = symbiotic_memory::MemoryConfig::load_yaml(path)
+        && let Ok(config) = symbiotic_memory::EngineConfig::load_yaml(path)
     {
         let distill = provider_adapter_for_role(run, "DISTILL", &config.providers.distill);
         let embed = effective_embedding_adapter(run, &config.providers.embedding);
@@ -6360,7 +6360,7 @@ fn resolved_role_settings(
 fn role_setting_for_adapter(
     run: &SymbioticMemoryCliRun,
     role: &str,
-    config: &symbiotic_memory::MemoryConfig,
+    config: &symbiotic_memory::EngineConfig,
     adapter: &symbiotic_memory::ProviderAdapterConfig,
     active: bool,
 ) -> serde_json::Value {
