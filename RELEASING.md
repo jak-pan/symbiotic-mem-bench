@@ -10,6 +10,11 @@
 
 ## Release checklist
 
+This transfer is a kit upgrade, not a repository-only URL change. The previous adapter pin
+`c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e` and the transferred
+`f6e406abeb13f2c734c4001fbc0fdf72ba43308a` revision are divergent: f6 is a squash-port that also
+changes packaging and the build graph. Evidence earned against c22 does not certify f6.
+
 1. Gates green (same set as CI):
    - `cargo fmt -- --check`, `cargo clippy --all-targets --features server -- -D warnings`
    - `cargo test` and `cargo test --features server`
@@ -20,15 +25,18 @@
    - canary diff: deterministic export over `canary/records` matches
      `canary/expected-leaderboard.json`
    - `./scripts/check-leaderboard-snapshot.sh` — the bundled snapshot still matches `records/`
-2. **Adapter CLI gate, manual until the dependency is public:**
+2. **Adapter CLI gate, credentialed until the dependency is public:**
    `./scripts/check-adapter-build.sh` on a machine with access to
    `symbiotic-sh/symbiotic-memory`. This is the only check that the documented `membench` CLI
    builds *and runs* against the pinned revisions; it also runs the
-   `benchmark_v2` projection/evaluator contract test. The mandatory `rust` CI job runs the
-   adapter-enabled lib/bin unit suites plus the same contract test, but both it and the
-   conditional `adapter-build` job need the repository's read-only
-   `SYMBIOTIC_MEMORY_DEPLOY_KEY` secret, so forks and keyless checkouts leave the path
-   unverified in CI. Do not tag a release without running the script somewhere.
+   `benchmark_v2` projection/evaluator contract test. The `rust`, `deps`, and
+   `leaderboard-contract` jobs authenticate before their Rust gates and fail closed when a fork
+   cannot read the private dependency; the conditional `adapter-build` job is skipped without
+   its key. Therefore a fork run is not sufficient release evidence. Require a green protected,
+   trusted same-repository run and do not tag from a keyless checkout.
+   Local f6 recovery evidence currently consists of 100 adapter-enabled library tests, 51
+   `membench` binary tests, 8 `benchmark_v2` contract tests, core/server checks, and production
+   builds. Fresh protected CI for the release head remains pending.
 3. No stray state: `git status --short --ignored` shows only expected ignored paths
    (`runs/`, external target dir, local env files).
 4. Bump versions in `Cargo.toml` + `dashboard/package.json`, update `Cargo.lock`, commit.

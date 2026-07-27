@@ -97,14 +97,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: git dependencies are pinned and locked
-        run: ./scripts/check-adapter-pins.sh
+        run: |
+          ./scripts/check-adapter-pins.sh --self-test
+          ./scripts/check-adapter-pins.sh
 
   # Credentialed release half: does the documented `membench` CLI actually
-  # build against those pins? The mandatory Rust job also exercises the
-  # adapter contract in the owner repository, but forks do not receive this
-  # private repository's read-only deploy key. Until the dependency is public,
-  # `scripts/check-adapter-build.sh` remains a manual release gate in keyless
-  # environments (RELEASING.md).
+  # build against those pins? This conditional job is supplemental: `rust`,
+  # `deps`, and `leaderboard-contract` authenticate the same private dependency
+  # before their gates and therefore fail closed when a fork has no deploy key.
+  # A trusted same-repository run is required while the dependency is private.
   adapter-key:
     runs-on: ubuntu-latest
     outputs:

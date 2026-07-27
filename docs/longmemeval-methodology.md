@@ -137,6 +137,7 @@ adding `review.json` after the independent review, then regenerating the bundled
 snapshot (`scripts/export-leaderboard-snapshot.sh`; CI re-checks it against `records/` via
 `scripts/check-leaderboard-snapshot.sh`). The first canonical 500-question promotion is
 `factconsol-thinkon-500-20260624`; its 437/500 result is the verified rank-1 row described
-above. The mandatory opposite-model/K3 review independently rebuilt the adapter, reproduced the
-traversal refusal, recounted the verdicts, matched the review hashes, and ran all 142 tests before
-approving the release candidate on 2026-07-24.
+above. The 2026-07-24 opposite-model/K3 review independently checked the promoted record and the
+then-pinned c22 kit revision. That historical attestation does not certify the later divergent f6
+squash-port and packaging/build-graph upgrade. The f6 recovery evidence is tracked separately in
+`docs/oss-release-handoff.md`, and a fresh protected CI run is required for its release head.
