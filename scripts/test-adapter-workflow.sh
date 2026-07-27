@@ -69,6 +69,46 @@ replace_once \
   $'      - run: npm run build\n      - run: echo \"cargo test --features symbiotic-memory-adapter\"\n\n  deps:\n'
 expect_success harmless-echo "$path"
 
+path="$(new_fixture leaderboard-no-git-cli)"
+replace_once \
+  "$path" \
+  $'  leaderboard-contract:\n    runs-on: ubuntu-latest\n    env:\n      CARGO_NET_GIT_FETCH_WITH_CLI: "true"\n' \
+  $'  leaderboard-contract:\n    runs-on: ubuntu-latest\n'
+expect_failure \
+  leaderboard-no-git-cli \
+  "$path" \
+  "leaderboard-contract: private dependency fetches must use the git CLI"
+
+path="$(new_fixture leaderboard-no-ssh-agent)"
+replace_once \
+  "$path" \
+  $'  leaderboard-contract:\n    runs-on: ubuntu-latest\n    env:\n      CARGO_NET_GIT_FETCH_WITH_CLI: "true"\n    steps:\n      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2\n      - name: require the read-only adapter deploy key\n        env:\n          SYMBIOTIC_MEMORY_DEPLOY_KEY: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}\n        run: test -n "$SYMBIOTIC_MEMORY_DEPLOY_KEY"\n      - name: authenticate private git dependencies\n        uses: webfactory/ssh-agent@dc588b651fe13675774614f8e6a936a468676387 # v0.9.0\n        with:\n          ssh-private-key: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}\n' \
+  $'  leaderboard-contract:\n    runs-on: ubuntu-latest\n    env:\n      CARGO_NET_GIT_FETCH_WITH_CLI: "true"\n    steps:\n      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2\n      - name: require the read-only adapter deploy key\n        env:\n          SYMBIOTIC_MEMORY_DEPLOY_KEY: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}\n        run: test -n "$SYMBIOTIC_MEMORY_DEPLOY_KEY"\n'
+expect_failure \
+  leaderboard-no-ssh-agent \
+  "$path" \
+  "leaderboard-contract: expected exactly one SSH-agent step; found 0"
+
+path="$(new_fixture deps-container-libgit2)"
+replace_once \
+  "$path" \
+  $'          use-git-cli: true\n\n  leaderboard-contract:\n' \
+  $'          use-git-cli: false\n\n  leaderboard-contract:\n'
+expect_failure \
+  deps-container-libgit2 \
+  "$path" \
+  "deps: cargo-deny use-git-cli must be True"
+
+path="$(new_fixture deps-wrong-key)"
+replace_once \
+  "$path" \
+  $'  deps:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2\n      - name: require the read-only adapter deploy key\n        env:\n          SYMBIOTIC_MEMORY_DEPLOY_KEY: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}\n' \
+  $'  deps:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2\n      - name: require the read-only adapter deploy key\n        env:\n          SYMBIOTIC_MEMORY_DEPLOY_KEY: ${{ secrets.WRONG_KEY }}\n'
+expect_failure \
+  deps-wrong-key \
+  "$path" \
+  "deps: key preflight must use the scoped secret"
+
 path="$(new_fixture job-if)"
 replace_once "$path" $'  rust:\n' $'  rust:\n    if: false\n'
 expect_failure job-if "$path"

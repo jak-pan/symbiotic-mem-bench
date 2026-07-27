@@ -89,6 +89,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: require the read-only adapter deploy key
+        env:
+          SYMBIOTIC_MEMORY_DEPLOY_KEY: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
+        run: test -n "$SYMBIOTIC_MEMORY_DEPLOY_KEY"
       - uses: dtolnay/rust-toolchain@d0befba8b9ddf874327619e84c39b094edd58b66 # 1.93.0
       - uses: EmbarkStudios/cargo-deny-action@30f817c6f72275c6d54dc744fbca09ebc958599f # v2.0.12
         env:
@@ -97,16 +101,27 @@ jobs:
           command: check advisories licenses sources
           ssh-key: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
           ssh-known-hosts: github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+          use-git-cli: true
 
   leaderboard-contract:
     runs-on: ubuntu-latest
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: require the read-only adapter deploy key
+        env:
+          SYMBIOTIC_MEMORY_DEPLOY_KEY: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
+        run: test -n "$SYMBIOTIC_MEMORY_DEPLOY_KEY"
+      - name: authenticate private git dependencies
+        uses: webfactory/ssh-agent@dc588b651fe13675774614f8e6a936a468676387 # v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
       - uses: dtolnay/rust-toolchain@d0befba8b9ddf874327619e84c39b094edd58b66 # 1.93.0
       - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
       - name: canary export matches committed contract
         run: |
-          cargo run --bin membench-leaderboard -- export --records-root canary/records --deterministic > /tmp/canary-out.json
+          cargo run --locked --bin membench-leaderboard -- export --records-root canary/records --deterministic > /tmp/canary-out.json
           diff <(python3 -m json.tool /tmp/canary-out.json) <(python3 -m json.tool canary/expected-leaderboard.json)
       # The published snapshot must still describe records/ — a stale snapshot
       # looks exactly like a fresh one from its git sha alone.

@@ -402,7 +402,7 @@ def body_enables_adapter(job_name, body):
             )
         if "<(" in command or ">(" in command:
             allowed_process_substitution = (
-                "cargo run --bin membench-leaderboard -- export "
+                "cargo run --locked --bin membench-leaderboard -- export "
                 "--records-root canary/records --deterministic > /tmp/canary-out.json\n"
                 "diff <(python3 -m json.tool /tmp/canary-out.json) "
                 "<(python3 -m json.tool canary/expected-leaderboard.json)"
@@ -748,6 +748,119 @@ def exactly_one(job_name, description, candidates):
     return candidates[0]
 
 
+def assert_leaderboard_private_dependency_auth(body):
+    job_name = "leaderboard-contract"
+    job_env = body.get("env")
+    if not isinstance(job_env, dict) or job_env.get(
+        "CARGO_NET_GIT_FETCH_WITH_CLI"
+    ) != "true":
+        raise AssertionError(
+            f"{job_name}: private dependency fetches must use the git CLI"
+        )
+
+    job_steps = steps(job_name, body)
+    key_index = exactly_one(
+        job_name,
+        "deploy-key preflight",
+        [
+            index
+            for index, step in enumerate(job_steps)
+            if step.get("run") == 'test -n "$SYMBIOTIC_MEMORY_DEPLOY_KEY"'
+        ],
+    )
+    agent_index = exactly_one(
+        job_name,
+        "SSH-agent step",
+        [
+            index
+            for index, step in enumerate(job_steps)
+            if step.get("uses")
+            == "webfactory/ssh-agent@dc588b651fe13675774614f8e6a936a468676387"
+        ],
+    )
+    cargo_index = exactly_one(
+        job_name,
+        "locked leaderboard export",
+        [
+            index
+            for index, step in enumerate(job_steps)
+            if "cargo run --locked --bin membench-leaderboard" in str(
+                step.get("run", "")
+            )
+        ],
+    )
+    if not key_index < agent_index < cargo_index:
+        raise AssertionError(
+            f"{job_name}: key preflight and SSH agent must precede Cargo"
+        )
+
+    key_env = job_steps[key_index].get("env")
+    if not isinstance(key_env, dict) or key_env.get(
+        "SYMBIOTIC_MEMORY_DEPLOY_KEY"
+    ) != "${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}":
+        raise AssertionError(f"{job_name}: key preflight must use the scoped secret")
+    agent_with = job_steps[agent_index].get("with")
+    if not isinstance(agent_with, dict) or agent_with.get("ssh-private-key") != (
+        "${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}"
+    ):
+        raise AssertionError(f"{job_name}: SSH agent must use the scoped deploy key")
+
+
+def assert_dependency_audit_private_dependency_auth(body):
+    job_name = "deps"
+    job_steps = steps(job_name, body)
+    key_index = exactly_one(
+        job_name,
+        "deploy-key preflight",
+        [
+            index
+            for index, step in enumerate(job_steps)
+            if step.get("run") == 'test -n "$SYMBIOTIC_MEMORY_DEPLOY_KEY"'
+        ],
+    )
+    deny_index = exactly_one(
+        job_name,
+        "cargo-deny action",
+        [
+            index
+            for index, step in enumerate(job_steps)
+            if step.get("uses")
+            == "EmbarkStudios/cargo-deny-action@30f817c6f72275c6d54dc744fbca09ebc958599f"
+        ],
+    )
+    if key_index >= deny_index:
+        raise AssertionError(f"{job_name}: deploy-key preflight must precede cargo-deny")
+
+    key_env = job_steps[key_index].get("env")
+    if not isinstance(key_env, dict) or key_env.get(
+        "SYMBIOTIC_MEMORY_DEPLOY_KEY"
+    ) != "${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}":
+        raise AssertionError(f"{job_name}: key preflight must use the scoped secret")
+
+    deny_step = job_steps[deny_index]
+    deny_env = deny_step.get("env")
+    deny_with = deny_step.get("with")
+    if not isinstance(deny_env, dict) or deny_env.get(
+        "CARGO_NET_GIT_FETCH_WITH_CLI"
+    ) != "true":
+        raise AssertionError(f"{job_name}: cargo-deny must use Cargo git CLI fetches")
+    if not isinstance(deny_with, dict):
+        raise AssertionError(f"{job_name}: cargo-deny inputs must be a mapping")
+    required = {
+        "ssh-key": "${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}",
+        "ssh-known-hosts": (
+            "github.com ssh-ed25519 "
+            "AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+        ),
+        "use-git-cli": True,
+    }
+    for key, expected in required.items():
+        if deny_with.get(key) != expected:
+            raise AssertionError(
+                f"{job_name}: cargo-deny {key} must be {expected!r}"
+            )
+
+
 def assert_protected_setup(job_name, body):
     if body.get("runs-on") != "ubuntu-latest":
         raise AssertionError(f"{job_name}: must run on ubuntu-latest")
@@ -919,6 +1032,9 @@ if adapter_feature_jobs != {"rust", "adapter-build"}:
 
 for name in sorted(adapter_feature_jobs):
     assert_protected_setup(name, jobs[name])
+
+assert_dependency_audit_private_dependency_auth(jobs["deps"])
+assert_leaderboard_private_dependency_auth(jobs["leaderboard-contract"])
 
 for name, body in jobs.items():
     assert_reviewed_executables(name, body)
