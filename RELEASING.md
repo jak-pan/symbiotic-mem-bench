@@ -21,9 +21,9 @@ changes packaging and the build graph. Evidence earned against c22 does not cert
    - `cargo build --release --features server`
    - `cargo deny check advisories licenses sources` — default + `server` graph only
    - `cd dashboard && npm ci && npm run build`
-   - `./scripts/check-adapter-pins.sh`, `./scripts/test-adapter-pins.sh`, and
-     `./scripts/check-adapter-workflow.sh` — exact four-package lock identity plus fail-closed CI
-     setup
+   - `./scripts/check-adapter-pins.sh`, `./scripts/test-adapter-pins.sh`,
+     `./scripts/check-adapter-workflow.sh`, and `./scripts/test-adapter-workflow.sh` — exact
+     four-package lock identity plus hostile fail-closed CI setup fixtures
    - canary diff: deterministic export over `canary/records` matches
      `canary/expected-leaderboard.json`
    - `./scripts/check-leaderboard-snapshot.sh` — the bundled snapshot still matches `records/`

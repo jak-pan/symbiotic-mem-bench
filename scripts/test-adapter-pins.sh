@@ -103,4 +103,32 @@ write_valid_fixture "$duplicate"
 } >> "$duplicate/Cargo.lock"
 expect_failure "duplicate package" "$duplicate"
 
+add_unpinned_git_fixture() {
+  local name="$1"
+  local table="$2"
+  local directory="$fixture_root/$name"
+  write_valid_fixture "$directory"
+  {
+    printf '\n%s\n' "$table"
+    printf '%s = { git = "https://github.com/example/rogue", branch = "main" }\n' \
+      "rogue-$name"
+  } >> "$directory/Cargo.toml"
+  expect_failure "$name unpinned git dependency" "$directory"
+}
+
+add_unpinned_git_fixture "dev-table" "[dev-dependencies]"
+add_unpinned_git_fixture "build-table" "[build-dependencies]"
+add_unpinned_git_fixture "target-table" "[target.'cfg(unix)'.dependencies]"
+add_unpinned_git_fixture "workspace-table" "[workspace.dependencies]"
+add_unpinned_git_fixture "patch-table" "[patch.crates-io]"
+
+pinned_unlocked="$fixture_root/pinned-unlocked-dev"
+write_valid_fixture "$pinned_unlocked"
+{
+  printf '\n[dev-dependencies]\n'
+  printf 'rogue-pinned = { git = "https://github.com/example/rogue", rev = "%s" }\n' \
+    "$pin"
+} >> "$pinned_unlocked/Cargo.toml"
+expect_failure "pinned dev dependency missing from lock" "$pinned_unlocked"
+
 echo "OK: adapter pin fixtures passed"

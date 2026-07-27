@@ -125,37 +125,61 @@ except tomllib.TOMLDecodeError as error:
 
 dependencies = manifest.get("dependencies", {})
 packages = lock.get("package", [])
+if not isinstance(dependencies, dict):
+    failures.append("manifest dependencies must be a table")
+    dependencies = {}
+if not isinstance(packages, list):
+    failures.append("Cargo.lock package entries must be an array of tables")
+    packages = []
+
+
+def iter_git_dependencies(value, path=()):
+    if isinstance(value, dict):
+        if "git" in value:
+            yield path, value
+        for key, child in value.items():
+            yield from iter_git_dependencies(child, path + (str(key),))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            yield from iter_git_dependencies(child, path + (str(index),))
+
 
 checked_git_dependencies = 0
-if isinstance(dependencies, dict):
-    for dependency_name, dependency in dependencies.items():
-        if not isinstance(dependency, dict) or "git" not in dependency:
-            continue
-        checked_git_dependencies += 1
-        url = dependency.get("git")
-        rev = dependency.get("rev")
-        if not isinstance(rev, str) or not re.fullmatch(r"[0-9a-f]{40}", rev):
-            failures.append(
-                f"{dependency_name}: git dependency is not pinned to a lowercase 40-character rev"
-            )
-            continue
-        package_name = dependency.get("package", dependency_name)
-        matching = [
-            package for package in packages
-            if isinstance(package, dict) and package.get("name") == package_name
-        ]
-        if len(matching) != 1:
-            failures.append(
-                f"{dependency_name}: Cargo.lock must contain exactly one {package_name} "
-                f"entry; found {len(matching)}"
-            )
-            continue
-        expected_source = f"git+{url}?rev={rev}#{rev}"
-        if matching[0].get("source") != expected_source:
-            failures.append(
-                f"{dependency_name}: Cargo.lock does not resolve exact source "
-                f"{expected_source}"
-            )
+for dependency_path, dependency in iter_git_dependencies(manifest):
+    checked_git_dependencies += 1
+    dependency_name = ".".join(dependency_path) or "<root>"
+    url = dependency.get("git")
+    rev = dependency.get("rev")
+    if not isinstance(url, str) or not url:
+        failures.append(f"{dependency_name}: git dependency has an invalid URL")
+        continue
+    if not isinstance(rev, str) or not re.fullmatch(r"[0-9a-f]{40}", rev):
+        failures.append(
+            f"{dependency_name}: git dependency is not pinned to a lowercase 40-character rev"
+        )
+        continue
+    package_name = dependency.get(
+        "package", dependency_path[-1] if dependency_path else None
+    )
+    if not isinstance(package_name, str) or not package_name:
+        failures.append(f"{dependency_name}: cannot determine dependency package name")
+        continue
+    matching = [
+        package for package in packages
+        if isinstance(package, dict) and package.get("name") == package_name
+    ]
+    if len(matching) != 1:
+        failures.append(
+            f"{dependency_name}: Cargo.lock must contain exactly one {package_name} "
+            f"entry; found {len(matching)}"
+        )
+        continue
+    expected_source = f"git+{url}?rev={rev}#{rev}"
+    if matching[0].get("source") != expected_source:
+        failures.append(
+            f"{dependency_name}: Cargo.lock does not resolve exact source "
+            f"{expected_source}"
+        )
 if checked_git_dependencies == 0:
     failures.append("no git dependencies found in the manifest")
 

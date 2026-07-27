@@ -123,6 +123,7 @@ jobs:
           ./scripts/check-adapter-pins.sh --self-test
           ./scripts/test-adapter-pins.sh
           ./scripts/check-adapter-pins.sh
+          ./scripts/test-adapter-workflow.sh
           ./scripts/check-adapter-workflow.sh
 
   # Credentialed release half: build the documented CLI against the exact
