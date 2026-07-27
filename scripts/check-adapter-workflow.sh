@@ -47,8 +47,10 @@ if not isinstance(jobs, dict):
     raise AssertionError("workflow jobs must be a mapping")
 
 ADAPTER_FEATURE = "symbiotic-memory-adapter"
-CACHE_EXECUTABLES = {"sccache", "cachepot", "cargo-cache"}
+CACHE_EXECUTABLES = {"ccache", "sccache", "cachepot", "cargo-cache"}
 WRAPPER_ENV = {"RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"}
+SHELL_WRAPPERS = {"bash", "dash", "ksh", "sh", "zsh"}
+COMMAND_COMPOSERS = {"eval", "exec"}
 ALLOWED_PROTECTED_ACTIONS = {
     "actions/checkout@v4",
     "dtolnay/rust-toolchain@1.93.0",
@@ -65,6 +67,7 @@ SHELL_CONTROL = {
     "fi",
     "if",
     "then",
+    "until",
     "while",
 }
 
@@ -91,13 +94,17 @@ def run_commands(job_name, body):
     return commands
 
 
-def shell_segments(command):
+def shell_tokens(command):
     command = re.sub(r"\\\s*\n\s*", " ", command)
     command = command.replace("\n", " ; ")
     lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
     lexer.whitespace_split = True
     lexer.commenters = "#"
-    words = list(lexer)
+    return list(lexer)
+
+
+def shell_segments(command):
+    words = shell_tokens(command)
     segments = []
     current = []
     for word in words:
@@ -116,7 +123,7 @@ def is_assignment(word):
     return re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", word) is not None
 
 
-def command_word(segment):
+def command_position(segment):
     index = 0
     while index < len(segment) and (
         is_assignment(segment[index]) or segment[index] in SHELL_CONTROL
@@ -136,7 +143,86 @@ def command_word(segment):
         index += 1
         while index < len(segment) and segment[index].startswith("-"):
             index += 1
-    return segment[index] if index < len(segment) else None
+    return index if index < len(segment) else None
+
+
+def command_word(segment):
+    index = command_position(segment)
+    return segment[index] if index is not None else None
+
+
+def executable_name(word):
+    return word.rsplit("/", 1)[-1].casefold()
+
+
+def word_uses_cache(word):
+    components = re.split(r"[/=]", word.casefold())
+    return any(component in CACHE_EXECUTABLES for component in components)
+
+
+def nested_shell_payloads(job_name, step_index, segment):
+    payloads = []
+    executable_index = command_position(segment)
+    for index, word in enumerate(segment):
+        name = executable_name(word)
+        if name in SHELL_WRAPPERS:
+            args = segment[index + 1 :]
+            payload = None
+            for option_index, arg in enumerate(args):
+                if arg == "--":
+                    break
+                if arg == "-c" or (
+                    arg.startswith("-")
+                    and not arg.startswith("--")
+                    and "c" in arg[1:]
+                ):
+                    if option_index + 1 >= len(args):
+                        raise AssertionError(
+                            f"{job_name}: step {step_index} shell wrapper {word} "
+                            "is missing its -c payload"
+                        )
+                    payload = args[option_index + 1]
+                    break
+            if payload is None and index == executable_index:
+                raise AssertionError(
+                    f"{job_name}: step {step_index} invokes shell wrapper {word} "
+                    "without a statically inspectable -c payload"
+                )
+            if payload is not None:
+                payloads.append((name, payload))
+        elif name in COMMAND_COMPOSERS and index == executable_index:
+            args = segment[index + 1 :]
+            if not args:
+                raise AssertionError(
+                    f"{job_name}: step {step_index} invokes {name} without a payload"
+                )
+            payloads.append((name, " ".join(args)))
+        elif name in {".", "source"} and index == executable_index:
+            raise AssertionError(
+                f"{job_name}: step {step_index} sources an uninspectable shell payload"
+            )
+    return payloads
+
+
+def recursive_shell_commands(job_name, step_index, command, depth=0):
+    if depth > 8:
+        raise AssertionError(
+            f"{job_name}: step {step_index} exceeds nested shell inspection depth"
+        )
+    yield depth, command
+    for segment in shell_segments(command):
+        for _, payload in nested_shell_payloads(job_name, step_index, segment):
+            yield from recursive_shell_commands(
+                job_name, step_index, payload, depth=depth + 1
+            )
+
+
+def recursive_shell_segments(job_name, step_index, command):
+    for depth, nested_command in recursive_shell_commands(
+        job_name, step_index, command
+    ):
+        for segment in shell_segments(nested_command):
+            yield depth, segment
 
 
 def is_cargo(word):
@@ -212,7 +298,7 @@ def segment_enables_adapter(job_name, step_index, segment):
 def body_enables_adapter(job_name, body):
     enabled = False
     for step_index, command in run_commands(job_name, body):
-        for segment in shell_segments(command):
+        for _, segment in recursive_shell_segments(job_name, step_index, command):
             if segment_enables_adapter(job_name, step_index, segment):
                 enabled = True
     return enabled
@@ -269,10 +355,15 @@ def assert_no_cache_or_artifacts(job_name, body):
         for key, env_value in value.items():
             normalized_key = str(key).upper()
             normalized_value = str(env_value).casefold()
+            native_compiler_launcher = re.fullmatch(
+                r"CMAKE_[A-Z0-9_]+_(?:COMPILER|LINKER)_LAUNCHER",
+                normalized_key,
+            )
             if (
                 normalized_key in WRAPPER_ENV
                 or normalized_key.endswith("_RUSTC_WRAPPER")
                 or normalized_key.endswith("_RUSTC_WORKSPACE_WRAPPER")
+                or native_compiler_launcher is not None
             ) and str(env_value).strip():
                 raise AssertionError(
                     f"{job_name}: adapter-enabled jobs must not set {normalized_key}"
@@ -284,12 +375,11 @@ def assert_no_cache_or_artifacts(job_name, body):
                 )
 
     for step_index, command in run_commands(job_name, body):
-        for segment in shell_segments(command):
+        for _, segment in recursive_shell_segments(job_name, step_index, command):
             for word in segment:
-                executable = word.rsplit("=", 1)[-1].rsplit("/", 1)[-1].casefold()
-                if executable in CACHE_EXECUTABLES:
+                if word_uses_cache(word):
                     raise AssertionError(
-                        f"{job_name}: step {step_index} must not invoke {executable}"
+                        f"{job_name}: step {step_index} must not invoke cache tool {word}"
                     )
 
 
@@ -311,7 +401,7 @@ def assert_no_git_url_rewrites(job_name, body):
                 )
 
     for step_index, command in run_commands(job_name, body):
-        for segment in shell_segments(command):
+        for _, segment in recursive_shell_segments(job_name, step_index, command):
             lowered = [word.casefold() for word in segment]
             git_indexes = [
                 index
@@ -324,6 +414,96 @@ def assert_no_git_url_rewrites(job_name, body):
                     raise AssertionError(
                         f"{job_name}: step {step_index} uses dynamic Git arguments; "
                         "URL rewrite policy cannot verify them"
+                    )
+
+
+def controlled_segment(segment):
+    normalized = [word.removeprefix("./") for word in segment]
+    lowered = [word.casefold() for word in normalized]
+    if any(is_cargo(word) for word in segment):
+        return True
+    if any(word == "git" or word.endswith("/git") for word in lowered):
+        return True
+    if any(
+        word.endswith("scripts/check-adapter-build.sh")
+        or word.endswith("scripts/check-adapter-pins.sh")
+        or word.endswith("scripts/prepare-adapter-zvec.sh")
+        for word in normalized
+    ):
+        return True
+    if any(word_uses_cache(word) for word in segment):
+        return True
+    return any(
+        marker in word
+        for marker in (
+            "GITHUB_ENV",
+            "GITHUB_OUTPUT",
+            "ZVEC_LIB_DIR",
+            "LIBRARY_PATH",
+            "LD_LIBRARY_PATH",
+        )
+        for word in segment
+    )
+
+
+def assert_no_failure_masking(job_name, body):
+    for path, _ in walk(body):
+        if path and path[-1] == "shell":
+            raise AssertionError(
+                f"{job_name}: protected adapter jobs must not override shell failure semantics"
+            )
+    for step_index, command in run_commands(job_name, body):
+        for depth, nested_command in recursive_shell_commands(
+            job_name, step_index, command
+        ):
+            tokens = shell_tokens(nested_command)
+            segments = shell_segments(nested_command)
+            has_controlled_command = any(
+                controlled_segment(segment) for segment in segments
+            )
+            if "||" in tokens:
+                raise AssertionError(
+                    f"{job_name}: step {step_index} must not mask failures with ||"
+                )
+            if "&" in tokens and has_controlled_command:
+                raise AssertionError(
+                    f"{job_name}: step {step_index} must not background mandatory commands"
+                )
+            for segment in segments:
+                executable = command_word(segment)
+                name = executable_name(executable) if executable is not None else None
+                if name == "set":
+                    args = segment[command_position(segment) + 1 :]
+                    if "+e" in args or (
+                        "+o" in args
+                        and any(arg.casefold() == "errexit" for arg in args)
+                    ):
+                        raise AssertionError(
+                            f"{job_name}: step {step_index} must not disable errexit"
+                        )
+                if name == "trap":
+                    raise AssertionError(
+                        f"{job_name}: step {step_index} must not install shell traps"
+                    )
+                first_non_assignment = next(
+                    (word for word in segment if not is_assignment(word)), None
+                )
+                if first_non_assignment == "!" and controlled_segment(segment):
+                    raise AssertionError(
+                        f"{job_name}: step {step_index} negates a mandatory command"
+                    )
+                if (
+                    first_non_assignment in {"if", "until", "while"}
+                    and controlled_segment(segment)
+                ):
+                    raise AssertionError(
+                        f"{job_name}: step {step_index} conditionally masks "
+                        "a mandatory command"
+                    )
+                if depth > 0 and controlled_segment(segment):
+                    raise AssertionError(
+                        f"{job_name}: step {step_index} hides a controlled command "
+                        "inside a shell/eval wrapper"
                     )
 
 
@@ -347,6 +527,7 @@ def assert_protected_setup(job_name, body):
         )
     assert_no_cache_or_artifacts(job_name, body)
     assert_no_git_url_rewrites(job_name, body)
+    assert_no_failure_masking(job_name, body)
 
     job_steps = steps(job_name, body)
     pin_index = exactly_one(
@@ -464,7 +645,7 @@ def assert_protected_setup(job_name, body):
 
     cargo_steps = []
     for step_index, command in run_commands(job_name, body):
-        for segment in shell_segments(command):
+        for _, segment in recursive_shell_segments(job_name, step_index, command):
             if any(is_cargo(word) for word in segment) or any(
                 word.removeprefix("./").endswith("scripts/check-adapter-build.sh")
                 for word in segment

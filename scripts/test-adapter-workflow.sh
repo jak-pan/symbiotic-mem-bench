@@ -36,8 +36,14 @@ PY
 expect_failure() {
   local name="$1"
   local path="$2"
+  local expected="${3:-}"
   if "$checker" --workflow "$path" > "$fixture_root/$name.out" 2>&1; then
     echo "FAIL: $name workflow fixture unexpectedly passed" >&2
+    exit 1
+  fi
+  if [[ -n "$expected" ]] && ! grep -Fq -- "$expected" "$fixture_root/$name.out"; then
+    echo "FAIL: $name fixture failed for the wrong reason" >&2
+    cat "$fixture_root/$name.out" >&2
     exit 1
   fi
   echo "OK: $name workflow fixture rejected"
@@ -147,5 +153,105 @@ replace_once \
   $'      CARGO_NET_GIT_FETCH_WITH_CLI: \"true\"\n' \
   $'      CARGO_NET_GIT_FETCH_WITH_CLI: \"true\"\n      GIT_CONFIG_KEY_0: ${{ vars.CONFIG_KEY }}\n'
 expect_failure git-config-env "$path"
+
+path="$(new_fixture nested-shell-cargo)"
+replace_once \
+  "$path" \
+  $'      - run: npm run build\n\n  deps:\n' \
+  $'      - run: npm run build\n      - run: bash -c \'cargo test --features symbiotic-memory-adapter\'\n\n  deps:\n'
+expect_failure \
+  nested-shell-cargo "$path" \
+  "every adapter-enabled Cargo/script job must use the protected native setup"
+
+path="$(new_fixture nested-protected-cargo)"
+replace_once \
+  "$path" \
+  $'      - name: fmt\n' \
+  $'      - run: bash -c \'cargo test --features symbiotic-memory-adapter\'\n      - name: fmt\n'
+expect_failure nested-protected-cargo "$path" "hides a controlled command"
+
+path="$(new_fixture recursive-shell-cache)"
+replace_once \
+  "$path" \
+  $'      - name: fmt\n' \
+  $'      - run: bash -c \"sh -c \'sccache --start-server\'\"\n      - name: fmt\n'
+expect_failure recursive-shell-cache "$path" "must not invoke cache tool sccache"
+
+path="$(new_fixture nested-shell-git)"
+replace_once \
+  "$path" \
+  $'      - name: fmt\n' \
+  $'      - run: bash -c \'git config --global \"$CONFIG_KEY\" https://github.com/\'\n      - name: fmt\n'
+expect_failure nested-shell-git "$path" "uses dynamic Git arguments"
+
+path="$(new_fixture dynamic-shell-payload)"
+replace_once \
+  "$path" \
+  $'      - name: fmt\n' \
+  $'      - run: bash -c \"$COMMAND\"\n      - name: fmt\n'
+expect_failure dynamic-shell-payload "$path" "uses a dynamic shell executable"
+
+path="$(new_fixture dynamic-eval-payload)"
+replace_once \
+  "$path" \
+  $'      - name: fmt\n' \
+  $'      - run: eval \"$COMMAND\"\n      - name: fmt\n'
+expect_failure dynamic-eval-payload "$path" "uses a dynamic shell executable"
+
+path="$(new_fixture masked-prepare)"
+replace_once \
+  "$path" \
+  $'            x86_64-unknown-linux-gnu\n' \
+  $'            x86_64-unknown-linux-gnu || true\n'
+expect_failure masked-prepare "$path" "must not mask failures with ||"
+
+path="$(new_fixture masked-export)"
+replace_once \
+  "$path" \
+  $'          } >> \"$GITHUB_ENV\"\n' \
+  $'          } >> \"$GITHUB_ENV\" || true\n'
+expect_failure masked-export "$path" "must not mask failures with ||"
+
+path="$(new_fixture masked-cargo)"
+replace_once \
+  "$path" \
+  $'        run: cargo test --locked --features symbiotic-memory-adapter --lib --bin membench --test benchmark_v2\n' \
+  $'        run: cargo test --locked --features symbiotic-memory-adapter --lib --bin membench --test benchmark_v2 || true\n'
+expect_failure masked-cargo "$path" "must not mask failures with ||"
+
+path="$(new_fixture conditional-cargo)"
+replace_once \
+  "$path" \
+  $'        run: cargo test --locked --features symbiotic-memory-adapter --lib --bin membench --test benchmark_v2\n' \
+  $'        run: if cargo test --locked --features symbiotic-memory-adapter; then true; fi\n'
+expect_failure conditional-cargo "$path" "conditionally masks a mandatory command"
+
+path="$(new_fixture disabled-errexit)"
+replace_once \
+  "$path" \
+  $'        run: cargo test --locked --features symbiotic-memory-adapter --lib --bin membench --test benchmark_v2\n' \
+  $'        run: |\n          set +e\n          cargo test --locked --features symbiotic-memory-adapter\n'
+expect_failure disabled-errexit "$path" "must not disable errexit"
+
+path="$(new_fixture background-cargo)"
+replace_once \
+  "$path" \
+  $'        run: cargo test --locked --features symbiotic-memory-adapter --lib --bin membench --test benchmark_v2\n' \
+  $'        run: cargo test --locked --features symbiotic-memory-adapter &\n'
+expect_failure background-cargo "$path" "must not background mandatory commands"
+
+path="$(new_fixture shell-override)"
+replace_once \
+  "$path" \
+  $'        run: cargo test --locked --features symbiotic-memory-adapter --lib --bin membench --test benchmark_v2\n' \
+  $'        shell: bash {0}\n        run: cargo test --locked --features symbiotic-memory-adapter --lib --bin membench --test benchmark_v2\n'
+expect_failure shell-override "$path" "must not override shell failure semantics"
+
+path="$(new_fixture native-compiler-cache)"
+replace_once \
+  "$path" \
+  $'      CARGO_NET_GIT_FETCH_WITH_CLI: \"true\"\n' \
+  $'      CARGO_NET_GIT_FETCH_WITH_CLI: \"true\"\n      CMAKE_CXX_COMPILER_LAUNCHER: ccache\n'
+expect_failure native-compiler-cache "$path" "must not set CMAKE_CXX_COMPILER_LAUNCHER"
 
 echo "OK: hostile adapter workflow fixtures passed"
