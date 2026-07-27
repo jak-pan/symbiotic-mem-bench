@@ -19,24 +19,32 @@ changes packaging and the build graph. Evidence earned against c22 does not cert
    - `cargo fmt -- --check`, `cargo clippy --all-targets --features server -- -D warnings`
    - `cargo test` and `cargo test --features server`
    - `cargo build --release --features server`
-   - `cargo deny check advisories licenses sources`
+   - `cargo deny check advisories licenses sources` — default + `server` graph only
    - `cd dashboard && npm ci && npm run build`
-   - `./scripts/check-adapter-pins.sh` — git deps pinned to exact revs, resolved by `Cargo.lock`
+   - `./scripts/check-adapter-pins.sh`, `./scripts/test-adapter-pins.sh`, and
+     `./scripts/check-adapter-workflow.sh` — exact four-package lock identity plus fail-closed CI
+     setup
    - canary diff: deterministic export over `canary/records` matches
      `canary/expected-leaderboard.json`
    - `./scripts/check-leaderboard-snapshot.sh` — the bundled snapshot still matches `records/`
 2. **Adapter CLI gate, credentialed until the dependency is public:**
    `./scripts/check-adapter-build.sh` on a machine with access to
-   `symbiotic-sh/symbiotic-memory`. This is the only check that the documented `membench` CLI
-   builds *and runs* against the pinned revisions; it also runs the
-   `benchmark_v2` projection/evaluator contract test. The `rust`, `deps`, and
-   `leaderboard-contract` jobs authenticate before their Rust gates and fail closed when a fork
-   cannot read the private dependency; the conditional `adapter-build` job is skipped without
-   its key. Therefore a fork run is not sufficient release evidence. Require a green protected,
-   trusted same-repository run and do not tag from a keyless checkout.
-   Local f6 recovery evidence currently consists of 100 adapter-enabled library tests, 51
+   `symbiotic-sh/symbiotic-memory`. On Linux, first use
+   `./scripts/prepare-adapter-zvec.sh` with a clean canonical checkout at
+   `.symbiotic-memory-pin`, then export the resulting absolute `ZVEC_LIB_DIR` and linker paths as
+   described in `docs/environment.md`. This gate builds *and runs* the documented CLI and runs the
+   `benchmark_v2` projection/evaluator contract test.
+
+   The protected `rust` and `adapter-build` Ubuntu jobs are mandatory. Both reject a missing
+   read-only deploy key, check out the exact reviewed pin without persistent credentials, build
+   and verify the target-matched Linux zvec package using upstream's provenance/SBOM contract,
+   export its paths through `GITHUB_ENV`, and only then invoke Cargo. They do not cache
+   private/native-derived build artifacts. A fork without the secret therefore fails rather than
+   producing reduced green evidence. Require both jobs green at the exact release head.
+
+   Historical local f6 macOS recovery evidence consists of 100 adapter-enabled library tests, 51
    `membench` binary tests, 8 `benchmark_v2` contract tests, core/server checks, and production
-   builds. Fresh protected CI for the release head remains pending.
+   builds. It does not substitute for the fresh protected Ubuntu gate, which remains pending.
 3. No stray state: `git status --short --ignored` shows only expected ignored paths
    (`runs/`, external target dir, local env files).
 4. Bump versions in `Cargo.toml` + `dashboard/package.json`, update `Cargo.lock`, commit.

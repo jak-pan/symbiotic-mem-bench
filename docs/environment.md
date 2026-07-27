@@ -82,6 +82,26 @@ Without the override, Cargo uses the exact remote revisions and
 adapter builds remain blocked while the memory repository is private; see
 `docs/oss-release-handoff.md`.
 
+The f6 build graph also requires a verified native zvec package for the host target. Given a clean
+canonical `symbiotic-sh/symbiotic-memory` checkout whose `HEAD` equals
+`.symbiotic-memory-pin`, prepare it before Cargo:
+
+```bash
+target="$(rustc -vV | sed -n 's/^host: //p')"
+zvec_dir="$(mktemp -d "${TMPDIR:-/tmp}/membench-zvec.XXXXXX")"
+./scripts/prepare-adapter-zvec.sh /path/to/symbiotic-memory "$zvec_dir" "$target"
+export ZVEC_LIB_DIR="$zvec_dir"
+export LIBRARY_PATH="$zvec_dir${LIBRARY_PATH:+:$LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$zvec_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" # Linux
+export DYLD_LIBRARY_PATH="$zvec_dir${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" # macOS
+```
+
+The wrapper validates the checkout identity, pin, index state, and cleanliness, then delegates the
+source revision, builder image, target, library digest, provenance, and SPDX SBOM checks to the
+pinned upstream `scripts/zvec-package.sh`. CI uses `x86_64-unknown-linux-gnu`, exports these paths
+through `GITHUB_ENV`, and intentionally does not cache the resulting native or private-derived
+artifacts.
+
 ## Required Keys
 
 Paid Symbiotic Memory LongMemEval runs on the owner-default stack currently need:

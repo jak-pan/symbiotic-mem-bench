@@ -11,18 +11,47 @@ env:
 jobs:
   rust:
     runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
     steps:
       - uses: actions/checkout@v4
+      - name: bind the adapter checkout to the reviewed pin
+        id: adapter_pin
+        run: |
+          ./scripts/check-adapter-pins.sh
+          echo "sha=$(tr -d '\n' < .symbiotic-memory-pin)" >> "$GITHUB_OUTPUT"
+      - name: require the read-only adapter deploy key
+        env:
+          SYMBIOTIC_MEMORY_DEPLOY_KEY: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
+        run: test -n "$SYMBIOTIC_MEMORY_DEPLOY_KEY"
       - name: authenticate private git dependencies
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
-      - name: rewrite github https to ssh
-        run: git config --global url."git@github.com:".insteadOf "https://github.com/"
       - uses: dtolnay/rust-toolchain@1.93.0
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - name: checkout the exact Symbiotic Memory source
+        uses: actions/checkout@v4
+        with:
+          repository: symbiotic-sh/symbiotic-memory
+          ref: ${{ steps.adapter_pin.outputs.sha }}
+          path: .adapter-source/symbiotic-memory
+          ssh-key: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
+          persist-credentials: false
+      - name: prepare and verify target-matched zvec
+        run: |
+          zvec_dir="$RUNNER_TEMP/symbiotic-memory-zvec"
+          ./scripts/prepare-adapter-zvec.sh \
+            .adapter-source/symbiotic-memory \
+            "$zvec_dir" \
+            x86_64-unknown-linux-gnu
+          {
+            echo "ZVEC_LIB_DIR=$zvec_dir"
+            echo "LIBRARY_PATH=$zvec_dir${LIBRARY_PATH:+:$LIBRARY_PATH}"
+            echo "LD_LIBRARY_PATH=$zvec_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          } >> "$GITHUB_ENV"
       - name: fmt
         run: cargo fmt -- --check
       - name: clippy
@@ -33,10 +62,8 @@ jobs:
         run: cargo test --features server
       # The v2 scorer/preflight/artifact unit tests live behind the adapter feature
       # (`src/benchmark.rs` and the `membench` bin only compile with it), so they must
-      # run here in the mandatory job, not only in the key-gated `adapter-build` job.
+      # run here in the mandatory job, not only in the dedicated `adapter-build` job.
       - name: test (adapter lib/bin + v2 contract)
-        env:
-          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
         run: cargo test --locked --features symbiotic-memory-adapter --lib --bin membench --test benchmark_v2
       - name: production build (server)
         run: cargo build --release --features server
@@ -73,12 +100,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: authenticate private git dependencies
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
-      - name: rewrite github https to ssh
-        run: git config --global url."git@github.com:".insteadOf "https://github.com/"
       - uses: dtolnay/rust-toolchain@1.93.0
       - uses: Swatinem/rust-cache@v2
       - name: canary export matches committed contract
@@ -99,46 +120,57 @@ jobs:
       - name: git dependencies are pinned and locked
         run: |
           ./scripts/check-adapter-pins.sh --self-test
+          ./scripts/test-adapter-pins.sh
           ./scripts/check-adapter-pins.sh
+          ./scripts/check-adapter-workflow.sh
 
-  # Credentialed release half: does the documented `membench` CLI actually
-  # build against those pins? This conditional job is supplemental: `rust`,
-  # `deps`, and `leaderboard-contract` authenticate the same private dependency
-  # before their gates and therefore fail closed when a fork has no deploy key.
-  # A trusted same-repository run is required while the dependency is private.
-  adapter-key:
-    runs-on: ubuntu-latest
-    outputs:
-      available: ${{ steps.probe.outputs.available }}
-    steps:
-      - id: probe
-        env:
-          SYMBIOTIC_MEMORY_DEPLOY_KEY: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
-        run: |
-          if [ -n "$SYMBIOTIC_MEMORY_DEPLOY_KEY" ]; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::SYMBIOTIC_MEMORY_DEPLOY_KEY not configured — adapter CLI build not verified in CI."
-          fi
-
+  # Credentialed release half: build the documented CLI against the exact
+  # private source and its provenance-verified native package. This is a
+  # mandatory protected-branch gate; a missing key is a failure, never a skip.
   adapter-build:
-    needs: adapter-key
-    if: needs.adapter-key.outputs.available == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
     steps:
       - uses: actions/checkout@v4
+      - name: bind the adapter checkout to the reviewed pin
+        id: adapter_pin
+        run: |
+          ./scripts/check-adapter-pins.sh
+          echo "sha=$(tr -d '\n' < .symbiotic-memory-pin)" >> "$GITHUB_OUTPUT"
+      - name: require the read-only adapter deploy key
+        env:
+          SYMBIOTIC_MEMORY_DEPLOY_KEY: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
+        run: test -n "$SYMBIOTIC_MEMORY_DEPLOY_KEY"
       - name: authenticate private git dependencies
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
-      - name: rewrite github https to ssh
-        run: git config --global url."git@github.com:".insteadOf "https://github.com/"
       - uses: dtolnay/rust-toolchain@1.93.0
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - name: checkout the exact Symbiotic Memory source
+        uses: actions/checkout@v4
+        with:
+          repository: symbiotic-sh/symbiotic-memory
+          ref: ${{ steps.adapter_pin.outputs.sha }}
+          path: .adapter-source/symbiotic-memory
+          ssh-key: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
+          persist-credentials: false
+      - name: prepare and verify target-matched zvec
+        run: |
+          zvec_dir="$RUNNER_TEMP/symbiotic-memory-zvec"
+          ./scripts/prepare-adapter-zvec.sh \
+            .adapter-source/symbiotic-memory \
+            "$zvec_dir" \
+            x86_64-unknown-linux-gnu
+          {
+            echo "ZVEC_LIB_DIR=$zvec_dir"
+            echo "LIBRARY_PATH=$zvec_dir${LIBRARY_PATH:+:$LIBRARY_PATH}"
+            echo "LD_LIBRARY_PATH=$zvec_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          } >> "$GITHUB_ENV"
       - name: adapter CLI builds against the pinned revisions
         run: ./scripts/check-adapter-build.sh
       - name: LongMemEval-V2 text projection contract
-        run: cargo test --features symbiotic-memory-adapter --test benchmark_v2
+        run: cargo test --locked --features symbiotic-memory-adapter --test benchmark_v2

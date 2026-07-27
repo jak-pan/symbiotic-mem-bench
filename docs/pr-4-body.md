@@ -34,6 +34,6 @@ Limits, stated plainly:
   score-summary hash mismatch), and v2-text records are categorically leaderboard-ineligible.
 
 Verified: default lib suite; adapter-enabled lib/bin unit suites and the `benchmark_v2` contract
-tests (now enforced in the mandatory `rust` CI job, not only the key-gated `adapter-build` job);
+tests (enforced in the mandatory `rust` CI job, not only the dedicated `adapter-build` job);
 real 451-question dataset validation; bounded no-provider smoke; strict clippy and the adapter
 build gate.

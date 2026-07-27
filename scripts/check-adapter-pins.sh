@@ -1,22 +1,53 @@
 #!/usr/bin/env bash
-# Offline gate: every git dependency declared in Cargo.toml is pinned to an
-# exact rev, and Cargo.lock resolves that same rev.
-#
-# The adapter feature builds against two private/sibling repositories. Without
-# this check a lockfile refresh could silently float the adapter onto a
-# different commit than the manifest advertises, so a clean clone would build
-# something other than what the release notes claim. This runs anywhere — no
-# network, no credentials — which is why it gates every CI run while the
-# credentialed build check (scripts/check-adapter-build.sh) cannot.
+# Offline gate for the adapter dependency identity. The manifest, repository
+# pin, and every adapter package carried in Cargo.lock must agree exactly.
 set -euo pipefail
-cd "$(dirname "$0")/.."
 
-python3 - "$@" <<'PY'
-import re
-import sys
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+manifest="$repo_root/Cargo.toml"
+lock="$repo_root/Cargo.lock"
+pin_file="$repo_root/.symbiotic-memory-pin"
+checkout=""
+self_test=false
 
-CANONICAL_MEMORY_REPOSITORY = "github.com/symbiotic-sh/symbiotic-memory"
-CANONICAL_MEMORY_URLS = {
+usage() {
+  echo "usage: check-adapter-pins.sh [--self-test] [--manifest PATH --lock PATH --pin-file PATH] [--checkout PATH]" >&2
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --self-test)
+      self_test=true
+      shift
+      ;;
+    --manifest)
+      manifest="${2:?missing path after --manifest}"
+      shift 2
+      ;;
+    --lock)
+      lock="${2:?missing path after --lock}"
+      shift 2
+      ;;
+    --pin-file)
+      pin_file="${2:?missing path after --pin-file}"
+      shift 2
+      ;;
+    --checkout)
+      checkout="${2:?missing path after --checkout}"
+      shift 2
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+if [[ "$self_test" == true ]]; then
+  python3 - <<'PY'
+from urllib.parse import urlsplit
+
+CANONICAL = {
     "https://github.com/symbiotic-sh/symbiotic-memory",
     "https://github.com/symbiotic-sh/symbiotic-memory.git",
     "ssh://git@github.com/symbiotic-sh/symbiotic-memory",
@@ -24,124 +55,221 @@ CANONICAL_MEMORY_URLS = {
     "git@github.com:symbiotic-sh/symbiotic-memory",
     "git@github.com:symbiotic-sh/symbiotic-memory.git",
 }
+REJECTED = {
+    "http://github.com/symbiotic-sh/symbiotic-memory",
+    "https://github.com/symbiotic-sh/symbiotic-memory/",
+    "https://token@github.com/symbiotic-sh/symbiotic-memory",
+    "https://github.com/symbiotic-sh/symbiotic-memory?ref=main",
+    "https://github.com/symbiotic-sh/symbiotic-memory/other",
+    "ssh://root@github.com/symbiotic-sh/symbiotic-memory",
+    "ssh://git@github.com/Symbiotic-sh/symbiotic-memory",
+    "git@github.com:symbiotic-sh/symbiotic-memory/other",
+    "git@github.com:jak-pan/symbiotic-memory",
+}
 
+for url in CANONICAL:
+    assert "symbiotic-sh/symbiotic-memory" in url
+for url in REJECTED:
+    assert url not in CANONICAL
+    # Ensure the fixtures include syntactically plausible lookalikes.
+    assert urlsplit(url.replace("git@github.com:", "ssh://git@github.com/")).scheme
+print(
+    f"OK: {len(CANONICAL)} canonical checkout transports accepted; "
+    f"{len(REJECTED)} unsafe or non-canonical forms rejected"
+)
+PY
+  exit 0
+fi
 
-def canonical_memory_repository(url):
-    """Return the repository identity for exact supported GitHub transports."""
-    if url in CANONICAL_MEMORY_URLS:
-        return CANONICAL_MEMORY_REPOSITORY
-    return None
+python3 - "$manifest" "$lock" "$pin_file" <<'PY'
+import re
+import sys
+import tomllib
+from pathlib import Path
 
-
-LOCK_SOURCE_RE = re.compile(
-    r'source = "git\+(?P<url>[^"?]+)\?rev=(?P<requested>[0-9a-f]{40})'
-    r'#(?P<resolved>[0-9a-f]{40})"'
+manifest_path, lock_path, pin_path = map(Path, sys.argv[1:])
+EXPECTED_REPOSITORY = "ssh://git@github.com/symbiotic-sh/symbiotic-memory"
+REQUIRED_PACKAGES = (
+    "symbiotic-memory",
+    "symbiotic-memory-config",
+    "zvec",
+    "zvec-sys",
 )
 
+failures = []
 
-def lock_resolves(lock, url, rev):
-    """Match an exact source, allowing Cargo's canonical transport spelling."""
-    manifest_repository = canonical_memory_repository(url)
-    for match in LOCK_SOURCE_RE.finditer(lock):
-        if match.group("requested") != rev or match.group("resolved") != rev:
-            continue
-        lock_url = match.group("url")
-        if lock_url == url:
-            return True
-        if (
-            manifest_repository is not None
-            and canonical_memory_repository(lock_url) == manifest_repository
-        ):
-            return True
-    return False
+try:
+    manifest_raw = manifest_path.read_text()
+    lock_raw = lock_path.read_text()
+    pin_raw = pin_path.read_text()
+except OSError as error:
+    print(f"FAIL: {error}", file=sys.stderr)
+    sys.exit(1)
 
-
-def run_url_self_test():
-    test_rev = "a" * 40
-    canonical_lock = (
-        'source = "git+ssh://git@github.com/symbiotic-sh/symbiotic-memory'
-        f'?rev={test_rev}#{test_rev}"'
+if not re.fullmatch(r"[0-9a-f]{40}\n?", pin_raw):
+    failures.append(
+        ".symbiotic-memory-pin must contain exactly one lowercase 40-character SHA"
     )
-    for url in CANONICAL_MEMORY_URLS:
-        assert canonical_memory_repository(url) == CANONICAL_MEMORY_REPOSITORY, url
-        assert lock_resolves(canonical_lock, url, test_rev), url
-    rejected = {
-        "http://github.com/symbiotic-sh/symbiotic-memory",
-        "https://github.com/symbiotic-sh/symbiotic-memory/",
-        "https://token@github.com/symbiotic-sh/symbiotic-memory",
-        "https://github.com/symbiotic-sh/symbiotic-memory?ref=main",
-        "https://github.com/symbiotic-sh/symbiotic-memory/other",
-        "ssh://root@github.com/symbiotic-sh/symbiotic-memory",
-        "ssh://git@github.com/Symbiotic-sh/symbiotic-memory",
-        "git@github.com:symbiotic-sh/symbiotic-memory/other",
-        "git@github.com:jak-pan/symbiotic-memory",
-    }
-    for url in rejected:
-        assert canonical_memory_repository(url) is None, url
-    print(
-        f"OK: {len(CANONICAL_MEMORY_URLS)} canonical transports accepted; "
-        f"{len(rejected)} unsafe or non-canonical forms rejected"
-    )
-
-
-if sys.argv[1:] == ["--self-test"]:
-    run_url_self_test()
-    sys.exit(0)
-if sys.argv[1:]:
-    print("usage: check-adapter-pins.sh [--self-test]", file=sys.stderr)
-    sys.exit(2)
-
-manifest = open("Cargo.toml").read()
-lock = open("Cargo.lock").read()
-pin_raw = open(".symbiotic-memory-pin").read()
 pin = pin_raw.strip()
 
-# `name = { git = "URL", rev = "SHA", ... }` — one line per dependency.
-pattern = re.compile(r'^(?P<name>[A-Za-z0-9_-]+)\s*=\s*\{[^}]*git\s*=\s*"(?P<url>[^"]+)"[^}]*\}', re.M)
+try:
+    manifest = tomllib.loads(manifest_raw)
+except tomllib.TOMLDecodeError as error:
+    failures.append(f"{manifest_path}: invalid TOML: {error}")
+    manifest = {}
+try:
+    lock = tomllib.loads(lock_raw)
+except tomllib.TOMLDecodeError as error:
+    failures.append(f"{lock_path}: invalid TOML: {error}")
+    lock = {}
 
-failures = []
-checked = 0
-memory_deps = {}
-if not re.fullmatch(r"[0-9a-f]{40}\n?", pin_raw):
-    failures.append(".symbiotic-memory-pin must contain exactly one lowercase 40-character SHA")
-for match in pattern.finditer(manifest):
-    name, url, line = match.group("name"), match.group("url"), match.group(0)
-    rev = re.search(r'rev\s*=\s*"([0-9a-f]{40})"', line)
-    if not rev:
-        failures.append(f"{name}: git dependency is not pinned to a 40-char rev")
+dependencies = manifest.get("dependencies", {})
+packages = lock.get("package", [])
+
+checked_git_dependencies = 0
+if isinstance(dependencies, dict):
+    for dependency_name, dependency in dependencies.items():
+        if not isinstance(dependency, dict) or "git" not in dependency:
+            continue
+        checked_git_dependencies += 1
+        url = dependency.get("git")
+        rev = dependency.get("rev")
+        if not isinstance(rev, str) or not re.fullmatch(r"[0-9a-f]{40}", rev):
+            failures.append(
+                f"{dependency_name}: git dependency is not pinned to a lowercase 40-character rev"
+            )
+            continue
+        package_name = dependency.get("package", dependency_name)
+        matching = [
+            package for package in packages
+            if isinstance(package, dict) and package.get("name") == package_name
+        ]
+        if len(matching) != 1:
+            failures.append(
+                f"{dependency_name}: Cargo.lock must contain exactly one {package_name} "
+                f"entry; found {len(matching)}"
+            )
+            continue
+        expected_source = f"git+{url}?rev={rev}#{rev}"
+        if matching[0].get("source") != expected_source:
+            failures.append(
+                f"{dependency_name}: Cargo.lock does not resolve exact source "
+                f"{expected_source}"
+            )
+if checked_git_dependencies == 0:
+    failures.append("no git dependencies found in the manifest")
+
+for dependency_name in ("symbiotic-memory", "symbiotic-memory-config"):
+    dependency = dependencies.get(dependency_name)
+    if not isinstance(dependency, dict):
+        failures.append(f"{dependency_name}: required manifest dependency is missing")
         continue
-    rev = rev.group(1)
-    checked += 1
-    if name in {"symbiotic-memory", "symbiotic-memory-config"}:
-        memory_deps[name] = (url, rev)
-    # Cargo records `git+URL?rev=REV#RESOLVED`; the resolved sha must equal it.
-    # Its lockfile may canonicalize an accepted SSH/HTTPS spelling.
-    if not lock_resolves(lock, url, rev):
+    url = dependency.get("git")
+    rev = dependency.get("rev")
+    if url != EXPECTED_REPOSITORY:
         failures.append(
-            f"{name}: Cargo.lock does not resolve {url} to the pinned rev {rev}"
-        )
-
-if not checked:
-    failures.append("no pinned git dependencies found — did the manifest change shape?")
-
-for name in ("symbiotic-memory", "symbiotic-memory-config"):
-    dependency = memory_deps.get(name)
-    if dependency is None:
-        failures.append(f"{name}: required Symbiotic Memory dependency is missing")
-        continue
-    url, rev = dependency
-    if canonical_memory_repository(url) != CANONICAL_MEMORY_REPOSITORY:
-        failures.append(
-            f"{name}: expected canonical symbiotic-sh/symbiotic-memory SSH or HTTPS URL, got {url}"
+            f"{dependency_name}: expected exact canonical SSH source "
+            f"{EXPECTED_REPOSITORY}, got {url!r}"
         )
     if rev != pin:
         failures.append(
-            f"{name}: manifest rev {rev} does not match .symbiotic-memory-pin {pin}"
+            f"{dependency_name}: manifest rev {rev!r} does not match "
+            f".symbiotic-memory-pin {pin!r}"
         )
 
-for failure in failures:
+expected_lock_source = f"git+{EXPECTED_REPOSITORY}?rev={pin}#{pin}"
+for package_name in REQUIRED_PACKAGES:
+    matching = [
+        package for package in packages
+        if isinstance(package, dict) and package.get("name") == package_name
+    ]
+    if len(matching) != 1:
+        failures.append(
+            f"{package_name}: Cargo.lock must contain exactly one package entry; "
+            f"found {len(matching)}"
+        )
+        continue
+    source = matching[0].get("source")
+    if source != expected_lock_source:
+        failures.append(
+            f"{package_name}: expected Cargo.lock source "
+            f"{expected_lock_source}, got {source!r}"
+        )
+
+# Fail even if a stale or mixed owner/revision is hidden in an additional
+# package block rather than one of the four expected names.
+for package in packages:
+    if not isinstance(package, dict):
+        continue
+    source = package.get("source")
+    if not isinstance(source, str) or "symbiotic-memory" not in source:
+        continue
+    name = package.get("name", "<unnamed>")
+    if name not in REQUIRED_PACKAGES:
+        failures.append(
+            f"{name}: unexpected Cargo.lock package sourced from symbiotic-memory"
+        )
+    if source != expected_lock_source:
+        failures.append(
+            f"{name}: stale, mixed, or non-canonical symbiotic-memory source {source}"
+        )
+
+for failure in dict.fromkeys(failures):
     print(f"FAIL: {failure}", file=sys.stderr)
 if failures:
     sys.exit(1)
-print(f"OK: {checked} git dependencies pinned and locked to exact revs")
+print(
+    f"OK: {checked_git_dependencies} manifest git dependencies resolve exactly; "
+    "Cargo.lock binds symbiotic-memory, "
+    "symbiotic-memory-config, zvec, and zvec-sys to the exact canonical pin"
+)
 PY
+
+if [[ -z "$checkout" ]]; then
+  exit 0
+fi
+
+if [[ ! -e "$checkout/.git" ]] || \
+  [[ "$(git -C "$checkout" rev-parse --is-inside-work-tree 2>/dev/null || true)" != true ]]; then
+  echo "FAIL: adapter checkout is not a git worktree: $checkout" >&2
+  exit 1
+fi
+
+pin="$(tr -d '\n' < "$pin_file")"
+head_sha="$(git -C "$checkout" rev-parse HEAD)"
+if [[ "$head_sha" != "$pin" ]]; then
+  echo "FAIL: adapter checkout HEAD $head_sha does not match pin $pin" >&2
+  exit 1
+fi
+
+origin_count="$(git -C "$checkout" config --get-all remote.origin.url | wc -l | tr -d ' ')"
+origin="$(git -C "$checkout" config --get-all remote.origin.url || true)"
+case "$origin" in
+  https://github.com/symbiotic-sh/symbiotic-memory | \
+  https://github.com/symbiotic-sh/symbiotic-memory.git | \
+  ssh://git@github.com/symbiotic-sh/symbiotic-memory | \
+  ssh://git@github.com/symbiotic-sh/symbiotic-memory.git | \
+  git@github.com:symbiotic-sh/symbiotic-memory | \
+  git@github.com:symbiotic-sh/symbiotic-memory.git)
+    ;;
+  *)
+    echo "FAIL: adapter checkout origin is not the canonical repository: $origin" >&2
+    exit 1
+    ;;
+esac
+if [[ "$origin_count" != 1 ]]; then
+  echo "FAIL: adapter checkout must have exactly one origin URL" >&2
+  exit 1
+fi
+
+unsafe_index_flag="$(git -C "$checkout" ls-files -v | awk '$1 !~ /^H/ { print; exit }')"
+if [[ -n "$unsafe_index_flag" ]]; then
+  echo "FAIL: adapter checkout contains hidden index state: $unsafe_index_flag" >&2
+  exit 1
+fi
+if [[ -n "$(git -C "$checkout" status --porcelain=v1 --untracked-files=all)" ]]; then
+  echo "FAIL: adapter checkout is not clean" >&2
+  exit 1
+fi
+
+echo "OK: adapter checkout is canonical, clean, and exactly at $pin"

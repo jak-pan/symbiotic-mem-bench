@@ -1,8 +1,8 @@
 # OSS Release Handoff — external decisions and blockers
 
 Status ledger for taking this repository public. Everything here needs an owner decision or an
-external action. The local transfer recovery is green, but protected CI has not yet certified the
-transferred dependency head.
+external action. Local macOS transfer recovery is green, but protected Ubuntu CI has not yet
+certified the transferred dependency head and its target-matched native package.
 
 ## Blockers
 
@@ -14,11 +14,12 @@ transferred dependency head.
    repo. Options: make it public, vendor the needed crates, or keep the adapter as an
    access-gated feature and say so in the README.
    Consequence for CI: the owner repository has a scoped read-only
-   `SYMBIOTIC_MEMORY_DEPLOY_KEY`. The mandatory `rust`, `deps`, and `leaderboard-contract` jobs
-   authenticate the private dependency before reaching their Rust gates, so forks without the
-   secret fail closed rather than producing a reduced green result. The conditional
-   `adapter-build` job is skipped without its key. The offline `adapter-pins` job still proves
-   exact manifest/lock/pin alignment without credentials, but release evidence requires a trusted
+   `SYMBIOTIC_MEMORY_DEPLOY_KEY`. The adapter-enabled `rust` and `adapter-build` jobs are
+   mandatory and explicitly reject a missing secret. Each uses that key for the exact canonical
+   checkout, prepares and verifies the Linux zvec package from the pinned source before Cargo,
+   and does not cache private/native-derived outputs. The offline `adapter-pins` job proves
+   exact manifest/lock/pin alignment for `symbiotic-memory`, `symbiotic-memory-config`, `zvec`,
+   and `zvec-sys` without credentials. Release evidence still requires a trusted
    same-repository run (`RELEASING.md`).
 2. ~~**Adapter APIs not yet published upstream.**~~ **Resolved 2026-07-24.** The kit APIs the
    adapter needs *are* on the pinned revision — they were renamed: what membench called
@@ -31,11 +32,14 @@ transferred dependency head.
 3. **Transferred kit needs fresh protected evidence.** The move from c22
    (`c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e`) to f6
    (`f6e406abeb13f2c734c4001fbc0fdf72ba43308a`) is a divergent squash-port that includes
-   packaging and build-graph changes, not the same source revision at a new URL. The 2026-07-24
+   packaging and build-graph changes, not the same source revision at a new URL. Linux consumers
+   must source-build and verify the target-matched zvec package using the f6 scripts before Cargo.
+   The 2026-07-24
    K3/142-test attestation was earned against c22 and remains historical record-review evidence
-   only. Current f6 recovery evidence is 100 adapter-enabled library tests, 51 `membench` binary
-   tests, 8 `benchmark_v2` contract tests, core/server checks, and production builds. A fresh
-   protected trusted-repository CI run for the exact release head is still required.
+   only. Current local macOS f6 recovery evidence is 100 adapter-enabled library tests, 51
+   `membench` binary tests, 8 `benchmark_v2` contract tests, core/server checks, and production
+   builds. A fresh protected trusted-repository Ubuntu CI run for the exact release head is still
+   required.
 4. **Upstream consumer ledger is stale.**
    `symbiotic-sh/symbiotic-memory/contracts/consumers.yaml` still records Membench as an expected
    failure for the removed `MemoryConfig` usage and pre-candidate lockfile. That no longer
@@ -66,8 +70,9 @@ transferred dependency head.
   toolchain, `Cargo.lock` committed).
 - CI definition: fmt, clippy, core+server tests, release build, dashboard build, cargo-deny
   (advisories/licenses/sources), leaderboard contract canary (`canary/`), snapshot freshness
-  vs `records/`, git-dependency pin check, and credentialed adapter checks. Fresh protected
-  results for the transferred f6 head remain pending.
+  vs `records/`, four-package git-dependency pin fixtures, and credentialed adapter checks with
+  target-matched zvec preparation. Fresh protected results for the transferred f6 head remain
+  pending.
 - Ranking eligibility enforced in code (`src/eligibility.rs`) against bytes on disk, shared by
   the live API and the static export; cohorts partitioned by full comparability identity
   (benchmark, size, question set, judge, judge prompt mode).

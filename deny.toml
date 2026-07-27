@@ -1,5 +1,6 @@
 # Dependency policy for membench. Audited in CI (`cargo deny check`).
-# Scope: the full release graph, including the credentialed adapter feature.
+# Scope: the default graph plus the server feature. The private adapter graph is
+# deliberately checked by the separate pin and credentialed build gates.
 
 [graph]
 all-features = false
@@ -25,5 +26,5 @@ allow = [
 ]
 
 [sources]
-# The adapter feature pins public ecosystem git revisions (see Cargo.toml).
+# Exact git identities and revisions are enforced by check-adapter-pins.sh.
 unknown-git = "allow"

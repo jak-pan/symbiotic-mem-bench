@@ -25,8 +25,9 @@ cargo run --features symbiotic-memory-adapter --bin membench -- explore
 ```
 
 `scripts/check-adapter-build.sh` is the gate for that path; `scripts/check-adapter-pins.sh`
-checks (offline, no credentials) that every git dependency is pinned to an exact rev that
-`Cargo.lock` resolves, and that both memory crates match `.symbiotic-memory-pin`.
+checks (offline, no credentials) that every manifest git dependency resolves exactly and that all
+four memory-source lockfile packages (`symbiotic-memory`, `symbiotic-memory-config`, `zvec`, and
+`zvec-sys`) use the canonical source and match `.symbiotic-memory-pin`.
 
 Export the static leaderboard document over the reproducible sample records (the CI canary
 fixtures — synthetic, clearly labeled, never real results):
@@ -102,7 +103,10 @@ The Symbiotic Memory adapter dependencies are pinned git revisions in `Cargo.tom
 repository is public; `symbiotic-sh/symbiotic-memory` is currently private. Core and dashboard
 server builds do not activate those optional memory crates. The `symbiotic-memory-adapter` feature
 builds directly from its exact remote pin when authenticated; sibling overrides are optional and
-only for co-development. See `docs/environment.md` ("Dependency Sources").
+only for co-development. Linux adapter builds must also prepare the target-matched native zvec
+package with the pinned upstream `scripts/zvec-package.sh` contract and export its absolute
+`ZVEC_LIB_DIR`. CI performs and verifies that source build before any Cargo command in every
+adapter-enabled Ubuntu job. See `docs/environment.md` ("Dependency Sources").
 
 These local `--smoke` adapter runs map internally to deterministic no-network providers and no
 scorer. They are smoke tests, not benchmark records. By default they run under `runs/.tmp/` and
