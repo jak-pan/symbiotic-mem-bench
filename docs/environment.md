@@ -98,8 +98,9 @@ export DYLD_LIBRARY_PATH="$zvec_dir${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" # 
 
 The wrapper validates the checkout identity, pin, index state, and cleanliness, then delegates to
 the pinned upstream `scripts/zvec-package.sh` and writes a marker binding the resulting directory
-to that source pin and target. Adapter builds require that exact marker; they never search sibling
-directories or Cargo caches for a first matching library. The exact source/tag object and commit,
+to that source pin, target, library digest, provenance digest, and SBOM digest. Adapter builds
+recompute those content hashes and require the exact marker; they never search sibling directories
+or Cargo caches for a first matching library. The exact source/tag object and commit,
 digest-pinned Linux builder image, target architecture, and SPDX SBOM and its hash are independent
 anchors. The native library digest is a self-consistency check: it is calculated during the build,
 written to provenance, and checked against that same build output rather than against a separately

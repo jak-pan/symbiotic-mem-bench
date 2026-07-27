@@ -55,6 +55,7 @@ tempfile = "3"
 [build-dependencies]
 prost-build = "0.14"
 protoc-bin-vendored = "3"
+sha2 = "0.10"
 
 [[bin]]
 name = "membench"

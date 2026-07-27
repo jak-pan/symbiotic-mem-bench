@@ -337,7 +337,7 @@ unsafe_config=""
 while IFS= read -r config_key; do
   normalized_key="$(printf '%s' "$config_key" | tr '[:upper:]' '[:lower:]')"
   case "$normalized_key" in
-    include.*|includeif.*|core.worktree|core.bare|*replace*|*graft*|*namespace*|*alternate*|*objectdirectory*|*.insteadof|*.pushinsteadof)
+    include.*|includeif.*|core.worktree|*replace*|*graft*|*namespace*|*alternate*|*objectdirectory*|*.insteadof|*.pushinsteadof)
       unsafe_config="$config_key"
       break
       ;;

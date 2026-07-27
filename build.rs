@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
+
 const ZVEC_VERIFICATION_MARKER: &str = ".membench-zvec-verified";
 
 fn main() {
@@ -49,16 +51,29 @@ fn zvec_lib_dir() -> Option<PathBuf> {
             configured.display()
         )
     });
-    if !has_zvec_lib(&dir) {
-        panic!(
-            "ZVEC_LIB_DIR {} does not contain libzvec_c_api",
-            dir.display()
-        );
-    }
-
     let target = std::env::var("TARGET").expect("Cargo must set TARGET for build scripts");
     let pin = include_str!(".symbiotic-memory-pin").trim();
-    let expected_marker = format!("symbiotic_memory_pin={pin}\ntarget={target}\n");
+    let library_name = match target.as_str() {
+        "aarch64-apple-darwin" | "x86_64-apple-darwin" => "libzvec_c_api.dylib",
+        "aarch64-unknown-linux-gnu" | "x86_64-unknown-linux-gnu" => "libzvec_c_api.so",
+        _ => panic!("unsupported zvec target {target}"),
+    };
+    let library_path = dir.join(library_name);
+    let provenance_path = dir.join(".zvec-provenance");
+    let sbom_path = dir.join("SBOM.spdx.json");
+    for path in [&library_path, &provenance_path, &sbom_path] {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+    let library_sha256 = sha256_file(&library_path);
+    let provenance_sha256 = sha256_file(&provenance_path);
+    let sbom_sha256 = sha256_file(&sbom_path);
+    let expected_marker = format!(
+        "symbiotic_memory_pin={pin}\n\
+         target={target}\n\
+         library_sha256={library_sha256}\n\
+         provenance_sha256={provenance_sha256}\n\
+         sbom_sha256={sbom_sha256}\n"
+    );
     let marker_path = dir.join(ZVEC_VERIFICATION_MARKER);
     println!("cargo:rerun-if-changed={}", marker_path.display());
     let marker = std::fs::read_to_string(&marker_path).unwrap_or_else(|error| {
@@ -79,10 +94,15 @@ fn zvec_lib_dir() -> Option<PathBuf> {
     Some(dir)
 }
 
-fn has_zvec_lib(dir: &Path) -> bool {
-    ["libzvec_c_api.dylib", "libzvec_c_api.so"]
-        .iter()
-        .any(|name| dir.join(name).is_file())
+fn sha256_file(path: &Path) -> String {
+    let bytes = std::fs::read(path).unwrap_or_else(|error| {
+        panic!(
+            "verified zvec package file {} is unreadable: {error}",
+            path.display()
+        )
+    });
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Compiles the bench-owned contract schemas (proto/CONTRACTS.md) into

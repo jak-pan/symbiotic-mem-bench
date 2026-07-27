@@ -161,7 +161,6 @@ sed -i.bak "s/$pin/$reviewed_sha/g" \
   "$replacement_metadata/Cargo.toml" \
   "$replacement_metadata/Cargo.lock"
 
-git -C "$replacement" replace "$reviewed_sha" "$substitute_sha"
 run_checkout_check() {
   "$checker" \
     --manifest "$replacement_metadata/Cargo.toml" \
@@ -169,6 +168,9 @@ run_checkout_check() {
     --pin-file "$replacement_metadata/pin" \
     --checkout "$replacement"
 }
+
+run_checkout_check
+echo "OK: canonical clean checkout fixture accepted"
 
 expect_checkout_failure() {
   local name="$1"
@@ -179,6 +181,7 @@ expect_checkout_failure() {
   echo "OK: $name checkout fixture rejected"
 }
 
+git -C "$replacement" replace "$reviewed_sha" "$substitute_sha"
 expect_checkout_failure "real replacement-object"
 git -C "$replacement" replace -d "$reviewed_sha" >/dev/null
 

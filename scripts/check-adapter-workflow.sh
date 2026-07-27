@@ -79,6 +79,42 @@ WRAPPER_ENV = {"RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"}
 SHELL_WRAPPERS = {"bash", "dash", "ksh", "sh", "zsh"}
 COMMAND_COMPOSERS = {"eval", "exec"}
 OPAQUE_INTERPRETERS = {"deno", "node", "perl", "python", "python2", "python3", "ruby"}
+ALLOWED_RUN_EXECUTABLES = {
+    "bash",
+    "cargo",
+    "dash",
+    "diff",
+    "echo",
+    "eval",
+    "exec",
+    "ksh",
+    "npm",
+    "sh",
+    "test",
+    "true",
+    "zsh",
+}
+ALLOWED_RUN_SCRIPTS = {
+    "scripts/check-adapter-build.sh",
+    "scripts/check-adapter-pins.sh",
+    "scripts/check-adapter-workflow.sh",
+    "scripts/check-leaderboard-snapshot.sh",
+    "scripts/prepare-adapter-zvec.sh",
+    "scripts/test-adapter-pins.sh",
+    "scripts/test-adapter-workflow.sh",
+}
+NATIVE_PROVENANCE_ENV = {
+    "DYLD_LIBRARY_PATH",
+    "LD_LIBRARY_PATH",
+    "LIBRARY_PATH",
+    "ZVEC_LIB_DIR",
+}
+NATIVE_PROVENANCE_MARKERS = {
+    ".membench-zvec-verified",
+    "libzvec_c_api",
+    "symbiotic-memory-zvec",
+    *NATIVE_PROVENANCE_ENV,
+}
 ALLOWED_PROTECTED_ACTIONS = {
     "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
     "dtolnay/rust-toolchain@d0befba8b9ddf874327619e84c39b094edd58b66",
@@ -372,7 +408,27 @@ def body_enables_adapter(job_name, body):
                 raise AssertionError(
                     f"{job_name}: step {step_index} contains unreviewed process substitution"
                 )
+        if (
+            any(marker in command for marker in NATIVE_PROVENANCE_MARKERS)
+            and "./scripts/prepare-adapter-zvec.sh" not in command
+        ):
+            raise AssertionError(
+                f"{job_name}: step {step_index} mutates or overrides native provenance "
+                "outside the reviewed preparation step"
+            )
         for _, segment in recursive_shell_segments(job_name, step_index, command):
+            if (
+                "./scripts/prepare-adapter-zvec.sh" not in command
+                and any(
+                    marker in word
+                    for word in segment
+                    for marker in NATIVE_PROVENANCE_MARKERS
+                )
+            ):
+                raise AssertionError(
+                    f"{job_name}: step {step_index} mutates or overrides native "
+                    "provenance outside the reviewed preparation step"
+                )
             if segment_enables_adapter(job_name, step_index, segment):
                 enabled = True
     return enabled
@@ -424,6 +480,11 @@ def assert_global_policy():
                 raise AssertionError(
                     f"workflow Git identity injection env {key} is forbidden"
                 )
+            if normalized_key in NATIVE_PROVENANCE_ENV:
+                raise AssertionError(
+                    f"workflow native provenance env {normalized_key} is forbidden; "
+                    "only the exact preparation step may export it"
+                )
             if (
                 normalized_key in WRAPPER_ENV
                 or normalized_key.endswith("_RUSTC_WRAPPER")
@@ -440,6 +501,27 @@ def assert_global_policy():
                 raise AssertionError(
                     f"workflow compiler env {normalized_key} selects a cache executable"
                 )
+
+
+def assert_reviewed_executables(job_name, body):
+    for step_index, command in run_commands(job_name, body):
+        for _, segment in recursive_shell_segments(job_name, step_index, command):
+            executable = command_word(segment)
+            if executable is None:
+                continue
+            if executable in {">", ">>", "<", "<<"}:
+                continue
+            name = executable_name(executable)
+            normalized = executable.removeprefix("./")
+            if (
+                name in ALLOWED_RUN_EXECUTABLES
+                or normalized in ALLOWED_RUN_SCRIPTS
+            ):
+                continue
+            raise AssertionError(
+                f"{job_name}: step {step_index} invokes unreviewed executable "
+                f"{executable}; workflow run commands are fail-closed"
+            )
 
 
 def assert_no_conditions(job_name, body):
@@ -814,6 +896,9 @@ if adapter_feature_jobs != {"rust", "adapter-build"}:
 
 for name in sorted(adapter_feature_jobs):
     assert_protected_setup(name, jobs[name])
+
+for name, body in jobs.items():
+    assert_reviewed_executables(name, body)
 
 if "adapter-key" in jobs:
     raise AssertionError("adapter build must fail on a missing key, not be skipped")
