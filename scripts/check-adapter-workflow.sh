@@ -88,7 +88,6 @@ ALLOWED_RUN_EXECUTABLES = {
     "eval",
     "exec",
     "ksh",
-    "npm",
     "sh",
     "test",
     "true",
@@ -115,6 +114,10 @@ NATIVE_PROVENANCE_MARKERS = {
     "symbiotic-memory-zvec",
     *NATIVE_PROVENANCE_ENV,
 }
+EXPECTED_NPM_COMMANDS = [
+    ("dashboard", ("npm", "ci")),
+    ("dashboard", ("npm", "run", "build")),
+]
 ALLOWED_PROTECTED_ACTIONS = {
     "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
     "dtolnay/rust-toolchain@d0befba8b9ddf874327619e84c39b094edd58b66",
@@ -503,6 +506,9 @@ def assert_global_policy():
                 )
 
 
+reviewed_npm_commands = []
+
+
 def assert_reviewed_executables(job_name, body):
     for step_index, command in run_commands(job_name, body):
         for _, segment in recursive_shell_segments(job_name, step_index, command):
@@ -513,6 +519,23 @@ def assert_reviewed_executables(job_name, body):
                 continue
             name = executable_name(executable)
             normalized = executable.removeprefix("./")
+            if name == "npm":
+                invocation = tuple(segment)
+                if (
+                    job_name != "dashboard"
+                    or invocation
+                    not in {
+                        ("npm", "ci"),
+                        ("npm", "run", "build"),
+                    }
+                ):
+                    raise AssertionError(
+                        f"{job_name}: step {step_index} invokes opaque npm command "
+                        f"{' '.join(segment)!r}; only exact dashboard commands "
+                        "'npm ci' and 'npm run build' are reviewed"
+                    )
+                reviewed_npm_commands.append((job_name, invocation))
+                continue
             if (
                 name in ALLOWED_RUN_EXECUTABLES
                 or normalized in ALLOWED_RUN_SCRIPTS
@@ -899,6 +922,15 @@ for name in sorted(adapter_feature_jobs):
 
 for name, body in jobs.items():
     assert_reviewed_executables(name, body)
+
+if sorted(reviewed_npm_commands) != sorted(EXPECTED_NPM_COMMANDS):
+    raise AssertionError(
+        "dashboard must invoke exactly one 'npm ci' and one 'npm run build'; found "
+        + ", ".join(
+            f"{job_name}:{' '.join(command)}"
+            for job_name, command in reviewed_npm_commands
+        )
+    )
 
 if "adapter-key" in jobs:
     raise AssertionError("adapter build must fail on a missing key, not be skipped")

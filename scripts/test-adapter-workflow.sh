@@ -307,6 +307,24 @@ replace_once \
   $'      - run: npm run build\n      - run: python3 -c \'import os; os.system(\"cargo test --locked --features symbiotic-memory-adapter\")\'\n\n  deps:\n'
 expect_failure python-os-system "$path" "opaque interpreter"
 
+path="$(new_fixture npm-exec-node-spawn)"
+replace_once \
+  "$path" \
+  $'      - run: npm run build\n\n  deps:\n' \
+  $'      - run: npm run build\n      - run: npm exec -- node -e \'const child = require("node:child_process"); const options = Object.create(null); options.stdio = "inherit"; require("node:fs").appendFileSync("Cargo.toml", "\\\\n# hostile mutation\\\\n"); process.exit(child.spawnSync("cargo", ["test", "--locked", "--features", "symbiotic-memory-adapter"], options).status ?? 1)\'\n\n  deps:\n'
+expect_failure \
+  npm-exec-node-spawn "$path" \
+  "only exact dashboard commands 'npm ci' and 'npm run build' are reviewed"
+
+path="$(new_fixture npm-outside-dashboard)"
+replace_once \
+  "$path" \
+  $'  deps:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2\n' \
+  $'  deps:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2\n      - run: npm run build\n'
+expect_failure \
+  npm-outside-dashboard "$path" \
+  "only exact dashboard commands 'npm ci' and 'npm run build' are reviewed"
+
 path="$(new_fixture awk-system)"
 replace_once \
   "$path" \
