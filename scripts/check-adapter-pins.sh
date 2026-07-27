@@ -17,12 +17,18 @@ import sys
 
 manifest = open("Cargo.toml").read()
 lock = open("Cargo.lock").read()
+pin_raw = open(".symbiotic-memory-pin").read()
+pin = pin_raw.strip()
 
 # `name = { git = "URL", rev = "SHA", ... }` — one line per dependency.
 pattern = re.compile(r'^(?P<name>[A-Za-z0-9_-]+)\s*=\s*\{[^}]*git\s*=\s*"(?P<url>[^"]+)"[^}]*\}', re.M)
 
 failures = []
 checked = 0
+memory_deps = {}
+canonical_memory_url = "ssh://git@github.com/symbiotic-sh/symbiotic-memory"
+if not re.fullmatch(r"[0-9a-f]{40}\n?", pin_raw):
+    failures.append(".symbiotic-memory-pin must contain exactly one lowercase 40-character SHA")
 for match in pattern.finditer(manifest):
     name, url, line = match.group("name"), match.group("url"), match.group(0)
     rev = re.search(r'rev\s*=\s*"([0-9a-f]{40})"', line)
@@ -31,6 +37,8 @@ for match in pattern.finditer(manifest):
         continue
     rev = rev.group(1)
     checked += 1
+    if name in {"symbiotic-memory", "symbiotic-memory-config"}:
+        memory_deps[name] = (url, rev)
     # Cargo records `git+URL?rev=REV#RESOLVED`; the resolved sha must equal it.
     if f"git+{url}?rev={rev}#{rev}" not in lock:
         failures.append(
@@ -39,6 +47,19 @@ for match in pattern.finditer(manifest):
 
 if not checked:
     failures.append("no pinned git dependencies found — did the manifest change shape?")
+
+for name in ("symbiotic-memory", "symbiotic-memory-config"):
+    dependency = memory_deps.get(name)
+    if dependency is None:
+        failures.append(f"{name}: required Symbiotic Memory dependency is missing")
+        continue
+    url, rev = dependency
+    if url != canonical_memory_url:
+        failures.append(f"{name}: expected canonical repository {canonical_memory_url}, got {url}")
+    if rev != pin:
+        failures.append(
+            f"{name}: manifest rev {rev} does not match .symbiotic-memory-pin {pin}"
+        )
 
 for failure in failures:
     print(f"FAIL: {failure}", file=sys.stderr)

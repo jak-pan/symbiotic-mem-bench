@@ -59,13 +59,13 @@ intentionally testing a different environment.
 ## Dependency Sources
 
 The Symbiotic Memory adapter dependencies (`symbiotic-memory`, `symbiotic-memory-config`,
-`symbiotic-core`, `symbiotic-queue`) are pinned public git revisions in `Cargo.toml`, so the core
-crate and the `server` feature build from a clean clone with no sibling checkouts.
+`symbiotic-core`, `symbiotic-queue`) are pinned git revisions in `Cargo.toml`. The foundation
+repository is public; the transferred `symbiotic-sh/symbiotic-memory` repository is currently
+private, so adapter builds need read access to that repository. The pinned revision contains the
+required provider-role and queue APIs and builds without a sibling override once authenticated.
 
-The `symbiotic-memory-adapter` feature additionally requires APIs that are not yet published on
-the public kit branches (the YAML `providers:` role bindings and `queue.resolve_provider_queue`).
-Until those land upstream, adapter builds must override the pins to sibling checkouts in a
-gitignored `.cargo/config.toml` at this repository root:
+For intentional co-development against sibling checkouts, use this optional gitignored
+`.cargo/config.toml` at the repository root:
 
 ```toml
 [patch."ssh://git@github.com/symbiotic-sh/symbiotic-memory"]
@@ -77,8 +77,10 @@ symbiotic-core = { path = "../symbiotic-foundation/crates/symbiotic-core" }
 symbiotic-queue = { path = "../symbiotic-foundation/crates/symbiotic-queue" }
 ```
 
-Without that override, `cargo build --features symbiotic-memory-adapter` fails against the pinned
-public revisions. This is a known external blocker, tracked in `docs/oss-release-handoff.md`.
+Without the override, Cargo uses the exact remote revisions and
+`CARGO_NET_GIT_FETCH_WITH_CLI=true` may be needed when credentials live in the git CLI. Anonymous
+adapter builds remain blocked while the memory repository is private; see
+`docs/oss-release-handoff.md`.
 
 ## Required Keys
 

@@ -462,6 +462,7 @@ pub fn summarize_with_trials(
     let accuracy = nested_f64(report, &["metrics", "accuracy", "value"]);
     let accuracy_total = nested_u64(report, &["metrics", "accuracy", "total"]);
     let oracle_gold = nested_bool(params, &["oracle_gold"]).unwrap_or(false);
+    let leaderboard_eligible = nested_bool(params, &["leaderboard_eligible"]).unwrap_or(true);
     // The published review gate, checked against this record's bytes. Both the
     // live leaderboard and the static export consume this one verdict.
     let eligibility = eligibility::evaluate(&eligibility::RecordFacts {
@@ -469,6 +470,7 @@ pub fn summarize_with_trials(
         is_meta_record,
         oracle_gold,
         is_trial_run,
+        leaderboard_eligible,
         accuracy,
         accuracy_total,
         limit,

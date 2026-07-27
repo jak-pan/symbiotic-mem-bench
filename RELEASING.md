@@ -23,10 +23,12 @@
 2. **Adapter CLI gate, manual until the dependency is public:**
    `./scripts/check-adapter-build.sh` on a machine with access to
    `symbiotic-sh/symbiotic-memory`. This is the only check that the documented `membench` CLI
-   builds *and runs* against the pinned revisions. CI runs it automatically only when the
-   repository has a read-only `SYMBIOTIC_MEMORY_DEPLOY_KEY` secret; without that
-   secret the job is skipped and the path is unverified in CI. Do not tag a release
-   without running it somewhere.
+   builds *and runs* against the pinned revisions; it also runs the
+   `benchmark_v2` projection/evaluator contract test. The mandatory `rust` CI job runs the
+   adapter-enabled lib/bin unit suites plus the same contract test, but both it and the
+   conditional `adapter-build` job need the repository's read-only
+   `SYMBIOTIC_MEMORY_DEPLOY_KEY` secret, so forks and keyless checkouts leave the path
+   unverified in CI. Do not tag a release without running the script somewhere.
 3. No stray state: `git status --short --ignored` shows only expected ignored paths
    (`runs/`, external target dir, local env files).
 4. Bump versions in `Cargo.toml` + `dashboard/package.json`, update `Cargo.lock`, commit.

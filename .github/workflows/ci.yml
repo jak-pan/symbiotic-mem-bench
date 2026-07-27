@@ -31,6 +31,13 @@ jobs:
         run: cargo test
       - name: test (server)
         run: cargo test --features server
+      # The v2 scorer/preflight/artifact unit tests live behind the adapter feature
+      # (`src/benchmark.rs` and the `membench` bin only compile with it), so they must
+      # run here in the mandatory job, not only in the key-gated `adapter-build` job.
+      - name: test (adapter lib/bin + v2 contract)
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+        run: cargo test --locked --features symbiotic-memory-adapter --lib --bin membench --test benchmark_v2
       - name: production build (server)
         run: cargo build --release --features server
 
@@ -92,11 +99,12 @@ jobs:
       - name: git dependencies are pinned and locked
         run: ./scripts/check-adapter-pins.sh
 
-  # Credentialed half: does the documented `membench` CLI actually build
-  # against those pins? The adapter depends on a private repository, so this
-  # job runs only where a read-only deploy key is configured. Until that repository is
-  # public, `scripts/check-adapter-build.sh` is a mandatory manual release gate
-  # (RELEASING.md) rather than an enforced CI gate.
+  # Credentialed release half: does the documented `membench` CLI actually
+  # build against those pins? The mandatory Rust job also exercises the
+  # adapter contract in the owner repository, but forks do not receive this
+  # private repository's read-only deploy key. Until the dependency is public,
+  # `scripts/check-adapter-build.sh` remains a manual release gate in keyless
+  # environments (RELEASING.md).
   adapter-key:
     runs-on: ubuntu-latest
     outputs:
@@ -131,3 +139,5 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: adapter CLI builds against the pinned revisions
         run: ./scripts/check-adapter-build.sh
+      - name: LongMemEval-V2 text projection contract
+        run: cargo test --features symbiotic-memory-adapter --test benchmark_v2

@@ -25,6 +25,9 @@ echo "== cargo clippy --features symbiotic-memory-adapter (correctness)"
 cargo clippy --locked --features symbiotic-memory-adapter --all-targets -- \
   -D clippy::correctness -D clippy::suspicious
 
+echo "== LongMemEval-V2 text projection contract"
+cargo test --locked --features symbiotic-memory-adapter --test benchmark_v2
+
 echo "== the documented quickstart command"
 cargo run --locked --quiet --features symbiotic-memory-adapter --bin membench -- explore --help > /dev/null
 

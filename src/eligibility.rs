@@ -131,6 +131,7 @@ pub struct RecordFacts<'a> {
     pub is_meta_record: bool,
     pub oracle_gold: bool,
     pub is_trial_run: bool,
+    pub leaderboard_eligible: bool,
     pub accuracy: Option<f64>,
     pub accuracy_total: Option<u64>,
     /// Declared cohort size (the benchmark's question count for this record).
@@ -161,6 +162,12 @@ pub fn evaluate(facts: &RecordFacts) -> Eligibility {
         failures.push(GateFailure::new(
             "clean-flags",
             "TRIAL-flagged diagnostic run, not a benchmark claim",
+        ));
+    }
+    if !facts.leaderboard_eligible {
+        failures.push(GateFailure::new(
+            "clean-flags",
+            "run protocol explicitly prohibits leaderboard promotion",
         ));
     }
 
@@ -494,6 +501,7 @@ mod tests {
             is_meta_record: false,
             oracle_gold: false,
             is_trial_run: false,
+            leaderboard_eligible: true,
             accuracy: Some(0.9),
             accuracy_total: Some(500),
             limit: Some(500),
@@ -602,6 +610,19 @@ mod tests {
     }
 
     #[test]
+    fn protocol_can_prohibit_leaderboard_promotion() {
+        let fixture = Fixture::complete();
+        let mut facts = facts(fixture.dir.path());
+        facts.leaderboard_eligible = false;
+        let verdict = evaluate(&facts);
+        assert!(!verdict.eligible);
+        assert!(verdict.failures.iter().any(|failure| {
+            failure.gate == "clean-flags"
+                && failure.detail.contains("prohibits leaderboard promotion")
+        }));
+    }
+
+    #[test]
     fn missing_cohort_identity_blocks_ranking() {
         let fixture = Fixture::complete();
         let mut facts = facts(fixture.root());
@@ -641,6 +662,40 @@ mod tests {
         let fixture = Fixture::complete();
         assert!(!fixture.artifact("score-summary.json").exists());
         assert!(evaluate(&facts(fixture.root())).eligible);
+    }
+
+    #[test]
+    fn partially_published_score_bundle_is_not_eligible() {
+        // The torn-publish shape: verdicts renamed into place, scored.json never landed.
+        let fixture = Fixture::complete();
+        std::fs::remove_file(fixture.artifact("scored.json")).unwrap();
+        let verdict = evaluate(&facts(fixture.root()));
+        assert!(!verdict.eligible);
+        assert_eq!(verdict.missing_artifacts, vec!["scored"]);
+        assert!(gates(&verdict).contains(&"scoring-artifacts"));
+    }
+
+    #[test]
+    fn stale_summary_from_a_torn_republish_is_not_eligible() {
+        // A republish that died between renames: verdicts and scored are new, but the
+        // hash-binding summary still describes the previous bundle.
+        let fixture = Fixture::complete();
+        fixture.write_score_summary();
+        std::fs::write(
+            fixture.artifact("verdicts.jsonl"),
+            "{\"question_id\":\"q1\",\"correct\":true}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            fixture.artifact("scored.json"),
+            "{\"judge_model\":\"new\"}\n",
+        )
+        .unwrap();
+        fixture.write_review("pass");
+
+        let verdict = evaluate(&facts(fixture.root()));
+        assert!(!verdict.eligible);
+        assert!(gates(&verdict).contains(&"score-summary-hashes"));
     }
 
     #[test]
