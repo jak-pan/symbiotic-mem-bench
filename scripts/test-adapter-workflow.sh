@@ -49,7 +49,25 @@ expect_failure() {
   echo "OK: $name workflow fixture rejected"
 }
 
+expect_success() {
+  local name="$1"
+  local path="$2"
+  if ! "$checker" --workflow "$path" > "$fixture_root/$name.out" 2>&1; then
+    echo "FAIL: $name workflow fixture unexpectedly failed" >&2
+    cat "$fixture_root/$name.out" >&2
+    exit 1
+  fi
+  echo "OK: $name workflow fixture accepted"
+}
+
 "$checker"
+
+path="$(new_fixture harmless-echo)"
+replace_once \
+  "$path" \
+  $'      - run: npm run build\n\n  deps:\n' \
+  $'      - run: npm run build\n      - run: echo \"cargo test --features symbiotic-memory-adapter\"\n\n  deps:\n'
+expect_success harmless-echo "$path"
 
 path="$(new_fixture job-if)"
 replace_once "$path" $'  rust:\n' $'  rust:\n    if: false\n'
@@ -158,7 +176,7 @@ path="$(new_fixture nested-shell-cargo)"
 replace_once \
   "$path" \
   $'      - run: npm run build\n\n  deps:\n' \
-  $'      - run: npm run build\n      - run: bash -c \'cargo test --features symbiotic-memory-adapter\'\n\n  deps:\n'
+  $'      - run: npm run build\n      - run: bash -c \'cargo test --locked --features symbiotic-memory-adapter\'\n\n  deps:\n'
 expect_failure \
   nested-shell-cargo "$path" \
   "every adapter-enabled Cargo/script job must use the protected native setup"
@@ -167,7 +185,7 @@ path="$(new_fixture nested-protected-cargo)"
 replace_once \
   "$path" \
   $'      - name: fmt\n' \
-  $'      - run: bash -c \'cargo test --features symbiotic-memory-adapter\'\n      - name: fmt\n'
+  $'      - run: bash -c \'cargo test --locked --features symbiotic-memory-adapter\'\n      - name: fmt\n'
 expect_failure nested-protected-cargo "$path" "hides a controlled command"
 
 path="$(new_fixture recursive-shell-cache)"
@@ -245,13 +263,101 @@ replace_once \
   "$path" \
   $'        run: cargo test --locked --features symbiotic-memory-adapter --lib --bin membench --test benchmark_v2\n' \
   $'        shell: bash {0}\n        run: cargo test --locked --features symbiotic-memory-adapter --lib --bin membench --test benchmark_v2\n'
-expect_failure shell-override "$path" "must not override shell failure semantics"
+expect_failure shell-override "$path" "defaults.run.shell are forbidden"
 
 path="$(new_fixture native-compiler-cache)"
 replace_once \
   "$path" \
   $'      CARGO_NET_GIT_FETCH_WITH_CLI: \"true\"\n' \
   $'      CARGO_NET_GIT_FETCH_WITH_CLI: \"true\"\n      CMAKE_CXX_COMPILER_LAUNCHER: ccache\n'
-expect_failure native-compiler-cache "$path" "must not set CMAKE_CXX_COMPILER_LAUNCHER"
+expect_failure native-compiler-cache "$path" "CMAKE_CXX_COMPILER_LAUNCHER is forbidden"
+
+path="$(new_fixture workflow-root-wrapper)"
+replace_once \
+  "$path" \
+  $'env:\n  CARGO_TERM_COLOR: always\n' \
+  $'env:\n  CARGO_TERM_COLOR: always\n  RUSTC_WRAPPER: /opt/compiler-wrapper\n'
+expect_failure workflow-root-wrapper "$path" "workflow compiler wrapper env"
+
+path="$(new_fixture workflow-root-shell)"
+replace_once \
+  "$path" \
+  $'jobs:\n' \
+  $'defaults:\n  run:\n    shell: bash {0}\n\njobs:\n'
+expect_failure workflow-root-shell "$path" "defaults.run.shell are forbidden"
+
+path="$(new_fixture github-env-injection)"
+replace_once \
+  "$path" \
+  $'      - name: fmt\n' \
+  $'      - run: echo \"RUSTC_WRAPPER=/opt/compilercache/rustc\" >> \"$GITHUB_ENV\"\n      - name: fmt\n'
+expect_failure github-env-injection "$path" "GITHUB_ENV"
+
+path="$(new_fixture arbitrary-compiler-cache)"
+replace_once \
+  "$path" \
+  $'      CARGO_NET_GIT_FETCH_WITH_CLI: \"true\"\n' \
+  $'      CARGO_NET_GIT_FETCH_WITH_CLI: \"true\"\n      CC: /opt/compilercache/gcc\n'
+expect_failure arbitrary-compiler-cache "$path" "selects a cache executable"
+
+path="$(new_fixture python-os-system)"
+replace_once \
+  "$path" \
+  $'      - run: npm run build\n\n  deps:\n' \
+  $'      - run: npm run build\n      - run: python3 -c \'import os; os.system(\"cargo test --locked --features symbiotic-memory-adapter\")\'\n\n  deps:\n'
+expect_failure python-os-system "$path" "opaque interpreter"
+
+path="$(new_fixture whitespace-insteadof)"
+replace_once \
+  "$path" \
+  $'      - name: fmt\n' \
+  $'      - run: git config --global url.ssh://git@github.com/.insteadOf https://github.com/\n      - name: fmt\n'
+expect_failure whitespace-insteadof "$path" "Git URL rewrite is forbidden"
+
+path="$(new_fixture whitespace-pushinsteadof)"
+replace_once \
+  "$path" \
+  $'      - name: fmt\n' \
+  $'      - run: git config --global url.ssh://git@github.com/.pushInsteadOf https://github.com/\n      - name: fmt\n'
+expect_failure whitespace-pushinsteadof "$path" "Git URL rewrite is forbidden"
+
+path="$(new_fixture command-substitution)"
+replace_once \
+  "$path" \
+  $'      - name: fmt\n' \
+  $'      - run: $(printf cargo) test --locked --features symbiotic-memory-adapter\n      - name: fmt\n'
+expect_failure command-substitution "$path" "unreviewed command substitution"
+
+path="$(new_fixture unprotected-adapter-job)"
+replace_once \
+  "$path" \
+  $'      - run: npm run build\n\n  deps:\n' \
+  $'      - run: npm run build\n      - run: cargo test --locked --features symbiotic-memory-adapter\n\n  deps:\n'
+expect_failure unprotected-adapter-job "$path" "every adapter-enabled"
+
+path="$(new_fixture missing-locked)"
+replace_once \
+  "$path" \
+  $'cargo test --locked --features symbiotic-memory-adapter --lib --bin membench --test benchmark_v2' \
+  $'cargo test --features symbiotic-memory-adapter --lib --bin membench --test benchmark_v2'
+expect_failure missing-locked "$path" "must use --locked"
+
+path="$(new_fixture mutable-ssh-agent)"
+replace_once \
+  "$path" \
+  "webfactory/ssh-agent@dc588b651fe13675774614f8e6a936a468676387" \
+  "webfactory/ssh-agent@v0.9.0"
+expect_failure mutable-ssh-agent "$path" "immutable 40-character SHA"
+
+inventory_dir="$fixture_root/workflow-inventory"
+mkdir -p "$inventory_dir"
+cp "$repo_root/.github/workflows/ci.yml" "$inventory_dir/ci.yml"
+printf 'jobs: {}\n' > "$inventory_dir/bypass.yml"
+if "$checker" --workflow-root "$inventory_dir" \
+  > "$fixture_root/workflow-inventory.out" 2>&1; then
+  echo "FAIL: new workflow inventory fixture unexpectedly passed" >&2
+  exit 1
+fi
+echo "OK: unreviewed workflow inventory fixture rejected"
 
 echo "OK: hostile adapter workflow fixtures passed"

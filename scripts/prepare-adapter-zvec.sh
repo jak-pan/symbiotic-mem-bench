@@ -3,6 +3,7 @@
 # Symbiotic Memory checkout. This script deliberately delegates provenance,
 # SBOM, container-digest, and artifact checks to upstream's f6 contract.
 set -euo pipefail
+export GIT_NO_REPLACE_OBJECTS=1
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -29,5 +30,11 @@ fi
 
 "$packager" prepare --target "$target" --output "$output_dir"
 "$packager" verify --target "$target" --lib-dir "$output_dir"
+
+pin="$(tr -d '\n' < "$repo_root/.symbiotic-memory-pin")"
+{
+  printf 'symbiotic_memory_pin=%s\n' "$pin"
+  printf 'target=%s\n' "$target"
+} > "$output_dir/.membench-zvec-verified"
 
 echo "OK: target-matched zvec package prepared and verified at $output_dir"

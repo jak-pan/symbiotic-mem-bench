@@ -131,4 +131,76 @@ write_valid_fixture "$pinned_unlocked"
 } >> "$pinned_unlocked/Cargo.toml"
 expect_failure "pinned dev dependency missing from lock" "$pinned_unlocked"
 
+path_patch="$fixture_root/path-patch"
+write_valid_fixture "$path_patch"
+{
+  printf '\n[patch.crates-io]\n'
+  printf 'zvec = { path = "../arbitrary-zvec" }\n'
+} >> "$path_patch/Cargo.toml"
+expect_failure "path patch" "$path_patch"
+
+replacement="$fixture_root/replacement-checkout"
+mkdir -p "$replacement"
+git -C "$replacement" init -q
+git -C "$replacement" config user.name "Membench fixture"
+git -C "$replacement" config user.email "fixture@example.invalid"
+printf 'reviewed\n' > "$replacement/source"
+git -C "$replacement" add source
+git -C "$replacement" commit -qm reviewed
+reviewed_sha="$(git -C "$replacement" rev-parse HEAD)"
+printf 'substitute\n' > "$replacement/source"
+git -C "$replacement" commit -qam substitute
+substitute_sha="$(git -C "$replacement" rev-parse HEAD)"
+git -C "$replacement" checkout -q "$reviewed_sha"
+git -C "$replacement" remote add origin "$canonical"
+
+replacement_metadata="$fixture_root/replacement-metadata"
+write_valid_fixture "$replacement_metadata"
+sed -i.bak "s/$pin/$reviewed_sha/g" \
+  "$replacement_metadata/pin" \
+  "$replacement_metadata/Cargo.toml" \
+  "$replacement_metadata/Cargo.lock"
+
+git -C "$replacement" replace "$reviewed_sha" "$substitute_sha"
+run_checkout_check() {
+  "$checker" \
+    --manifest "$replacement_metadata/Cargo.toml" \
+    --lock "$replacement_metadata/Cargo.lock" \
+    --pin-file "$replacement_metadata/pin" \
+    --checkout "$replacement"
+}
+
+expect_checkout_failure() {
+  local name="$1"
+  if run_checkout_check > "$replacement_metadata/$name.output" 2>&1; then
+    echo "FAIL: $name checkout fixture unexpectedly passed" >&2
+    exit 1
+  fi
+  echo "OK: $name checkout fixture rejected"
+}
+
+expect_checkout_failure "real replacement-object"
+git -C "$replacement" replace -d "$reviewed_sha" >/dev/null
+
+git_dir="$(git -C "$replacement" rev-parse --absolute-git-dir)"
+printf '%s %s\n' "$reviewed_sha" "$substitute_sha" > "$git_dir/info/grafts"
+expect_checkout_failure "grafts"
+rm "$git_dir/info/grafts"
+
+git -C "$replacement" config membench.namespaceOverride evil
+expect_checkout_failure "identity-substitution config"
+git -C "$replacement" config --unset membench.namespaceOverride
+
+git -C "$replacement" update-ref \
+  refs/namespaces/evil/refs/heads/main "$substitute_sha"
+expect_checkout_failure "custom namespace"
+git -C "$replacement" update-ref -d refs/namespaces/evil/refs/heads/main
+
+if GIT_NAMESPACE=evil run_checkout_check \
+  > "$replacement_metadata/environment-namespace.output" 2>&1; then
+  echo "FAIL: environment namespace checkout fixture unexpectedly passed" >&2
+  exit 1
+fi
+echo "OK: environment namespace checkout fixture rejected"
+
 echo "OK: adapter pin fixtures passed"

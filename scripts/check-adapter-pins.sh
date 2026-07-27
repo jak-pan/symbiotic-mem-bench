@@ -3,6 +3,35 @@
 # pin, and every adapter package carried in Cargo.lock must agree exactly.
 set -euo pipefail
 
+for forbidden_git_env in \
+  GIT_DIR \
+  GIT_WORK_TREE \
+  GIT_COMMON_DIR \
+  GIT_INDEX_FILE \
+  GIT_SHALLOW_FILE \
+  GIT_NAMESPACE \
+  GIT_REPLACE_REF_BASE \
+  GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES; do
+  if [[ -n "${!forbidden_git_env-}" ]]; then
+    echo "FAIL: $forbidden_git_env can substitute checkout identity" >&2
+    exit 1
+  fi
+done
+while IFS='=' read -r env_name _; do
+  case "$env_name" in
+    GIT_CONFIG|GIT_CONFIG_*)
+      echo "FAIL: $env_name can inject checkout configuration" >&2
+      exit 1
+      ;;
+  esac
+done < <(env)
+export GIT_NO_REPLACE_OBJECTS=1
+
+safe_git() {
+  GIT_NO_REPLACE_OBJECTS=1 command git "$@"
+}
+
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 manifest="$repo_root/Cargo.toml"
 lock="$repo_root/Cargo.lock"
@@ -144,6 +173,16 @@ def iter_git_dependencies(value, path=()):
             yield from iter_git_dependencies(child, path + (str(index),))
 
 
+def iter_nodes(value, path=()):
+    yield path, value
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield from iter_nodes(child, path + (str(key),))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            yield from iter_nodes(child, path + (str(index),))
+
+
 checked_git_dependencies = 0
 for dependency_path, dependency in iter_git_dependencies(manifest):
     checked_git_dependencies += 1
@@ -182,6 +221,14 @@ for dependency_path, dependency in iter_git_dependencies(manifest):
         )
 if checked_git_dependencies == 0:
     failures.append("no git dependencies found in the manifest")
+
+patches = manifest.get("patch")
+if isinstance(patches, dict):
+    for path, value in iter_nodes(patches, ("patch",)):
+        if isinstance(value, dict) and "path" in value:
+            failures.append(
+                f"{'.'.join(path)}: [patch] path dependencies are forbidden"
+            )
 
 for dependency_name in ("symbiotic-memory", "symbiotic-memory-config"):
     dependency = dependencies.get(dependency_name)
@@ -254,20 +301,20 @@ if [[ -z "$checkout" ]]; then
 fi
 
 if [[ ! -e "$checkout/.git" ]] || \
-  [[ "$(git -C "$checkout" rev-parse --is-inside-work-tree 2>/dev/null || true)" != true ]]; then
+  [[ "$(safe_git -C "$checkout" rev-parse --is-inside-work-tree 2>/dev/null || true)" != true ]]; then
   echo "FAIL: adapter checkout is not a git worktree: $checkout" >&2
   exit 1
 fi
 
 pin="$(tr -d '\n' < "$pin_file")"
-head_sha="$(git -C "$checkout" rev-parse HEAD)"
+head_sha="$(safe_git -C "$checkout" rev-parse --verify 'HEAD^{commit}')"
 if [[ "$head_sha" != "$pin" ]]; then
   echo "FAIL: adapter checkout HEAD $head_sha does not match pin $pin" >&2
   exit 1
 fi
 
-origin_count="$(git -C "$checkout" config --get-all remote.origin.url | wc -l | tr -d ' ')"
-origin="$(git -C "$checkout" config --get-all remote.origin.url || true)"
+origin_count="$(safe_git -C "$checkout" config --get-all remote.origin.url | wc -l | tr -d ' ')"
+origin="$(safe_git -C "$checkout" config --get-all remote.origin.url || true)"
 case "$origin" in
   https://github.com/symbiotic-sh/symbiotic-memory | \
   https://github.com/symbiotic-sh/symbiotic-memory.git | \
@@ -286,12 +333,44 @@ if [[ "$origin_count" != 1 ]]; then
   exit 1
 fi
 
-unsafe_index_flag="$(git -C "$checkout" ls-files -v | awk '$1 !~ /^H/ { print; exit }')"
+unsafe_config=""
+while IFS= read -r config_key; do
+  normalized_key="$(printf '%s' "$config_key" | tr '[:upper:]' '[:lower:]')"
+  case "$normalized_key" in
+    include.*|includeif.*|core.worktree|core.bare|*replace*|*graft*|*namespace*|*alternate*|*objectdirectory*|*.insteadof|*.pushinsteadof)
+      unsafe_config="$config_key"
+      break
+      ;;
+  esac
+done < <(safe_git -C "$checkout" config --local --name-only --list)
+if [[ -n "$unsafe_config" ]]; then
+  echo "FAIL: adapter checkout contains identity-substitution config: $unsafe_config" >&2
+  exit 1
+fi
+
+unsafe_ref="$(safe_git -C "$checkout" for-each-ref \
+  --format='%(refname)' refs/replace refs/namespaces | head -n 1)"
+if [[ -n "$unsafe_ref" ]]; then
+  echo "FAIL: adapter checkout contains replacement or namespaced ref: $unsafe_ref" >&2
+  exit 1
+fi
+
+git_common_dir="$(safe_git -C "$checkout" rev-parse --path-format=absolute --git-common-dir)"
+grafts_path="$git_common_dir/info/grafts"
+alternates_path="$git_common_dir/objects/info/alternates"
+for substitution_file in "$grafts_path" "$alternates_path"; do
+  if [[ -s "$substitution_file" ]]; then
+    echo "FAIL: adapter checkout contains identity-substitution file: $substitution_file" >&2
+    exit 1
+  fi
+done
+
+unsafe_index_flag="$(safe_git -C "$checkout" ls-files -v | awk '$1 !~ /^H/ { print; exit }')"
 if [[ -n "$unsafe_index_flag" ]]; then
   echo "FAIL: adapter checkout contains hidden index state: $unsafe_index_flag" >&2
   exit 1
 fi
-if [[ -n "$(git -C "$checkout" status --porcelain=v1 --untracked-files=all)" ]]; then
+if [[ -n "$(safe_git -C "$checkout" status --porcelain=v1 --untracked-files=all)" ]]; then
   echo "FAIL: adapter checkout is not clean" >&2
   exit 1
 fi

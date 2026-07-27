@@ -18,10 +18,21 @@ cargo run --bin membench-leaderboard -- export --records-root records
 The `membench` CLI itself (`cargo run --bin membench -- explore`) needs the
 `symbiotic-memory-adapter` feature, which builds against the pinned
 `symbiotic-sh/symbiotic-memory` revision — currently a **private** repository, so a clean clone
-without access cannot build it (see `docs/oss-release-handoff.md`). With access:
+without access cannot build it (see `docs/oss-release-handoff.md`). With access, first prepare the
+pin- and target-bound native package, then invoke Cargo:
 
 ```bash
-cargo run --features symbiotic-memory-adapter --bin membench -- explore
+pin="$(tr -d '\n' < .symbiotic-memory-pin)"
+git clone ssh://git@github.com/symbiotic-sh/symbiotic-memory /tmp/symbiotic-memory
+git -C /tmp/symbiotic-memory checkout --detach "$pin"
+target="$(rustc -vV | sed -n 's/^host: //p')"
+zvec_dir="$(mktemp -d "${TMPDIR:-/tmp}/membench-zvec.XXXXXX")"
+./scripts/prepare-adapter-zvec.sh /tmp/symbiotic-memory "$zvec_dir" "$target"
+export ZVEC_LIB_DIR="$zvec_dir"
+export LIBRARY_PATH="$zvec_dir${LIBRARY_PATH:+:$LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$zvec_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" # Linux
+export DYLD_LIBRARY_PATH="$zvec_dir${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" # macOS
+cargo run --locked --features symbiotic-memory-adapter --bin membench -- explore
 ```
 
 `scripts/check-adapter-build.sh` is the gate for that path; `scripts/check-adapter-pins.sh`
@@ -56,7 +67,7 @@ default. Use `--env-file path/to/file` only for an intentional alternate environ
 Run a default Symbiotic Memory LongMemEval benchmark through the native adapter:
 
 ```bash
-CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run --release \
+CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run --locked --release \
   --features symbiotic-memory-adapter \
   --bin membench -- \
   --system symbiotic-memory \
@@ -91,7 +102,7 @@ normalized run report.
 Run a no-network smoke test explicitly:
 
 ```bash
-CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run \
+CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run --locked \
   --features symbiotic-memory-adapter \
   --bin membench -- \
   --system symbiotic-memory \
@@ -102,10 +113,10 @@ CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run \
 The Symbiotic Memory adapter dependencies are pinned git revisions in `Cargo.toml`. The foundation
 repository is public; `symbiotic-sh/symbiotic-memory` is currently private. Core and dashboard
 server builds do not activate those optional memory crates. The `symbiotic-memory-adapter` feature
-builds directly from its exact remote pin when authenticated; sibling overrides are optional and
-only for co-development. Linux adapter builds must also prepare the target-matched native zvec
-package with the pinned upstream `scripts/zvec-package.sh` contract and export its absolute
-`ZVEC_LIB_DIR`. CI performs and verifies that source build before any Cargo command in every
+builds directly from its exact remote pin when authenticated. Adapter builds must also prepare the
+target-matched native zvec package with the pinned upstream `scripts/zvec-package.sh` contract and
+export its absolute `ZVEC_LIB_DIR`; no sibling directory or Cargo-cache library is selected
+implicitly. CI performs and verifies that source build before any Cargo command in every
 adapter-enabled Ubuntu job. See `docs/environment.md` ("Dependency Sources").
 
 These local `--smoke` adapter runs map internally to deterministic no-network providers and no

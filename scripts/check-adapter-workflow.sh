@@ -4,13 +4,40 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 workflow="$repo_root/.github/workflows/ci.yml"
+workflow_root="$repo_root/.github/workflows"
+inventory=true
 
 if [[ $# -gt 0 ]]; then
-  if [[ $# -ne 2 || "$1" != "--workflow" ]]; then
-    echo "usage: check-adapter-workflow.sh [--workflow PATH]" >&2
+  if [[ $# -ne 2 ]]; then
+    echo "usage: check-adapter-workflow.sh [--workflow PATH | --workflow-root DIR]" >&2
     exit 2
   fi
-  workflow="$2"
+  case "$1" in
+    --workflow)
+      workflow="$2"
+      inventory=false
+      ;;
+    --workflow-root)
+      workflow_root="$2"
+      workflow="$workflow_root/ci.yml"
+      ;;
+    *)
+      echo "usage: check-adapter-workflow.sh [--workflow PATH | --workflow-root DIR]" >&2
+      exit 2
+      ;;
+  esac
+fi
+
+if [[ "$inventory" == true ]]; then
+  workflow_files=""
+  while IFS= read -r candidate; do
+    workflow_files="${workflow_files}${candidate#$workflow_root/}"$'\n'
+  done < <(find "$workflow_root" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
+  if [[ "$workflow_files" != $'ci.yml\n' ]]; then
+    echo "FAIL: workflow inventory must contain exactly ci.yml; review every new workflow before it can run adapter code" >&2
+    printf '%s' "$workflow_files" >&2
+    exit 1
+  fi
 fi
 
 parsed="$(mktemp "${TMPDIR:-/tmp}/membench-workflow.XXXXXX")"
@@ -51,11 +78,13 @@ CACHE_EXECUTABLES = {"ccache", "sccache", "cachepot", "cargo-cache"}
 WRAPPER_ENV = {"RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"}
 SHELL_WRAPPERS = {"bash", "dash", "ksh", "sh", "zsh"}
 COMMAND_COMPOSERS = {"eval", "exec"}
+OPAQUE_INTERPRETERS = {"deno", "node", "perl", "python", "python2", "python3", "ruby"}
 ALLOWED_PROTECTED_ACTIONS = {
-    "actions/checkout@v4",
-    "dtolnay/rust-toolchain@1.93.0",
-    "webfactory/ssh-agent@v0.9.0",
+    "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+    "dtolnay/rust-toolchain@d0befba8b9ddf874327619e84c39b094edd58b66",
+    "webfactory/ssh-agent@dc588b651fe13675774614f8e6a936a468676387",
 }
+IMMUTABLE_ACTION = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
 SHELL_CONTROL = {
     "!",
     "{",
@@ -201,6 +230,17 @@ def nested_shell_payloads(job_name, step_index, segment):
             raise AssertionError(
                 f"{job_name}: step {step_index} sources an uninspectable shell payload"
             )
+        elif name in OPAQUE_INTERPRETERS and index == executable_index:
+            args = segment[index + 1 :]
+            if not (
+                name.startswith("python")
+                and len(args) == 2
+                and args == ["-m", "json.tool"]
+            ):
+                raise AssertionError(
+                    f"{job_name}: step {step_index} invokes opaque interpreter {word}; "
+                    "adapter classification cannot inspect it"
+                )
     return payloads
 
 
@@ -245,17 +285,6 @@ def segment_enables_adapter(job_name, step_index, segment):
     if any(word.endswith("scripts/check-adapter-build.sh") for word in normalized):
         return True
 
-    # Explicit adapter/all-feature text classifies the job even when a dynamic
-    # executable precedes it. This prevents `$CARGO_BIN ... --features adapter`
-    # from silently escaping the protected setup.
-    if any(
-        word == "--all-features"
-        or word.startswith("--all-features=")
-        or feature_value_enables_adapter(word.split("=", 1)[-1])
-        for word in segment
-    ):
-        return True
-
     for cargo_index, word in enumerate(segment):
         if not is_cargo(word):
             continue
@@ -274,22 +303,49 @@ def segment_enables_adapter(job_name, step_index, segment):
                         f"{job_name}: step {step_index} is missing a value for {arg}"
                     )
                 if feature_value_enables_adapter(args[index + 1]):
+                    if "--locked" not in args:
+                        raise AssertionError(
+                            f"{job_name}: step {step_index} adapter Cargo command "
+                            "must use --locked"
+                        )
                     return True
                 index += 2
                 continue
             if arg.startswith("--features=") and feature_value_enables_adapter(
                 arg.split("=", 1)[1]
             ):
+                if "--locked" not in args:
+                    raise AssertionError(
+                        f"{job_name}: step {step_index} adapter Cargo command "
+                        "must use --locked"
+                    )
                 return True
             if arg.startswith("-F=") and feature_value_enables_adapter(
                 arg.split("=", 1)[1]
             ):
+                if "--locked" not in args:
+                    raise AssertionError(
+                        f"{job_name}: step {step_index} adapter Cargo command "
+                        "must use --locked"
+                    )
                 return True
             if (
                 arg.startswith("-F")
                 and len(arg) > 2
                 and feature_value_enables_adapter(arg[2:])
             ):
+                if "--locked" not in args:
+                    raise AssertionError(
+                        f"{job_name}: step {step_index} adapter Cargo command "
+                        "must use --locked"
+                    )
+                return True
+            if arg == "--all-features" or arg.startswith("--all-features="):
+                if "--locked" not in args:
+                    raise AssertionError(
+                        f"{job_name}: step {step_index} all-feature Cargo command "
+                        "must use --locked"
+                    )
                 return True
             index += 1
     return False
@@ -298,6 +354,24 @@ def segment_enables_adapter(job_name, step_index, segment):
 def body_enables_adapter(job_name, body):
     enabled = False
     for step_index, command in run_commands(job_name, body):
+        statically_allowed = command.replace("$(nproc)", "").replace(
+            "$(tr -d '\\n' < .symbiotic-memory-pin)", ""
+        )
+        if "$(" in statically_allowed or "`" in statically_allowed:
+            raise AssertionError(
+                f"{job_name}: step {step_index} contains an unreviewed command substitution"
+            )
+        if "<(" in command or ">(" in command:
+            allowed_process_substitution = (
+                "cargo run --bin membench-leaderboard -- export "
+                "--records-root canary/records --deterministic > /tmp/canary-out.json\n"
+                "diff <(python3 -m json.tool /tmp/canary-out.json) "
+                "<(python3 -m json.tool canary/expected-leaderboard.json)"
+            )
+            if command.strip() != allowed_process_substitution:
+                raise AssertionError(
+                    f"{job_name}: step {step_index} contains unreviewed process substitution"
+                )
         for _, segment in recursive_shell_segments(job_name, step_index, command):
             if segment_enables_adapter(job_name, step_index, segment):
                 enabled = True
@@ -312,6 +386,60 @@ def walk(value, path=()):
     elif isinstance(value, list):
         for index, child in enumerate(value):
             yield from walk(child, path + (str(index),))
+
+
+def assert_global_policy():
+    for path, value in walk(workflow):
+        if path and path[-1] == "uses" and isinstance(value, str):
+            if not value.startswith("./") and IMMUTABLE_ACTION.fullmatch(value) is None:
+                raise AssertionError(
+                    "every workflow action must use an immutable 40-character SHA at "
+                    + ".".join(path)
+                )
+        if path and path[-1] == "shell":
+            raise AssertionError(
+                "workflow and job defaults.run.shell are forbidden at "
+                + ".".join(path)
+            )
+        if not path or path[-1] != "env" or not isinstance(value, dict):
+            continue
+        for key, env_value in value.items():
+            normalized_key = str(key).upper()
+            normalized_value = str(env_value).casefold()
+            native_compiler_launcher = re.fullmatch(
+                r"CMAKE_[A-Z0-9_]+_(?:COMPILER|LINKER)_LAUNCHER",
+                normalized_key,
+            )
+            if normalized_key.startswith("GIT_CONFIG") or normalized_key in {
+                "GIT_DIR",
+                "GIT_WORK_TREE",
+                "GIT_COMMON_DIR",
+                "GIT_INDEX_FILE",
+                "GIT_SHALLOW_FILE",
+                "GIT_NAMESPACE",
+                "GIT_REPLACE_REF_BASE",
+                "GIT_OBJECT_DIRECTORY",
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            }:
+                raise AssertionError(
+                    f"workflow Git identity injection env {key} is forbidden"
+                )
+            if (
+                normalized_key in WRAPPER_ENV
+                or normalized_key.endswith("_RUSTC_WRAPPER")
+                or normalized_key.endswith("_RUSTC_WORKSPACE_WRAPPER")
+                or native_compiler_launcher is not None
+            ) and str(env_value).strip():
+                raise AssertionError(
+                    f"workflow compiler wrapper env {normalized_key} is forbidden"
+                )
+            if (
+                normalized_key in {"CC", "CXX", "AR", "LD"}
+                and "cache" in normalized_value
+            ):
+                raise AssertionError(
+                    f"workflow compiler env {normalized_key} selects a cache executable"
+                )
 
 
 def assert_no_conditions(job_name, body):
@@ -384,7 +512,7 @@ def assert_no_cache_or_artifacts(job_name, body):
 
 
 def assert_no_git_url_rewrites(job_name, body):
-    rewrite = re.compile(r"\.(?:push)?insteadof(?:=|$)", re.IGNORECASE)
+    rewrite = re.compile(r"\b(?:push)?insteadof\b", re.IGNORECASE)
     for path, value in walk(body):
         if isinstance(value, str) and rewrite.search(value):
             raise AssertionError(
@@ -529,6 +657,12 @@ def assert_protected_setup(job_name, body):
     assert_no_git_url_rewrites(job_name, body)
     assert_no_failure_masking(job_name, body)
 
+    job_env = body.get("env")
+    if not isinstance(job_env, dict) or job_env.get("GIT_NO_REPLACE_OBJECTS") != "1":
+        raise AssertionError(
+            f"{job_name}: must propagate GIT_NO_REPLACE_OBJECTS=1"
+        )
+
     job_steps = steps(job_name, body)
     pin_index = exactly_one(
         job_name,
@@ -555,7 +689,8 @@ def assert_protected_setup(job_name, body):
         [
             index
             for index, step in enumerate(job_steps)
-            if step.get("uses") == "webfactory/ssh-agent@v0.9.0"
+            if step.get("uses")
+            == "webfactory/ssh-agent@dc588b651fe13675774614f8e6a936a468676387"
         ],
     )
     source_index = exactly_one(
@@ -564,7 +699,8 @@ def assert_protected_setup(job_name, body):
         [
             index
             for index, step in enumerate(job_steps)
-            if step.get("uses") == "actions/checkout@v4"
+            if step.get("uses")
+            == "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
             and isinstance(step.get("with"), dict)
             and step["with"].get("repository") == "symbiotic-sh/symbiotic-memory"
         ],
@@ -586,13 +722,10 @@ def assert_protected_setup(job_name, body):
     pin_step = job_steps[pin_index]
     if pin_step.get("id") != "adapter_pin":
         raise AssertionError(f"{job_name}: pin-binding step id must be adapter_pin")
-    pin_run = pin_step["run"]
-    pin_check = pin_run.find("./scripts/check-adapter-pins.sh")
-    pin_output = pin_run.find(
-        'echo "sha=$(tr -d \'\\n\' < .symbiotic-memory-pin)" >> "$GITHUB_OUTPUT"'
-    )
-    if pin_check < 0 or pin_output <= pin_check:
-        raise AssertionError(f"{job_name}: pin must be checked before it is exported")
+    expected_pin_run = """./scripts/check-adapter-pins.sh
+echo "sha=$(tr -d '\\n' < .symbiotic-memory-pin)" >> "$GITHUB_OUTPUT\""""
+    if pin_step["run"].strip() != expected_pin_run:
+        raise AssertionError(f"{job_name}: pin binding command must remain exact")
 
     key_env = job_steps[key_index].get("env")
     if not isinstance(key_env, dict) or key_env.get(
@@ -619,29 +752,32 @@ def assert_protected_setup(job_name, body):
                 f"{job_name}: canonical checkout {key} must be {expected!r}"
             )
 
-    prepare_run = job_steps[prepare_index]["run"]
-    jobs_export = prepare_run.find('export ZVEC_BUILD_JOBS="$(nproc)"')
-    wrapper = prepare_run.find("./scripts/prepare-adapter-zvec.sh")
-    target = prepare_run.find("x86_64-unknown-linux-gnu")
-    zvec_export = prepare_run.find('echo "ZVEC_LIB_DIR=$zvec_dir"')
-    library_export = prepare_run.find('echo "LIBRARY_PATH=$zvec_dir')
-    runtime_export = prepare_run.find('echo "LD_LIBRARY_PATH=$zvec_dir')
-    github_env = prepare_run.find('>> "$GITHUB_ENV"')
-    positions = (
-        jobs_export,
-        wrapper,
-        target,
-        zvec_export,
-        library_export,
-        runtime_export,
-        github_env,
-    )
-    if any(position < 0 for position in positions) or list(positions) != sorted(
-        positions
-    ):
+    expected_prepare_run = """export ZVEC_BUILD_JOBS="$(nproc)"
+zvec_dir="$RUNNER_TEMP/symbiotic-memory-zvec"
+./scripts/prepare-adapter-zvec.sh \\
+  .adapter-source/symbiotic-memory \\
+  "$zvec_dir" \\
+  x86_64-unknown-linux-gnu
+{
+  echo "ZVEC_LIB_DIR=$zvec_dir"
+  echo "LIBRARY_PATH=$zvec_dir${LIBRARY_PATH:+:$LIBRARY_PATH}"
+  echo "LD_LIBRARY_PATH=$zvec_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+} >> "$GITHUB_ENV\""""
+    if job_steps[prepare_index]["run"].strip() != expected_prepare_run:
         raise AssertionError(
-            f"{job_name}: zvec jobs/prepare/target/export sequence must remain exact"
+            f"{job_name}: verified zvec preparation and GITHUB_ENV export must remain exact"
         )
+
+    for step_index, step in enumerate(job_steps):
+        command = str(step.get("run", ""))
+        if "$GITHUB_ENV" in command and step_index != prepare_index:
+            raise AssertionError(
+                f"{job_name}: step {step_index} injects unreviewed GITHUB_ENV state"
+            )
+        if "$GITHUB_OUTPUT" in command and step_index != pin_index:
+            raise AssertionError(
+                f"{job_name}: step {step_index} injects unreviewed GITHUB_OUTPUT state"
+            )
 
     cargo_steps = []
     for step_index, command in run_commands(job_name, body):
@@ -656,6 +792,8 @@ def assert_protected_setup(job_name, body):
             f"{job_name}: Cargo runs before verified zvec preparation and export"
         )
 
+
+assert_global_policy()
 
 for job_name, body in jobs.items():
     if not isinstance(body, dict):
