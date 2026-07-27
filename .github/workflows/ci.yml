@@ -42,6 +42,7 @@ jobs:
           persist-credentials: false
       - name: prepare and verify target-matched zvec
         run: |
+          export ZVEC_BUILD_JOBS="$(nproc)"
           zvec_dir="$RUNNER_TEMP/symbiotic-memory-zvec"
           ./scripts/prepare-adapter-zvec.sh \
             .adapter-source/symbiotic-memory \
@@ -160,6 +161,7 @@ jobs:
           persist-credentials: false
       - name: prepare and verify target-matched zvec
         run: |
+          export ZVEC_BUILD_JOBS="$(nproc)"
           zvec_dir="$RUNNER_TEMP/symbiotic-memory-zvec"
           ./scripts/prepare-adapter-zvec.sh \
             .adapter-source/symbiotic-memory \

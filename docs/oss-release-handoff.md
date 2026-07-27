@@ -17,7 +17,9 @@ certified the transferred dependency head and its target-matched native package.
    `SYMBIOTIC_MEMORY_DEPLOY_KEY`. The adapter-enabled `rust` and `adapter-build` jobs are
    mandatory and explicitly reject a missing secret. Each uses that key for the exact canonical
    checkout, prepares and verifies the Linux zvec package from the pinned source before Cargo,
-   and does not cache private/native-derived outputs. The offline `adapter-pins` job proves
+   and does not cache Cargo target, native-build, or private-derived outputs. Fork pull requests,
+   where GitHub withholds the secret, therefore fail at key preflight before any Rust command and
+   provide no Rust signal until a trusted same-repository run. The offline `adapter-pins` job proves
    exact manifest/lock/pin alignment for `symbiotic-memory`, `symbiotic-memory-config`, `zvec`,
    and `zvec-sys` without credentials. Release evidence still requires a trusted
    same-repository run (`RELEASING.md`).
@@ -36,7 +38,8 @@ certified the transferred dependency head and its target-matched native package.
    must source-build and verify the target-matched zvec package using the f6 scripts before Cargo.
    The 2026-07-24
    K3/142-test attestation was earned against c22 and remains historical record-review evidence
-   only. Current local macOS f6 recovery evidence is 100 adapter-enabled library tests, 51
+   only. Current local macOS-arm64 f6 recovery evidence includes an observed count of 100
+   adapter-enabled library tests, 51
    `membench` binary tests, 8 `benchmark_v2` contract tests, core/server checks, and production
    builds. A fresh protected trusted-repository Ubuntu CI run for the exact release head is still
    required.

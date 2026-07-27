@@ -96,10 +96,13 @@ export LD_LIBRARY_PATH="$zvec_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" # Linux
 export DYLD_LIBRARY_PATH="$zvec_dir${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" # macOS
 ```
 
-The wrapper validates the checkout identity, pin, index state, and cleanliness, then delegates the
-source revision, builder image, target, library digest, provenance, and SPDX SBOM checks to the
-pinned upstream `scripts/zvec-package.sh`. CI uses `x86_64-unknown-linux-gnu`, exports these paths
-through `GITHUB_ENV`, and intentionally does not cache the resulting native or private-derived
+The wrapper validates the checkout identity, pin, index state, and cleanliness, then delegates to
+the pinned upstream `scripts/zvec-package.sh`. The exact source/tag object and commit,
+digest-pinned Linux builder image, target architecture, and SPDX SBOM and its hash are independent
+anchors. The native library digest is a self-consistency check: it is calculated during the build,
+written to provenance, and checked against that same build output rather than against a separately
+pinned expected binary digest. CI uses `x86_64-unknown-linux-gnu`, exports these paths through
+`GITHUB_ENV`, and intentionally does not cache Cargo target, native-build, or private-derived
 artifacts.
 
 ## Required Keys

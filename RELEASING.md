@@ -39,12 +39,14 @@ changes packaging and the build graph. Evidence earned against c22 does not cert
    read-only deploy key, check out the exact reviewed pin without persistent credentials, build
    and verify the target-matched Linux zvec package using upstream's provenance/SBOM contract,
    export its paths through `GITHUB_ENV`, and only then invoke Cargo. They do not cache
-   private/native-derived build artifacts. A fork without the secret therefore fails rather than
-   producing reduced green evidence. Require both jobs green at the exact release head.
+   Cargo target, native-build, or private-derived artifacts. A fork without the secret therefore
+   fails at key preflight before any Rust command and provides no Rust signal until a trusted
+   same-repository run. Require both jobs green at the exact release head.
 
-   Historical local f6 macOS recovery evidence consists of 100 adapter-enabled library tests, 51
-   `membench` binary tests, 8 `benchmark_v2` contract tests, core/server checks, and production
-   builds. It does not substitute for the fresh protected Ubuntu gate, which remains pending.
+   Historical local f6 macOS-arm64 recovery evidence includes an observed count of 100
+   adapter-enabled library tests, 51 `membench` binary tests, 8 `benchmark_v2` contract tests,
+   core/server checks, and production builds. It does not substitute for the fresh protected
+   Ubuntu gate, which remains pending.
 3. No stray state: `git status --short --ignored` shows only expected ignored paths
    (`runs/`, external target dir, local env files).
 4. Bump versions in `Cargo.toml` + `dashboard/package.json`, update `Cargo.lock`, commit.

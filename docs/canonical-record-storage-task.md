@@ -11,10 +11,10 @@ eligibility failures.
 
 The 2026-07-24 opposite-model/K3 review remains the independent attestation for the promoted
 record and the then-pinned c22 kit revision. It is not release evidence for the later divergent
-f6 squash-port and packaging/build-graph upgrade. The f6 recovery has separately exercised 100
-adapter-enabled library tests, 51 `membench` binary tests, 8 `benchmark_v2` contract tests,
-core/server checks, and production builds; fresh protected CI for that release head remains
-pending.
+f6 squash-port and packaging/build-graph upgrade. The f6 recovery on macOS-arm64 separately
+observed 100 adapter-enabled library tests, 51 `membench` binary tests, 8 `benchmark_v2` contract
+tests, core/server checks, and production builds; fresh protected CI for that release head
+remains pending.
 Retaining the much larger native-state substrate externally is optional and is not required for
 the public record or leaderboard.
 
