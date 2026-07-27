@@ -109,15 +109,15 @@ expect_failure \
   "$path" \
   "leaderboard-contract: adapter-enabled jobs must not use persistence action"
 
-path="$(new_fixture deps-container-libgit2)"
+path="$(new_fixture deps-no-git-cli)"
 replace_once \
   "$path" \
-  $'          use-git-cli: true\n\n  leaderboard-contract:\n' \
-  $'          use-git-cli: false\n\n  leaderboard-contract:\n'
+  $'      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1 / cargo-deny 0.20.2\n        env:\n          CARGO_NET_GIT_FETCH_WITH_CLI: "true"\n' \
+  $'      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1 / cargo-deny 0.20.2\n        env:\n          CARGO_NET_GIT_FETCH_WITH_CLI: "false"\n'
 expect_failure \
-  deps-container-libgit2 \
+  deps-no-git-cli \
   "$path" \
-  "deps: cargo-deny use-git-cli must be True"
+  "deps: cargo-deny must use Cargo git CLI fetches"
 
 path="$(new_fixture deps-wrong-key)"
 replace_once \

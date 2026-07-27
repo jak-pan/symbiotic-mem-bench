@@ -826,7 +826,7 @@ def assert_dependency_audit_private_dependency_auth(body):
             index
             for index, step in enumerate(job_steps)
             if step.get("uses")
-            == "EmbarkStudios/cargo-deny-action@30f817c6f72275c6d54dc744fbca09ebc958599f"
+            == "EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25"
         ],
     )
     if key_index >= deny_index:
@@ -853,7 +853,6 @@ def assert_dependency_audit_private_dependency_auth(body):
             "github.com ssh-ed25519 "
             "AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
         ),
-        "use-git-cli": True,
     }
     for key, expected in required.items():
         if deny_with.get(key) != expected:
