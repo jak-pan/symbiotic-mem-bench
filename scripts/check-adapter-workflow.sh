@@ -750,6 +750,7 @@ def exactly_one(job_name, description, candidates):
 
 def assert_leaderboard_private_dependency_auth(body):
     job_name = "leaderboard-contract"
+    assert_no_cache_or_artifacts(job_name, body)
     job_env = body.get("env")
     if not isinstance(job_env, dict) or job_env.get(
         "CARGO_NET_GIT_FETCH_WITH_CLI"

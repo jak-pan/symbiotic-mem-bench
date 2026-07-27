@@ -118,7 +118,6 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
       - uses: dtolnay/rust-toolchain@d0befba8b9ddf874327619e84c39b094edd58b66 # 1.93.0
-      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
       - name: canary export matches committed contract
         run: |
           cargo run --locked --bin membench-leaderboard -- export --records-root canary/records --deterministic > /tmp/canary-out.json

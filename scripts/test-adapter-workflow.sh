@@ -89,6 +89,26 @@ expect_failure \
   "$path" \
   "leaderboard-contract: expected exactly one SSH-agent step; found 0"
 
+path="$(new_fixture leaderboard-private-cache)"
+replace_once \
+  "$path" \
+  $'      - name: canary export matches committed contract\n' \
+  $'      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330\n      - name: canary export matches committed contract\n'
+expect_failure \
+  leaderboard-private-cache \
+  "$path" \
+  "leaderboard-contract: adapter-enabled jobs must not use persistence action"
+
+path="$(new_fixture leaderboard-private-artifact)"
+replace_once \
+  "$path" \
+  $'      - name: canary export matches committed contract\n' \
+  $'      - uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808\n        with:\n          name: cargo-git\n          path: ~/.cargo/git\n      - name: canary export matches committed contract\n'
+expect_failure \
+  leaderboard-private-artifact \
+  "$path" \
+  "leaderboard-contract: adapter-enabled jobs must not use persistence action"
+
 path="$(new_fixture deps-container-libgit2)"
 replace_once \
   "$path" \
