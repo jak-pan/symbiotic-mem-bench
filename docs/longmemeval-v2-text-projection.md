@@ -74,5 +74,8 @@ renamed last as the bundle's commit point. The renames are sequential — the bu
 **not** one atomic unit. The guarantee is fail-closed ranking, not atomicity: the eligibility gates
 reject a record with a missing or empty scoring artifact, reject a `score-summary.json` whose
 recorded hashes no longer match the artifacts on disk, and reject every `longmemeval-v2-text`
-record categorically (`leaderboard_eligible: false`), so a partial or torn publish can never become
-leaderboard-eligible.
+record categorically using identities checked across its report, run parameters, canonical
+`{system}/{benchmark}/{limit}/{run}` registry path, and protocol metadata
+(`leaderboard_eligible: false` remains an additional witness). The promoted path is initially
+derived from the report, then becomes a durable witness against later edits. Therefore a partial
+or torn publish can never become leaderboard-eligible.

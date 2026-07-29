@@ -57,9 +57,9 @@ changes packaging and the build graph. Evidence earned against c22 does not cert
 
    Historical local f6 macOS-arm64 recovery evidence includes an observed count of 100
    adapter-enabled library tests, 51 `membench` binary tests, 8 `benchmark_v2` contract tests,
-   core/server checks, and production builds. The six protected jobs passed at exact Membench
-   head `d5808fb`; any release-metadata change or upstream repin creates a new candidate head and
-   requires all six jobs to pass again on that exact head.
+   core/server checks, and production builds. The six protected jobs passed at exact v0.1.1
+   candidate head `c8ef247`; any release-metadata change or upstream repin creates a new candidate
+   head and requires all six jobs to pass again on that exact head.
 3. No stray state: `git status --short --ignored` shows only expected ignored paths
    (`runs/`, external target dir, local env files).
 4. Bump versions in `Cargo.toml` + `dashboard/package.json`, update both lockfiles and

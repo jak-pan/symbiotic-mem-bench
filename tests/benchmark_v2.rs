@@ -6,6 +6,7 @@ use membench::benchmark::{
     BenchmarkLoader, GradeOutcome, HaystackScope, JudgeKind, LongMemEvalV2Text, grade_v2,
     loader_for,
 };
+use membench::eligibility::NON_PROMOTABLE_BENCHMARKS;
 use serde_json::json;
 
 fn write_fixture() -> tempfile::TempDir {
@@ -117,6 +118,7 @@ fn registry_preserves_v1_and_adds_v2() {
     assert!(loader_for("longmemeval-v2").is_none());
     let v2 = loader_for("longmemeval-v2-text").unwrap();
     assert_eq!(v2.id(), "longmemeval-v2-text");
+    assert!(NON_PROMOTABLE_BENCHMARKS.contains(&v2.id()));
     assert_eq!(v2.haystack_scope(), HaystackScope::SharedCorpus);
     assert!(loader_for("unknown").is_none());
 }
