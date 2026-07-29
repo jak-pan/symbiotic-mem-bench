@@ -9,6 +9,13 @@ mechanics. Anything the harness knows about internals is coupling that
 breaks the moment we bench a second system (mem0, hymem, …) or a second
 benchmark (LoCoMo next to LongMemEval).
 
+For distribution, the portable artifact/import contract is also an adapter
+boundary. An external implementation can run out of process and import its
+normalized artifacts into the public no-feature CLI without linking its source.
+The in-process Symbiotic Memory adapter is an optional, access-gated
+implementation of the same product boundary. See
+[`public-distribution-boundary.md`](public-distribution-boundary.md).
+
 ## What the symbiotic-memory adapter may use
 
 Exactly the kit's public facade:

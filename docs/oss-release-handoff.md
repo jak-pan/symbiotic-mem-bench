@@ -6,13 +6,17 @@ certified the transferred dependency head and its target-matched native package.
 
 ## Blockers
 
-1. **`symbiotic-sh/symbiotic-memory` is private** (ownership transferred 2026-07-25; GitHub API
+1. **The in-process Symbiotic Memory adapter is private; the harness is not.**
+   `symbiotic-sh/symbiotic-memory` is private (ownership transferred 2026-07-25; GitHub API
    404 / `ls-remote` denied; `symbiotic-sh/symbiotic-foundation` is public). Measured
-   impact: none for default + `server` builds — an anonymous, clean-`CARGO_HOME`
+   impact: none for the public `membench` CLI, default library, leaderboard, or `server` builds —
+   an anonymous, clean-`CARGO_HOME`
    `cargo check --features server` succeeds because Cargo does not fetch inactive optional
-   git deps. But `--features symbiotic-memory-adapter` cannot build without access to that
-   repo. Options: make it public, vendor the needed crates, or keep the adapter as an
-   access-gated feature and say so in the README.
+   git deps. The public CLI can import/explore/promote portable records without an in-process
+   adapter. But `--features symbiotic-memory-adapter` cannot build without access to that repo.
+   Options: make it public, vendor the needed crates, or keep the adapter as an access-gated
+   owner integration and say so in the README. The last option permits an honest OSS harness +
+   leaderboard release, but not a claim that the Symbiotic Memory executor itself is OSS.
    Consequence for CI: the owner repository has a scoped read-only
    `SYMBIOTIC_MEMORY_DEPLOY_KEY`. The adapter-enabled `rust` and `adapter-build` jobs are
    mandatory and explicitly reject a missing secret. Each uses that key for the exact canonical
@@ -71,6 +75,8 @@ certified the transferred dependency head and its target-matched native package.
 
 - Clean-clone reproducibility for default + `server` features (pinned git deps, pinned
   toolchain, `Cargo.lock` committed).
+- Public no-feature `membench` CLI for portable imports, exploration, record promotion, analytics,
+  Trials, and vault management; native execution fails closed without an adapter.
 - CI definition: fmt, clippy, core+server tests, release build, dashboard build, cargo-deny
   (advisories/licenses/sources), leaderboard contract canary (`canary/`), snapshot freshness
   vs `records/`, four-package git-dependency pin fixtures, and credentialed adapter checks with

@@ -60,9 +60,10 @@ sha2 = "0.10"
 [[bin]]
 name = "membench"
 path = "src/bin/membench.rs"
-# Requires the adapter feature: a plain `cargo build` SKIPS this bin rather than
-# silently emitting a feature-less binary that compiles but fails every native run.
-required-features = ["symbiotic-memory-adapter"]
+# The public CLI is intentionally available without private adapter access for
+# record import, exploration, promotion, analytics, trials, and vault management.
+# Native Symbiotic Memory execution remains fail-closed behind the optional
+# `symbiotic-memory-adapter` feature.
 
 [[bin]]
 name = "membench-server"

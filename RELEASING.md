@@ -17,8 +17,10 @@ changes packaging and the build graph. Evidence earned against c22 does not cert
 
 1. Gates green (same set as CI):
    - `cargo fmt -- --check`, `cargo clippy --all-targets --features server -- -D warnings`
-   - `cargo test` and `cargo test --features server`
+   - `cargo test`, `cargo test --bin membench`, and `cargo test --features server`
    - `cargo build --release --features server`
+   - `cargo run --locked --bin membench -- explore --json` — proves the public CLI does not
+     activate the private adapter graph
    - `cargo deny check advisories licenses sources` — default + `server` graph only
    - `cd dashboard && npm ci && npm run build`
    - `./scripts/check-adapter-pins.sh`, `./scripts/test-adapter-pins.sh`,
