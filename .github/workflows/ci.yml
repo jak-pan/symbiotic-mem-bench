@@ -3,6 +3,7 @@ name: ci
 on:
   push:
     branches: [master]
+    tags: ["v*"]
   pull_request:
 
 env:
@@ -72,9 +73,6 @@ jobs:
 
   dashboard:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: dashboard
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
@@ -83,7 +81,11 @@ jobs:
           cache: npm
           cache-dependency-path: dashboard/package-lock.json
       - run: npm ci
+        working-directory: dashboard
       - run: npm run build
+        working-directory: dashboard
+      - run: ./scripts/check-release-metadata.sh --candidate --artifact
+      - run: ./scripts/test-release-metadata.sh
 
   deps:
     runs-on: ubuntu-latest
@@ -139,7 +141,30 @@ jobs:
           ./scripts/check-adapter-pins.sh
           ./scripts/test-adapter-workflow.sh
           ./scripts/check-adapter-workflow.sh
-          ./scripts/check-release-metadata.sh
+          ./scripts/check-release-metadata.sh --candidate
+          ./scripts/test-release-workflow.sh
+          ./scripts/check-release-workflow.sh
+
+  # This gate creates no release and deploys nothing. On a tag push it proves
+  # the tag resolves to this clean checkout and the built static landing is
+  # cryptographically bound to that exact release source.
+  release-landing-gate:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+        working-directory: dashboard
+      - run: npm run build
+        working-directory: dashboard
+      - run: ./scripts/check-release-metadata.sh --tag "$GITHUB_REF_NAME" --artifact
 
   # Credentialed release half: build the documented CLI against the exact
   # private source and its provenance-verified native package. This is a

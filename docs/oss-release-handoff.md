@@ -65,7 +65,9 @@ tagging.
   `docs/canonical-record-storage-task.md`.
 - **Landing deploy target.** The dashboard `dist/` is static-host ready with the snapshot
   fallback. `release/release.json` binds it to `refs/tags/v0.1.1`; choose a host and deploy only
-  from that exact tag. A custom domain is not required for a canary.
+  from that exact tag after the tag-triggered landing gate passes. `dist/version.json` binds the
+  actual tree to full commit/tag/version and both records and snapshot digests. A custom domain
+  is not required for a canary.
 - **Repository naming.** The crate is `membench`; the repo URL is still
   `symbiotic-mem-bench`. Rename or keep before announcing.
 - **NOTICE/attribution.** LICENSE is Apache-2.0; decide whether a NOTICE file naming the

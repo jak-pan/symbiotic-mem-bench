@@ -99,9 +99,12 @@ ALLOWED_RUN_SCRIPTS = {
     "scripts/check-adapter-workflow.sh",
     "scripts/check-leaderboard-snapshot.sh",
     "scripts/check-release-metadata.sh",
+    "scripts/check-release-workflow.sh",
     "scripts/prepare-adapter-zvec.sh",
     "scripts/test-adapter-pins.sh",
     "scripts/test-adapter-workflow.sh",
+    "scripts/test-release-metadata.sh",
+    "scripts/test-release-workflow.sh",
 }
 NATIVE_PROVENANCE_ENV = {
     "DYLD_LIBRARY_PATH",
@@ -118,6 +121,8 @@ NATIVE_PROVENANCE_MARKERS = {
 EXPECTED_NPM_COMMANDS = [
     ("dashboard", ("npm", "ci")),
     ("dashboard", ("npm", "run", "build")),
+    ("release-landing-gate", ("npm", "ci")),
+    ("release-landing-gate", ("npm", "run", "build")),
 ]
 ALLOWED_PROTECTED_ACTIONS = {
     "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
@@ -522,18 +527,11 @@ def assert_reviewed_executables(job_name, body):
             normalized = executable.removeprefix("./")
             if name == "npm":
                 invocation = tuple(segment)
-                if (
-                    job_name != "dashboard"
-                    or invocation
-                    not in {
-                        ("npm", "ci"),
-                        ("npm", "run", "build"),
-                    }
-                ):
+                if (job_name, invocation) not in EXPECTED_NPM_COMMANDS:
                     raise AssertionError(
                         f"{job_name}: step {step_index} invokes opaque npm command "
-                        f"{' '.join(segment)!r}; only exact dashboard commands "
-                        "'npm ci' and 'npm run build' are reviewed"
+                        f"{' '.join(segment)!r}; only exact reviewed dashboard "
+                        "and release-landing npm commands are allowed"
                     )
                 reviewed_npm_commands.append((job_name, invocation))
                 continue

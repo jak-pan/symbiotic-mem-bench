@@ -6,6 +6,8 @@
   "landing": {
     "source_ref": "refs/tags/v0.1.1",
     "artifact_path": "dashboard/dist",
-    "snapshot_path": "dashboard/public/data/leaderboard.json"
+    "snapshot_path": "dashboard/public/data/leaderboard.json",
+    "evidence_path": "dashboard/dist/version.json",
+    "dist_digest": "sha256(path + NUL + sha256(file) + LF), sorted paths, excluding version.json"
   }
 }

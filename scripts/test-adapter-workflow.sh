@@ -65,8 +65,8 @@ expect_success() {
 path="$(new_fixture harmless-echo)"
 replace_once \
   "$path" \
-  $'      - run: npm run build\n\n  deps:\n' \
-  $'      - run: npm run build\n      - run: echo \"cargo test --features symbiotic-memory-adapter\"\n\n  deps:\n'
+  $'      - run: ./scripts/test-release-metadata.sh\n\n  deps:\n' \
+  $'      - run: ./scripts/test-release-metadata.sh\n      - run: echo \"cargo test --features symbiotic-memory-adapter\"\n\n  deps:\n'
 expect_success harmless-echo "$path"
 
 path="$(new_fixture leaderboard-no-git-cli)"
@@ -158,8 +158,8 @@ expect_failure step-continue-on-error "$path"
 path="$(new_fixture dynamic-cargo-executable)"
 replace_once \
   "$path" \
-  $'      - run: npm run build\n\n  deps:\n' \
-  $'      - run: npm run build\n      - run: $CARGO_BIN test --features symbiotic-memory-adapter\n\n  deps:\n'
+  $'      - run: ./scripts/test-release-metadata.sh\n\n  deps:\n' \
+  $'      - run: ./scripts/test-release-metadata.sh\n      - run: $CARGO_BIN test --features symbiotic-memory-adapter\n\n  deps:\n'
 expect_failure dynamic-cargo-executable "$path"
 
 path="$(new_fixture dynamic-cargo-arguments)"
@@ -235,8 +235,8 @@ expect_failure git-config-env "$path"
 path="$(new_fixture nested-shell-cargo)"
 replace_once \
   "$path" \
-  $'      - run: npm run build\n\n  deps:\n' \
-  $'      - run: npm run build\n      - run: bash -c \'cargo test --locked --features symbiotic-memory-adapter\'\n\n  deps:\n'
+  $'      - run: ./scripts/test-release-metadata.sh\n\n  deps:\n' \
+  $'      - run: ./scripts/test-release-metadata.sh\n      - run: bash -c \'cargo test --locked --features symbiotic-memory-adapter\'\n\n  deps:\n'
 expect_failure \
   nested-shell-cargo "$path" \
   "every adapter-enabled Cargo/script job must use the protected native setup"
@@ -363,18 +363,18 @@ expect_failure arbitrary-compiler-cache "$path" "selects a cache executable"
 path="$(new_fixture python-os-system)"
 replace_once \
   "$path" \
-  $'      - run: npm run build\n\n  deps:\n' \
-  $'      - run: npm run build\n      - run: python3 -c \'import os; os.system(\"cargo test --locked --features symbiotic-memory-adapter\")\'\n\n  deps:\n'
+  $'      - run: ./scripts/test-release-metadata.sh\n\n  deps:\n' \
+  $'      - run: ./scripts/test-release-metadata.sh\n      - run: python3 -c \'import os; os.system(\"cargo test --locked --features symbiotic-memory-adapter\")\'\n\n  deps:\n'
 expect_failure python-os-system "$path" "opaque interpreter"
 
 path="$(new_fixture npm-exec-node-spawn)"
 replace_once \
   "$path" \
-  $'      - run: npm run build\n\n  deps:\n' \
-  $'      - run: npm run build\n      - run: npm exec -- node -e \'const child = require("node:child_process"); const options = Object.create(null); options.stdio = "inherit"; require("node:fs").appendFileSync("Cargo.toml", "\\\\n# hostile mutation\\\\n"); process.exit(child.spawnSync("cargo", ["test", "--locked", "--features", "symbiotic-memory-adapter"], options).status ?? 1)\'\n\n  deps:\n'
+  $'      - run: ./scripts/test-release-metadata.sh\n\n  deps:\n' \
+  $'      - run: ./scripts/test-release-metadata.sh\n      - run: npm exec -- node -e \'const child = require("node:child_process"); const options = Object.create(null); options.stdio = "inherit"; require("node:fs").appendFileSync("Cargo.toml", "\\\\n# hostile mutation\\\\n"); process.exit(child.spawnSync("cargo", ["test", "--locked", "--features", "symbiotic-memory-adapter"], options).status ?? 1)\'\n\n  deps:\n'
 expect_failure \
   npm-exec-node-spawn "$path" \
-  "only exact dashboard commands 'npm ci' and 'npm run build' are reviewed"
+  "only exact reviewed dashboard and release-landing npm commands are allowed"
 
 path="$(new_fixture npm-outside-dashboard)"
 replace_once \
@@ -383,41 +383,41 @@ replace_once \
   $'  deps:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2\n      - run: npm run build\n'
 expect_failure \
   npm-outside-dashboard "$path" \
-  "only exact dashboard commands 'npm ci' and 'npm run build' are reviewed"
+  "only exact reviewed dashboard and release-landing npm commands are allowed"
 
 path="$(new_fixture awk-system)"
 replace_once \
   "$path" \
-  $'      - run: npm run build\n\n  deps:\n' \
-  $'      - run: npm run build\n      - run: awk \'BEGIN { system(\"cargo test --locked --features symbiotic-memory-adapter\") }\'\n\n  deps:\n'
+  $'      - run: ./scripts/test-release-metadata.sh\n\n  deps:\n' \
+  $'      - run: ./scripts/test-release-metadata.sh\n      - run: awk \'BEGIN { system(\"cargo test --locked --features symbiotic-memory-adapter\") }\'\n\n  deps:\n'
 expect_failure awk-system "$path" "invokes unreviewed executable awk"
 
 path="$(new_fixture make-opaque)"
 replace_once \
   "$path" \
-  $'      - run: npm run build\n\n  deps:\n' \
-  $'      - run: npm run build\n      - run: make adapter\n\n  deps:\n'
+  $'      - run: ./scripts/test-release-metadata.sh\n\n  deps:\n' \
+  $'      - run: ./scripts/test-release-metadata.sh\n      - run: make adapter\n\n  deps:\n'
 expect_failure make-opaque "$path" "invokes unreviewed executable make"
 
 path="$(new_fixture xargs-shell)"
 replace_once \
   "$path" \
-  $'      - run: npm run build\n\n  deps:\n' \
-  $'      - run: npm run build\n      - run: echo cargo | xargs -n 1\n\n  deps:\n'
+  $'      - run: ./scripts/test-release-metadata.sh\n\n  deps:\n' \
+  $'      - run: ./scripts/test-release-metadata.sh\n      - run: echo cargo | xargs -n 1\n\n  deps:\n'
 expect_failure xargs-shell "$path" "invokes unreviewed executable xargs"
 
 path="$(new_fixture find-exec)"
 replace_once \
   "$path" \
-  $'      - run: npm run build\n\n  deps:\n' \
-  $'      - run: npm run build\n      - run: find . -exec ./unreviewed-runner \\;\n\n  deps:\n'
+  $'      - run: ./scripts/test-release-metadata.sh\n\n  deps:\n' \
+  $'      - run: ./scripts/test-release-metadata.sh\n      - run: find . -exec ./unreviewed-runner \\;\n\n  deps:\n'
 expect_failure find-exec "$path" "invokes unreviewed executable find"
 
 path="$(new_fixture git-shell-alias)"
 replace_once \
   "$path" \
-  $'      - run: npm run build\n\n  deps:\n' \
-  $'      - run: npm run build\n      - run: git -c alias.adapter=\'!cargo test --locked --features symbiotic-memory-adapter\' adapter\n\n  deps:\n'
+  $'      - run: ./scripts/test-release-metadata.sh\n\n  deps:\n' \
+  $'      - run: ./scripts/test-release-metadata.sh\n      - run: git -c alias.adapter=\'!cargo test --locked --features symbiotic-memory-adapter\' adapter\n\n  deps:\n'
 expect_failure git-shell-alias "$path" "invokes unreviewed executable git"
 
 path="$(new_fixture whitespace-insteadof)"
@@ -472,8 +472,8 @@ expect_failure mutate-prepared-zvec "$path" "outside the reviewed preparation st
 path="$(new_fixture unprotected-adapter-job)"
 replace_once \
   "$path" \
-  $'      - run: npm run build\n\n  deps:\n' \
-  $'      - run: npm run build\n      - run: cargo test --locked --features symbiotic-memory-adapter\n\n  deps:\n'
+  $'      - run: ./scripts/test-release-metadata.sh\n\n  deps:\n' \
+  $'      - run: ./scripts/test-release-metadata.sh\n      - run: cargo test --locked --features symbiotic-memory-adapter\n\n  deps:\n'
 expect_failure unprotected-adapter-job "$path" "every adapter-enabled"
 
 path="$(new_fixture missing-locked)"
