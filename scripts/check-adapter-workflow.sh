@@ -98,6 +98,7 @@ ALLOWED_RUN_SCRIPTS = {
     "scripts/check-adapter-pins.sh",
     "scripts/check-adapter-workflow.sh",
     "scripts/check-leaderboard-snapshot.sh",
+    "scripts/check-release-metadata.sh",
     "scripts/prepare-adapter-zvec.sh",
     "scripts/test-adapter-pins.sh",
     "scripts/test-adapter-workflow.sh",

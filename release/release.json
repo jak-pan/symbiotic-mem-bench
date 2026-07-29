@@ -1,0 +1,11 @@
+{
+  "schema": "membench.release.v1",
+  "version": "0.1.1",
+  "tag": "v0.1.1",
+  "records_digest": "4c42a71f61f6b2e126800bd581754b3ceed70ef06dd0ce98b24aa008477f5d74",
+  "landing": {
+    "source_ref": "refs/tags/v0.1.1",
+    "artifact_path": "dashboard/dist",
+    "snapshot_path": "dashboard/public/data/leaderboard.json"
+  }
+}

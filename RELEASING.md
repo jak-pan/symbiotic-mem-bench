@@ -29,6 +29,9 @@ changes packaging and the build graph. Evidence earned against c22 does not cert
    - canary diff: deterministic export over `canary/records` matches
      `canary/expected-leaderboard.json`
    - `./scripts/check-leaderboard-snapshot.sh` — the bundled snapshot still matches `records/`
+   - `./scripts/check-release-metadata.sh` — crate/dashboard/lock versions agree, the release
+     records digest matches the bundled snapshot, and the landing artifact is bound to the exact
+     release tag ref
 2. **Adapter CLI gate, credentialed until the dependency is public:**
    `./scripts/check-adapter-build.sh` on a machine with access to
    `symbiotic-sh/symbiotic-memory`. On Linux, first use
@@ -47,15 +50,18 @@ changes packaging and the build graph. Evidence earned against c22 does not cert
 
    Historical local f6 macOS-arm64 recovery evidence includes an observed count of 100
    adapter-enabled library tests, 51 `membench` binary tests, 8 `benchmark_v2` contract tests,
-   core/server checks, and production builds. It does not substitute for the fresh protected
-   Ubuntu gate, which remains pending.
+   core/server checks, and production builds. The six protected jobs passed at exact Membench
+   head `d5808fb`; any release-metadata change or upstream repin creates a new candidate head and
+   requires all six jobs to pass again on that exact head.
 3. No stray state: `git status --short --ignored` shows only expected ignored paths
    (`runs/`, external target dir, local env files).
-4. Bump versions in `Cargo.toml` + `dashboard/package.json`, update `Cargo.lock`, commit.
-5. Tag `vX.Y.Z` and create a GitHub release with notes (contract changes called out
-   explicitly).
+4. Bump versions in `Cargo.toml` + `dashboard/package.json`, update both lockfiles and
+   `release/release.json`, then commit. Run `./scripts/check-release-metadata.sh`.
+5. Tag `vX.Y.Z`, run `./scripts/check-release-metadata.sh --tag vX.Y.Z` from that checkout, and
+   create a GitHub release with notes (contract changes called out explicitly).
 6. Deploying the leaderboard landing (optional): publish `dashboard/dist/` to a static host.
-   Build from the tagged commit, and verify the deployed document by recomputing
+   Build from `release/release.json`'s exact `landing.source_ref`, never from a branch or an
+   uncommitted tree, and verify the deployed document by recomputing
    `source.records_digest` from that checkout — that hash, not the exporter git sha, is what
    proves the published board describes the records in the tag.
 
