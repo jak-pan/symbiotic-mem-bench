@@ -3993,7 +3993,7 @@ fn validate_provider_role_selection(run: &SymbioticMemoryCliRun) -> anyhow::Resu
 
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow::Result<()> {
-    if run.benchmark == "longmemeval-v2-text" {
+    if run.benchmark == membench::eligibility::LONGMEMEVAL_V2_TEXT_ID {
         hydrate_v2_projection_env(&run);
         membench::benchmark::validate_longmemeval_v2_text_release(&run.dataset)?;
     }
@@ -4108,7 +4108,7 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
             "[longmemeval] --rejudge: re-grading {} stored answers (no re-answer)",
             rows.len()
         );
-        if run.benchmark == "longmemeval-v2-text" {
+        if run.benchmark == membench::eligibility::LONGMEMEVAL_V2_TEXT_ID {
             score_v2_native(&run, &rows, &hypotheses_path)?;
         } else {
             let runtime = tokio::runtime::Runtime::new()?;
@@ -4347,7 +4347,7 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
         );
     }
     if run.score {
-        if run.benchmark == "longmemeval-v2-text" {
+        if run.benchmark == membench::eligibility::LONGMEMEVAL_V2_TEXT_ID {
             score_v2_native(&run, &rows, &hypotheses_path)?;
         } else {
             let judge_factory = provider_runtime.judge_factory(&run)?;
@@ -4443,7 +4443,7 @@ fn preflight_v2_score_targets(
     run: &SymbioticMemoryCliRun,
     rows: &[membench::symbiotic_memory_adapter::LongMemEvalRecord],
 ) -> anyhow::Result<()> {
-    if run.benchmark != "longmemeval-v2-text" {
+    if run.benchmark != membench::eligibility::LONGMEMEVAL_V2_TEXT_ID {
         return Ok(());
     }
     use membench::benchmark::{GradeOutcome, grade_v2};
@@ -6785,7 +6785,7 @@ fn symbiotic_memory_run_params(run: &SymbioticMemoryCliRun) -> serde_json::Value
         "ephemeral_smoke_run".to_string(),
         json!(run.ephemeral_smoke_run),
     );
-    if run.benchmark == "longmemeval-v2-text" {
+    if run.benchmark == membench::eligibility::LONGMEMEVAL_V2_TEXT_ID {
         let projection_dataset =
             membench::benchmark::longmemeval_v2_text_projection_metadata(&run.dataset)
                 .unwrap_or_else(|error| json!({"validation_error": error.to_string()}));
@@ -7121,11 +7121,11 @@ fn resolved_role_settings(
 }
 
 fn uses_model_judge(run: &SymbioticMemoryCliRun) -> bool {
-    run.score && run.benchmark != "longmemeval-v2-text"
+    run.score && run.benchmark != membench::eligibility::LONGMEMEVAL_V2_TEXT_ID
 }
 
 fn effective_scorer(run: &SymbioticMemoryCliRun) -> &str {
-    if run.score && run.benchmark == "longmemeval-v2-text" {
+    if run.score && run.benchmark == membench::eligibility::LONGMEMEVAL_V2_TEXT_ID {
         "longmemeval-v2-text-eval-function"
     } else {
         &run.scorer
@@ -8949,6 +8949,8 @@ mod tests {
         run.answerer = false;
         let params = symbiotic_memory_run_params(&run);
         assert_eq!(params["benchmark"], "longmemeval-v2-text");
+        assert_eq!(params["leaderboard_eligible"], false);
+        assert_eq!(params["benchmark_protocol"]["promotion_prohibited"], true);
         assert_eq!(params["scorer"], "longmemeval-v2-text-eval-function");
         assert_eq!(
             params["runtime_models"]["judge"],

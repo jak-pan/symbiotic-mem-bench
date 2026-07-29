@@ -96,8 +96,9 @@ listed as unranked with the gate it failed, never ranked.
    alone proves nothing. *Enforced as `provenance-traces`.*
 4. **Clean flags.** Not `oracle_gold`, not `TRIAL`-flagged, no experimental gate enabled that
    has not been disclosed in the record's config label. *Enforced as `clean-flags` (meta
-   records, oracle-gold runs and trial-flagged runs are rejected); the disclosure half is
-   human judgement.*
+   records, oracle-gold runs, trial-flagged runs, non-promotable protocol identities, and
+   contradictory report/parameter/registry-path benchmark identities are rejected); the
+   remaining disclosure judgement is human.*
 5. **No-cheating review.** A second reviewer (human or independent agent) samples verdicts
    against raw artifacts and confirms the pipeline rules above; misses were not "fixed" by
    tuning to broken golds. *Enforced as `independent-review` + `artifact-hashes`: the record

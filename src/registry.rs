@@ -355,6 +355,14 @@ pub fn summarize(record: &RunRecord) -> RunSummary {
     summarize_with_trials(record, &BTreeMap::new())
 }
 
+fn benchmark_from_run_id(run_id: &str) -> Option<&str> {
+    let mut segments = run_id.rsplit('/');
+    let _run_name = segments.next()?;
+    let limit = segments.next()?;
+    let benchmark = segments.next()?;
+    limit.parse::<u64>().ok().map(|_| benchmark)
+}
+
 /// Reduce a record to its index row and attach trial metadata discovered from
 /// `runs/analysis/**/trials.jsonl`.
 pub fn summarize_with_trials(
@@ -462,11 +470,28 @@ pub fn summarize_with_trials(
     let accuracy = nested_f64(report, &["metrics", "accuracy", "value"]);
     let accuracy_total = nested_u64(report, &["metrics", "accuracy", "total"]);
     let oracle_gold = nested_bool(params, &["oracle_gold"]).unwrap_or(false);
-    let leaderboard_eligible = nested_bool(params, &["leaderboard_eligible"]).unwrap_or(true);
+    let leaderboard_eligible = nested_bool(params, &["leaderboard_eligible"])
+        .or_else(|| nested_bool(report, &["run_params", "leaderboard_eligible"]))
+        .unwrap_or(true);
+    let params_benchmark = nested_string(params, &["benchmark"])
+        .or_else(|| nested_string(report, &["run_params", "benchmark"]));
+    let path_benchmark = benchmark_from_run_id(&record.run_id);
+    let promotion_prohibited = nested_bool(params, &["benchmark_protocol", "promotion_prohibited"])
+        .or_else(|| {
+            nested_bool(
+                report,
+                &["run_params", "benchmark_protocol", "promotion_prohibited"],
+            )
+        })
+        .unwrap_or(false);
     // The published review gate, checked against this record's bytes. Both the
     // live leaderboard and the static export consume this one verdict.
     let eligibility = eligibility::evaluate(&eligibility::RecordFacts {
         run_root: &record.run_root,
+        declared_benchmark: &benchmark,
+        params_benchmark: params_benchmark.as_deref(),
+        path_benchmark,
+        promotion_prohibited,
         is_meta_record,
         oracle_gold,
         is_trial_run,
@@ -1289,6 +1314,97 @@ mod tests {
         assert_eq!(view.cohorts.len(), 1);
         assert_eq!(view.cohorts[0].rows[0].summary.run_name, "promoted");
         assert!(view.unranked.is_empty());
+    }
+
+    #[test]
+    fn v2_text_projection_identity_or_path_cannot_forge_eligibility() {
+        for (prefix, path_benchmark, declared_benchmark, params_benchmark) in [
+            (
+                "records",
+                "longmemeval-v2-text",
+                "longmemeval-v2-text",
+                "longmemeval-v2-text",
+            ),
+            (
+                "canary/records",
+                "longmemeval-v2-text",
+                "long-mem-eval",
+                "longmemeval-v2-text",
+            ),
+            (
+                "records",
+                "long-mem-eval",
+                "long-mem-eval",
+                "longmemeval-v2-text",
+            ),
+        ] {
+            let repo = tempfile::tempdir().unwrap();
+            let run_root = repo
+                .path()
+                .join(prefix)
+                .join("symbiotic-memory")
+                .join(path_benchmark)
+                .join("2/projected");
+            let report = json!({
+                "system": "symbiotic-memory",
+                "benchmark": declared_benchmark,
+                "run_kind": "native",
+                "run_name": "projected",
+                "metrics": {"accuracy": {"correct": 2, "total": 2, "value": 1.0}},
+                "cohort": {
+                    "dataset_fingerprint": "fp",
+                    "judge_model": "deterministic",
+                    "judge_prompt_mode": "projection"
+                },
+                "artifact_manifest": {"available": [], "missing": [], "native_state_available": false}
+            });
+            write_run(
+                &run_root,
+                &report,
+                &json!({
+                    "benchmark": params_benchmark,
+                    "limit": 2,
+                    "leaderboard_eligible": true
+                }),
+            );
+            let artifacts_dir = run_root.join("artifacts");
+            std::fs::create_dir_all(&artifacts_dir).unwrap();
+            for (name, body) in [
+                ("hypotheses.jsonl", "{\"question_id\":\"q1\"}\n"),
+                ("verdicts.jsonl", "{\"question_id\":\"q1\"}\n"),
+                ("scored.json", "{\"judge_model\":\"deterministic\"}\n"),
+                ("model-traces.jsonl", "{\"model\":\"deterministic\"}\n"),
+            ] {
+                std::fs::write(artifacts_dir.join(name), body).unwrap();
+            }
+            let hashes = crate::eligibility::artifact_hashes(&run_root);
+            std::fs::write(
+                run_root.join("review.json"),
+                serde_json::to_string_pretty(&json!({
+                    "schema": crate::eligibility::REVIEW_SCHEMA,
+                    "reviewer": "independent-reviewer",
+                    "reviewed_at": "2026-07-29",
+                    "verdict": "pass",
+                    "artifact_sha256": hashes,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+            let records = scan_registry(&[repo.path().join(prefix)], repo.path());
+            let summary = summarize(&records[0]);
+            assert!(!summary.eligibility.eligible);
+            assert_eq!(summary.eligibility.failures.len(), 1);
+            assert_eq!(summary.eligibility.failures[0].gate, "clean-flags");
+            assert!(
+                summary.eligibility.failures[0]
+                    .detail
+                    .contains("categorically prohibits")
+            );
+            let view = crate::leaderboard::build_view(vec![summary]);
+            assert!(view.cohorts.is_empty());
+            assert_eq!(view.unranked.len(), 1);
+        }
     }
 
     #[test]

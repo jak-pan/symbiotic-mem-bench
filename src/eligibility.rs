@@ -12,7 +12,7 @@
 //!
 //! | gate | doc rule | check |
 //! |------|----------|-------|
-//! | `clean-flags` | 4 | not a meta record, not `oracle_gold`, not `TRIAL`-flagged |
+//! | `clean-flags` | 4 | not a meta record, not `oracle_gold`, not `TRIAL`-flagged, and no non-promotable protocol identity |
 //! | `scored` | 2 | the report carries an accuracy metric |
 //! | `scoring-artifacts` | 2 | `hypotheses`/`verdicts`/`scored` files exist and are non-empty |
 //! | `cohort-identity` | 2 | `dataset_fingerprint`, `judge_model`, `judge_prompt_mode` recorded |
@@ -42,6 +42,8 @@ use std::path::Path;
 
 /// Schema id of the per-record review attestation (`review.json`).
 pub const REVIEW_SCHEMA: &str = "membench.record_review.v1";
+pub const LONGMEMEVAL_V2_TEXT_ID: &str = "longmemeval-v2-text";
+pub const NON_PROMOTABLE_BENCHMARKS: &[&str] = &[LONGMEMEVAL_V2_TEXT_ID];
 
 /// Artifacts a score cannot be independently reproduced without.
 pub const SCORING_ARTIFACTS: [&str; 3] = ["hypotheses", "verdicts", "scored"];
@@ -128,6 +130,10 @@ impl Eligibility {
 #[derive(Clone, Copy, Debug)]
 pub struct RecordFacts<'a> {
     pub run_root: &'a Path,
+    pub declared_benchmark: &'a str,
+    pub params_benchmark: Option<&'a str>,
+    pub path_benchmark: Option<&'a str>,
+    pub promotion_prohibited: bool,
     pub is_meta_record: bool,
     pub oracle_gold: bool,
     pub is_trial_run: bool,
@@ -164,10 +170,33 @@ pub fn evaluate(facts: &RecordFacts) -> Eligibility {
             "TRIAL-flagged diagnostic run, not a benchmark claim",
         ));
     }
-    if !facts.leaderboard_eligible {
+    let benchmark_witnesses = [
+        Some(facts.declared_benchmark),
+        facts.params_benchmark,
+        facts.path_benchmark,
+    ];
+    let categorically_prohibited = facts.promotion_prohibited
+        || benchmark_witnesses
+            .into_iter()
+            .flatten()
+            .any(|benchmark| NON_PROMOTABLE_BENCHMARKS.contains(&benchmark));
+    if !facts.leaderboard_eligible || categorically_prohibited {
         failures.push(GateFailure::new(
             "clean-flags",
-            "run protocol explicitly prohibits leaderboard promotion",
+            if categorically_prohibited {
+                "run protocol or benchmark identity categorically prohibits leaderboard promotion"
+            } else {
+                "run protocol explicitly prohibits leaderboard promotion"
+            },
+        ));
+    } else if [facts.params_benchmark, facts.path_benchmark]
+        .into_iter()
+        .flatten()
+        .any(|benchmark| benchmark != facts.declared_benchmark)
+    {
+        failures.push(GateFailure::new(
+            "clean-flags",
+            "declared, parameter, and registry-path benchmark identities do not match",
         ));
     }
 
@@ -498,6 +527,10 @@ mod tests {
     fn facts(run_root: &Path) -> RecordFacts<'_> {
         RecordFacts {
             run_root,
+            declared_benchmark: "long-mem-eval",
+            params_benchmark: Some("long-mem-eval"),
+            path_benchmark: Some("long-mem-eval"),
+            promotion_prohibited: false,
             is_meta_record: false,
             oracle_gold: false,
             is_trial_run: false,
@@ -509,6 +542,30 @@ mod tests {
             judge_model: Some("judge"),
             judge_prompt_mode: Some("official"),
         }
+    }
+
+    #[test]
+    fn benchmark_identity_mismatch_fails_closed_without_rejecting_a_missing_path_witness() {
+        let root = tempfile::tempdir().unwrap();
+        let matching = facts(root.path());
+
+        let mut mismatch = matching;
+        mismatch.path_benchmark = Some("other-benchmark");
+        assert!(
+            evaluate(&mismatch)
+                .failures
+                .iter()
+                .any(|failure| failure.detail.contains("identities do not match"))
+        );
+
+        let mut missing = matching;
+        missing.path_benchmark = None;
+        assert!(
+            !evaluate(&missing)
+                .failures
+                .iter()
+                .any(|failure| failure.detail.contains("identities do not match"))
+        );
     }
 
     fn gates(eligibility: &Eligibility) -> Vec<&str> {
@@ -619,6 +676,18 @@ mod tests {
         assert!(verdict.failures.iter().any(|failure| {
             failure.gate == "clean-flags"
                 && failure.detail.contains("prohibits leaderboard promotion")
+        }));
+    }
+
+    #[test]
+    fn benchmark_protocol_prohibition_is_an_independent_clean_flag() {
+        let fixture = Fixture::complete();
+        let mut facts = facts(fixture.dir.path());
+        facts.promotion_prohibited = true;
+        let verdict = evaluate(&facts);
+        assert!(!verdict.eligible);
+        assert!(verdict.failures.iter().any(|failure| {
+            failure.gate == "clean-flags" && failure.detail.contains("categorically prohibits")
         }));
     }
 
