@@ -63,7 +63,7 @@ pub trait BenchmarkLoader: Send + Sync {
 pub fn loader_for(id: &str) -> Option<Box<dyn BenchmarkLoader>> {
     match id {
         "long-mem-eval" => Some(Box::new(LongMemEvalV1)),
-        "longmemeval-v2-text" => Some(Box::new(LongMemEvalV2Text)),
+        crate::eligibility::LONGMEMEVAL_V2_TEXT_ID => Some(Box::new(LongMemEvalV2Text)),
         _ => None,
     }
 }
@@ -577,7 +577,7 @@ pub fn validate_longmemeval_v2_text_release(path: &Path) -> anyhow::Result<()> {
 
 impl BenchmarkLoader for LongMemEvalV2Text {
     fn id(&self) -> &'static str {
-        "longmemeval-v2-text"
+        crate::eligibility::LONGMEMEVAL_V2_TEXT_ID
     }
 
     fn manifest_tag(&self) -> &'static str {
