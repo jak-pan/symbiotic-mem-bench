@@ -6503,7 +6503,7 @@ fn write_run_params(run_root: &PathBuf, params: &serde_json::Value) -> anyhow::R
 }
 
 fn imported_run_params(import: &ImportedBenchmarkReport, limit: Option<u64>) -> serde_json::Value {
-    json!({
+    let mut params = json!({
         "schema": "membench.run_params.v1",
         "system": import.system,
         "benchmark": import.benchmark,
@@ -6521,7 +6521,23 @@ fn imported_run_params(import: &ImportedBenchmarkReport, limit: Option<u64>) -> 
             "scored": true,
         },
         "artifact_manifest": imported_artifact_manifest(import),
-    })
+    });
+    if import.benchmark == membench::eligibility::LONGMEMEVAL_V2_TEXT_ID {
+        let object = params
+            .as_object_mut()
+            .expect("imported run parameters are a JSON object");
+        object.insert("official_equivalent".to_string(), json!(false));
+        object.insert("leaderboard_eligible".to_string(), json!(false));
+        object.insert(
+            "benchmark_protocol".to_string(),
+            json!({
+                "protocol_id": membench::eligibility::LONGMEMEVAL_V2_TEXT_ID,
+                "official_equivalent": false,
+                "promotion_prohibited": true,
+            }),
+        );
+    }
+    params
 }
 
 fn imported_artifact_manifest(import: &ImportedBenchmarkReport) -> serde_json::Value {
@@ -8611,6 +8627,34 @@ mod tests {
             root,
             PathBuf::from("runs/symbiotic-memory/long-mem-eval/50/candidate")
         );
+    }
+
+    #[test]
+    fn imported_v2_text_params_disclose_non_promotable_protocol() {
+        let import = ImportedBenchmarkReport {
+            system: "symbiotic-memory".to_string(),
+            benchmark: membench::eligibility::LONGMEMEVAL_V2_TEXT_ID.to_string(),
+            run_root: PathBuf::from("runs/imported-v2-text"),
+            run_name: "experimental-text-projection".to_string(),
+            hypotheses: PathBuf::from("hypotheses.jsonl"),
+            provenance: None,
+            verdicts: None,
+            partial_verdicts: None,
+            memory_traces: None,
+            model_traces: None,
+            scored: PathBuf::from("scored.json"),
+        };
+
+        let params = imported_run_params(&import, Some(50));
+
+        assert_eq!(params["official_equivalent"], false);
+        assert_eq!(params["leaderboard_eligible"], false);
+        assert_eq!(
+            params["benchmark_protocol"]["protocol_id"],
+            membench::eligibility::LONGMEMEVAL_V2_TEXT_ID
+        );
+        assert_eq!(params["benchmark_protocol"]["official_equivalent"], false);
+        assert_eq!(params["benchmark_protocol"]["promotion_prohibited"], true);
     }
 
     #[test]

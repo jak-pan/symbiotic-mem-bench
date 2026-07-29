@@ -47,7 +47,8 @@ before tagging.
    adapter-enabled library tests, 51
    `membench` binary tests, 8 `benchmark_v2` contract tests, core/server checks, and production
    builds. All six protected jobs passed on the metadata-complete candidate `c8ef247`. They must
-   pass again after the required upstream repin; only the final exact head is release evidence.
+   pass again after any integration merge and after the required upstream repin; only the final
+   exact head is release evidence.
 4. **Upstream consumer ledger repair and repin are ordered.**
    The isolated upstream repair changes Membench from expected failure to expected pass and
    records the protected evidence at `d5808fb`. Landing that repair creates a new Symbiotic
@@ -84,7 +85,8 @@ before tagging.
   (advisories/licenses/sources), leaderboard contract canary (`canary/`), snapshot freshness
   vs `records/`, four-package git-dependency pin fixtures, and credentialed adapter checks with
   target-matched zvec preparation. All six protected jobs passed on exact v0.1.1 candidate head
-  `c8ef247`; the post-ledger repin must receive its own exact-head run.
+  `c8ef247`; this integration merge and the later post-ledger repin must each receive their own
+  exact-head run.
 - Ranking eligibility enforced in code (`src/eligibility.rs`) against bytes on disk, shared by
   the live API and the static export; cohorts partitioned by full comparability identity
   (benchmark, size, question set, judge, judge prompt mode).
