@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Release gate: the documented product CLI actually builds against the exact
-# pins in Cargo.toml/Cargo.lock.
+# Release gate: the optional in-process Symbiotic Memory adapter actually
+# builds against the exact pins in Cargo.toml/Cargo.lock.
 #
-# `cargo run --bin membench -- explore` is the first command in the README, and
-# `membench` requires the `symbiotic-memory-adapter` feature. That feature
-# builds against `symbiotic-sh/symbiotic-memory`, which is currently a private
-# repository, so this check needs credentials and cannot run on an anonymous
-# CI runner (see docs/oss-release-handoff.md). It must pass on a credentialed
-# machine before any release is tagged.
+# The public no-feature `membench` CLI builds anonymously for portable import,
+# exploration, promotion, analytics, and Trials. Native Symbiotic Memory
+# execution is the credentialed surface: `--features
+# symbiotic-memory-adapter` links `symbiotic-sh/symbiotic-memory`, which is
+# currently private. This adapter gate therefore needs credentials and must
+# pass on a trusted machine before a release claims that integration.
 #
 # `--locked` is deliberate: it fails rather than silently refreshing the
 # lockfile, so the build proves the pinned revs, not whatever resolves today.
@@ -28,7 +28,7 @@ cargo clippy --locked --features symbiotic-memory-adapter --all-targets -- \
 echo "== LongMemEval-V2 text projection contract"
 cargo test --locked --features symbiotic-memory-adapter --test benchmark_v2
 
-echo "== the documented quickstart command"
+echo "== the adapter-enabled CLI"
 cargo run --locked --quiet --features symbiotic-memory-adapter --bin membench -- explore --help > /dev/null
 
 echo "OK: the adapter CLI builds and runs against the pinned revisions"

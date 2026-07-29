@@ -1369,15 +1369,18 @@ fn run_selected_benchmark(mut cli: Cli) -> anyhow::Result<()> {
         "long-mem-eval",
         "--benchmark or --long-mem-eval",
     )?;
+    // Portable imports are adapter-independent records. Dispatch them before
+    // native protocol capability checks so the public and adapter-enabled
+    // binaries accept the same artifact bundles.
+    if cli.import_report {
+        return import_selected_benchmark_report(&mut cli, system, benchmark);
+    }
     if benchmark == "longmemeval-v2" {
         anyhow::bail!(
             "official LongMemEval-V2 is multimodal and is not supported by the current adapter; \
              use the upstream harness for official scores or select 'longmemeval-v2-text' for the \
              explicitly non-equivalent, non-promotable text projection"
         );
-    }
-    if cli.import_report {
-        return import_selected_benchmark_report(&mut cli, system, benchmark);
     }
 
     // Gold-oracle mode is consumed per-question inside the in-process adapter via MEMBENCH_ORACLE_GOLD;
@@ -7761,8 +7764,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "symbiotic-memory-adapter"))]
-    fn public_cli_imports_artifacts_without_a_system_adapter() {
+    fn portable_official_v2_import_dispatches_before_native_protocol_guards() {
         let dir = tempfile::tempdir().unwrap();
         let hypotheses = dir.path().join("hypotheses.jsonl");
         let scored = dir.path().join("scored.json");
@@ -7782,7 +7784,7 @@ mod tests {
             "--system",
             "external-memory",
             "--benchmark",
-            "long-mem-eval",
+            "longmemeval-v2",
             "--import-report",
             "--hypotheses",
             hypotheses.to_str().unwrap(),
@@ -7802,8 +7804,29 @@ mod tests {
         )
         .unwrap();
         assert_eq!(params["system"], "external-memory");
+        assert_eq!(params["benchmark"], "longmemeval-v2");
         assert_eq!(params["run_kind"], "imported-artifact");
         assert_eq!(params["artifact_manifest"]["native_state_available"], false);
+    }
+
+    #[test]
+    fn native_official_v2_execution_remains_fail_closed() {
+        let cli = Cli::try_parse_from([
+            "membench",
+            "--system",
+            "symbiotic-memory",
+            "--benchmark",
+            "longmemeval-v2",
+            "--smoke",
+        ])
+        .unwrap();
+
+        let error = run_selected_benchmark(cli).unwrap_err().to_string();
+
+        #[cfg(feature = "symbiotic-memory-adapter")]
+        assert!(error.contains("official LongMemEval-V2 is multimodal"));
+        #[cfg(not(feature = "symbiotic-memory-adapter"))]
+        assert!(error.contains("native benchmark execution requires a system adapter"));
     }
 
     #[test]
