@@ -9,9 +9,13 @@ recorded hashes, public hygiene, and independent `review.json` attestation have 
 The deterministic leaderboard snapshot matches `records/` and publishes this row with no
 eligibility failures.
 
-The mandatory opposite-model/K3 release review approved the candidate on 2026-07-24 after
-independently rebuilding the adapter, recounting all 500 verdicts, verifying the recorded hashes
-and public-hygiene scan, reproducing the traversal refusal, and running the full 142-test suite.
+The 2026-07-24 opposite-model/K3 review remains the independent attestation for the promoted
+record and the then-pinned c22 kit revision. It is not release evidence for the later divergent
+f6 squash-port and packaging/build-graph upgrade. The f6 recovery on macOS-arm64 separately
+observed 100 adapter-enabled library tests, 51 `membench` binary tests, 8 `benchmark_v2` contract
+tests, core/server checks, and production builds. All six protected jobs passed on exact
+Membench head `d5808fb`; the final v0.1.1 head still requires the same exact-head evidence after
+release metadata and the upstream repin land.
 Retaining the much larger native-state substrate externally is optional and is not required for
 the public record or leaderboard.
 
@@ -123,7 +127,7 @@ becomes a release requirement.
    `--include-native-state`.
 3. [x] Promote the selected record to `records/` and commit its review attestation.
 4. [x] Export and independently verify the ranked leaderboard snapshot.
-5. [x] Obtain the mandatory opposite-model/K3 release approval.
+5. [x] Record the independent c22-era review attestation for the promoted record.
 6. [ ] **Optional:** add an `external-artifacts.json` schema if the native vault substrate will
    be retained for answer-only reuse.
 7. [ ] **Optional:** add a restore/check command or documented script for any retained external

@@ -1,4 +1,5 @@
 #![recursion_limit = "256"]
+#![cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
 
 #[cfg(feature = "symbiotic-memory-adapter")]
 use anyhow::Context;
@@ -13,7 +14,6 @@ use membench::{
 use reqwest::Client;
 #[cfg(feature = "symbiotic-memory-adapter")]
 use serde::Serialize;
-#[cfg(feature = "symbiotic-memory-adapter")]
 use serde_json::Value;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -1355,7 +1355,8 @@ fn parse_path_line(raw: &str) -> anyhow::Result<(String, Option<u64>)> {
     }
 }
 
-fn run_selected_benchmark(cli: Cli) -> anyhow::Result<()> {
+#[cfg(feature = "symbiotic-memory-adapter")]
+fn run_selected_benchmark(mut cli: Cli) -> anyhow::Result<()> {
     let system = selected_value(
         cli.system.as_deref(),
         cli.symbiotic_memory,
@@ -1368,6 +1369,12 @@ fn run_selected_benchmark(cli: Cli) -> anyhow::Result<()> {
         "long-mem-eval",
         "--benchmark or --long-mem-eval",
     )?;
+    // Portable imports are adapter-independent records. Dispatch them before
+    // native protocol capability checks so the public and adapter-enabled
+    // binaries accept the same artifact bundles.
+    if cli.import_report {
+        return import_selected_benchmark_report(&mut cli, system, benchmark);
+    }
     if benchmark == "longmemeval-v2" {
         anyhow::bail!(
             "official LongMemEval-V2 is multimodal and is not supported by the current adapter; \
@@ -1387,44 +1394,6 @@ fn run_selected_benchmark(cli: Cli) -> anyhow::Result<()> {
 
     match (system.as_str(), benchmark.as_str()) {
         ("symbiotic-memory", selected) if membench::benchmark::loader_for(selected).is_some() => {
-            if cli.import_report {
-                let hypotheses = cli
-                    .hypotheses
-                    .ok_or_else(|| anyhow::anyhow!("--hypotheses is required"))?;
-                let scored = cli
-                    .scored
-                    .ok_or_else(|| anyhow::anyhow!("--scored is required for --import-report"))?;
-                let run_name = cli.run_name.unwrap_or_else(|| infer_run_name(&hypotheses));
-                let registry_root = resolve_repo_path(&cli.registry_root);
-                let run_root = cli
-                    .run_root
-                    .map(|path| resolve_repo_path(&path))
-                    .unwrap_or_else(|| {
-                        default_import_run_root(
-                            &registry_root,
-                            &system,
-                            &benchmark,
-                            &scored,
-                            &run_name,
-                        )
-                        .unwrap_or_else(|_| {
-                            default_run_root(&registry_root, &system, &benchmark, &run_name)
-                        })
-                    });
-                return import_benchmark_report(ImportedBenchmarkReport {
-                    system,
-                    benchmark,
-                    run_root,
-                    run_name,
-                    hypotheses,
-                    provenance: cli.provenance,
-                    verdicts: cli.verdicts,
-                    partial_verdicts: cli.partial_verdicts,
-                    memory_traces: cli.memory_traces,
-                    model_traces: cli.model_traces,
-                    scored,
-                });
-            }
             let registry_root = resolve_repo_path(&cli.registry_root);
             let explicit_run_root = cli.run_root.is_some();
             let distiller = if cli.smoke {
@@ -1551,6 +1520,74 @@ fn run_selected_benchmark(cli: Cli) -> anyhow::Result<()> {
     }
 }
 
+#[cfg(not(feature = "symbiotic-memory-adapter"))]
+fn run_selected_benchmark(mut cli: Cli) -> anyhow::Result<()> {
+    let system = selected_value(
+        cli.system.as_deref(),
+        cli.symbiotic_memory,
+        "symbiotic-memory",
+        "--system or --symbiotic-memory",
+    )?;
+    let benchmark = selected_value(
+        cli.benchmark.as_deref(),
+        cli.long_mem_eval,
+        "long-mem-eval",
+        "--benchmark or --long-mem-eval",
+    )?;
+    if cli.import_report {
+        return import_selected_benchmark_report(&mut cli, system, benchmark);
+    }
+    anyhow::bail!(
+        "native benchmark execution requires a system adapter; rebuild with \
+         `--features symbiotic-memory-adapter` for Symbiotic Memory. The public \
+         no-adapter CLI supports record/import/inspection subcommands such as \
+         `explore`, `save-record`, `analytics`, and `trials`."
+    )
+}
+
+fn import_selected_benchmark_report(
+    cli: &mut Cli,
+    system: String,
+    benchmark: String,
+) -> anyhow::Result<()> {
+    let hypotheses = cli
+        .hypotheses
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("--hypotheses is required"))?;
+    let scored = cli
+        .scored
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("--scored is required for --import-report"))?;
+    let run_name = cli
+        .run_name
+        .take()
+        .unwrap_or_else(|| infer_run_name(&hypotheses));
+    let registry_root = resolve_repo_path(&cli.registry_root);
+    let run_root = cli
+        .run_root
+        .take()
+        .map(|path| resolve_repo_path(&path))
+        .unwrap_or_else(|| {
+            default_import_run_root(&registry_root, &system, &benchmark, &scored, &run_name)
+                .unwrap_or_else(|_| {
+                    default_run_root(&registry_root, &system, &benchmark, &run_name)
+                })
+        });
+    import_benchmark_report(ImportedBenchmarkReport {
+        system,
+        benchmark,
+        run_root,
+        run_name,
+        hypotheses,
+        provenance: cli.provenance.take(),
+        verdicts: cli.verdicts.take(),
+        partial_verdicts: cli.partial_verdicts.take(),
+        memory_traces: cli.memory_traces.take(),
+        model_traces: cli.model_traces.take(),
+        scored,
+    })
+}
+
 fn is_ephemeral_native_smoke_run(
     cli: &Cli,
     explicit_run_root: bool,
@@ -1643,6 +1680,7 @@ fn resolve_longmemeval_dataset(dataset: Option<PathBuf>) -> anyhow::Result<PathB
     Ok(dataset)
 }
 
+#[cfg(feature = "symbiotic-memory-adapter")]
 fn resolve_benchmark_dataset(
     loader: &dyn membench::benchmark::BenchmarkLoader,
     dataset: Option<PathBuf>,
@@ -2921,6 +2959,7 @@ fn evidence_id_is_raw_turn(id: &str) -> bool {
 /// session-level `answer_session_ids`, and is what the rerank trace ranks (its
 /// raw candidates are turn ids). `haystack_session_ids[sk]` names session `sk`
 /// and `haystack_sessions[sk][ti]` is its `ti`-th turn.
+#[cfg(feature = "symbiotic-memory-adapter")]
 fn gold_turn_ids(
     record: &membench::symbiotic_memory_adapter::LongMemEvalRecord,
 ) -> BTreeSet<String> {
@@ -2953,6 +2992,7 @@ struct RawCand {
 ///     interleaved facts, so we ignore it and re-rank by score below.)
 ///   - **separate** trace (`candidate_type:"raw_turn"`): the candidate list is
 ///     already raw-only with bare ids.
+///
 /// Missing scores fall back to `-inf` (embedding) / `final_rank` is folded in by
 /// the caller; a candidate with neither a rerank score nor a final rank sorts
 /// last. Returns the de-duplicated raw candidates (first occurrence wins).
@@ -3061,6 +3101,7 @@ fn deepest_gold_rank(
 /// contains the answer string by coincidence) and under-matches (paraphrased
 /// gold), and it is not the dataset's ground truth. (A substring "forensics"
 /// helper once shipped in the adapter and misled analysis; it was removed.)
+#[cfg(feature = "symbiotic-memory-adapter")]
 fn gold_eval(run: &str) -> anyhow::Result<()> {
     let run_root = resolve_run_for_vault_save(run)?;
     let run_name = run_root
@@ -3427,6 +3468,14 @@ fn gold_eval(run: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(not(feature = "symbiotic-memory-adapter"))]
+fn gold_eval(_run: &str) -> anyhow::Result<()> {
+    anyhow::bail!(
+        "gold-eval requires the Symbiotic Memory dataset adapter; rebuild with \
+         `--features symbiotic-memory-adapter`"
+    )
+}
+
 /// Resolve a `vault save --run` value to a run root: an existing path (absolute
 /// or repo-relative) wins; otherwise treat it as a run dir name and search under
 /// `runs/symbiotic-memory/long-mem-eval/<limit>/<name>`.
@@ -3461,10 +3510,10 @@ fn resolve_run_for_vault_save(run: &str) -> anyhow::Result<PathBuf> {
 /// Best-effort accuracy for a run, from `benchmark-report.json` then `score-summary.json`.
 fn read_run_accuracy(run_root: &Path) -> Option<f64> {
     let report = run_root.join("benchmark-report.json");
-    if let Ok(value) = read_json(&report) {
-        if let Some(accuracy) = nested_f64(&value, &["metrics", "accuracy", "value"]) {
-            return Some(accuracy);
-        }
+    if let Ok(value) = read_json(&report)
+        && let Some(accuracy) = nested_f64(&value, &["metrics", "accuracy", "value"])
+    {
+        return Some(accuracy);
     }
     let summary = native_score_summary_path(run_root)?;
     let value = read_json(&summary).ok()?;
@@ -6454,7 +6503,7 @@ fn write_run_params(run_root: &PathBuf, params: &serde_json::Value) -> anyhow::R
 }
 
 fn imported_run_params(import: &ImportedBenchmarkReport, limit: Option<u64>) -> serde_json::Value {
-    json!({
+    let mut params = json!({
         "schema": "membench.run_params.v1",
         "system": import.system,
         "benchmark": import.benchmark,
@@ -6472,7 +6521,23 @@ fn imported_run_params(import: &ImportedBenchmarkReport, limit: Option<u64>) -> 
             "scored": true,
         },
         "artifact_manifest": imported_artifact_manifest(import),
-    })
+    });
+    if import.benchmark == membench::eligibility::LONGMEMEVAL_V2_TEXT_ID {
+        let object = params
+            .as_object_mut()
+            .expect("imported run parameters are a JSON object");
+        object.insert("official_equivalent".to_string(), json!(false));
+        object.insert("leaderboard_eligible".to_string(), json!(false));
+        object.insert(
+            "benchmark_protocol".to_string(),
+            json!({
+                "protocol_id": membench::eligibility::LONGMEMEVAL_V2_TEXT_ID,
+                "official_equivalent": false,
+                "promotion_prohibited": true,
+            }),
+        );
+    }
+    params
 }
 
 fn imported_artifact_manifest(import: &ImportedBenchmarkReport) -> serde_json::Value {
@@ -6786,9 +6851,13 @@ fn symbiotic_memory_run_params(run: &SymbioticMemoryCliRun) -> serde_json::Value
         json!(run.ephemeral_smoke_run),
     );
     if run.benchmark == membench::eligibility::LONGMEMEVAL_V2_TEXT_ID {
+        #[cfg(feature = "symbiotic-memory-adapter")]
         let projection_dataset =
             membench::benchmark::longmemeval_v2_text_projection_metadata(&run.dataset)
                 .unwrap_or_else(|error| json!({"validation_error": error.to_string()}));
+        #[cfg(not(feature = "symbiotic-memory-adapter"))]
+        let projection_dataset =
+            json!({"validation_deferred": "symbiotic-memory-adapter feature disabled"});
         object.insert("official_equivalent".to_string(), json!(false));
         object.insert("leaderboard_eligible".to_string(), json!(false));
         object.insert(
@@ -7225,7 +7294,6 @@ fn scorer_judge_model(scorer: &str) -> Option<&str> {
     scorer.strip_prefix("queued-longmemeval-")
 }
 
-#[cfg_attr(not(feature = "symbiotic-memory-adapter"), allow(dead_code))]
 /// Warn when a tuning knob is set while the gate that enables it is OFF. Such knobs silently no-op,
 /// which has previously invalidated whole experiment sweeps. Each warning is a single clear line.
 /// Detection uses `run_env_value` (process env first, then the run's env file) so it matches whatever
@@ -7715,6 +7783,91 @@ mod tests {
     }
 
     #[test]
+    fn portable_official_v2_import_dispatches_before_native_protocol_guards() {
+        let dir = tempfile::tempdir().unwrap();
+        let hypotheses = dir.path().join("hypotheses.jsonl");
+        let scored = dir.path().join("scored.json");
+        let run_root = dir.path().join("imported");
+        std::fs::write(
+            &hypotheses,
+            "{\"question_id\":\"q1\",\"hypothesis\":\"answer\"}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &scored,
+            "{\"counts\":{\"total_correct\":1,\"scored\":1},\"overall_accuracy\":1.0}",
+        )
+        .unwrap();
+        let cli = Cli::try_parse_from([
+            "membench",
+            "--system",
+            "external-memory",
+            "--benchmark",
+            "longmemeval-v2",
+            "--import-report",
+            "--hypotheses",
+            hypotheses.to_str().unwrap(),
+            "--scored",
+            scored.to_str().unwrap(),
+            "--run-root",
+            run_root.to_str().unwrap(),
+            "--run-name",
+            "public-boundary",
+        ])
+        .unwrap();
+
+        run_selected_benchmark(cli).unwrap();
+
+        let params: Value = serde_json::from_str(
+            &std::fs::read_to_string(run_root.join("run-params.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(params["system"], "external-memory");
+        assert_eq!(params["benchmark"], "longmemeval-v2");
+        assert_eq!(params["run_kind"], "imported-artifact");
+        assert_eq!(params["artifact_manifest"]["native_state_available"], false);
+    }
+
+    #[test]
+    fn native_official_v2_execution_remains_fail_closed() {
+        let cli = Cli::try_parse_from([
+            "membench",
+            "--system",
+            "symbiotic-memory",
+            "--benchmark",
+            "longmemeval-v2",
+            "--smoke",
+        ])
+        .unwrap();
+
+        let error = run_selected_benchmark(cli).unwrap_err().to_string();
+
+        #[cfg(feature = "symbiotic-memory-adapter")]
+        assert!(error.contains("official LongMemEval-V2 is multimodal"));
+        #[cfg(not(feature = "symbiotic-memory-adapter"))]
+        assert!(error.contains("native benchmark execution requires a system adapter"));
+    }
+
+    #[test]
+    #[cfg(not(feature = "symbiotic-memory-adapter"))]
+    fn public_cli_rejects_native_execution_without_an_adapter() {
+        let cli = Cli::try_parse_from([
+            "membench",
+            "--system",
+            "symbiotic-memory",
+            "--benchmark",
+            "long-mem-eval",
+            "--smoke",
+        ])
+        .unwrap();
+
+        let error = run_selected_benchmark(cli).unwrap_err().to_string();
+
+        assert!(error.contains("native benchmark execution requires a system adapter"));
+    }
+
+    #[test]
+    #[cfg(feature = "symbiotic-memory-adapter")]
     fn gold_turn_ids_uses_session_id_and_turn_index_of_answer_turns() {
         use membench::symbiotic_memory_adapter::{LongMemEvalMessage, LongMemEvalRecord};
         let msg = |has_answer: bool| LongMemEvalMessage {
@@ -8474,6 +8627,34 @@ mod tests {
             root,
             PathBuf::from("runs/symbiotic-memory/long-mem-eval/50/candidate")
         );
+    }
+
+    #[test]
+    fn imported_v2_text_params_disclose_non_promotable_protocol() {
+        let import = ImportedBenchmarkReport {
+            system: "symbiotic-memory".to_string(),
+            benchmark: membench::eligibility::LONGMEMEVAL_V2_TEXT_ID.to_string(),
+            run_root: PathBuf::from("runs/imported-v2-text"),
+            run_name: "experimental-text-projection".to_string(),
+            hypotheses: PathBuf::from("hypotheses.jsonl"),
+            provenance: None,
+            verdicts: None,
+            partial_verdicts: None,
+            memory_traces: None,
+            model_traces: None,
+            scored: PathBuf::from("scored.json"),
+        };
+
+        let params = imported_run_params(&import, Some(50));
+
+        assert_eq!(params["official_equivalent"], false);
+        assert_eq!(params["leaderboard_eligible"], false);
+        assert_eq!(
+            params["benchmark_protocol"]["protocol_id"],
+            membench::eligibility::LONGMEMEVAL_V2_TEXT_ID
+        );
+        assert_eq!(params["benchmark_protocol"]["official_equivalent"], false);
+        assert_eq!(params["benchmark_protocol"]["promotion_prohibited"], true);
     }
 
     #[test]

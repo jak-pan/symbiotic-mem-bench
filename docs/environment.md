@@ -59,16 +59,16 @@ intentionally testing a different environment.
 ## Dependency Sources
 
 The Symbiotic Memory adapter dependencies (`symbiotic-memory`, `symbiotic-memory-config`,
-`symbiotic-core`, `symbiotic-queue`) are pinned public git revisions in `Cargo.toml`, so the core
-crate and the `server` feature build from a clean clone with no sibling checkouts.
+`symbiotic-core`, `symbiotic-queue`) are pinned git revisions in `Cargo.toml`. The foundation
+repository is public; the transferred `symbiotic-sh/symbiotic-memory` repository is currently
+private, so adapter builds need read access to that repository. The pinned revision contains the
+required provider-role and queue APIs and builds without a sibling override once authenticated.
 
-The `symbiotic-memory-adapter` feature additionally requires APIs that are not yet published on
-the public kit branches (the YAML `providers:` role bindings and `queue.resolve_provider_queue`).
-Until those land upstream, adapter builds must override the pins to sibling checkouts in a
-gitignored `.cargo/config.toml` at this repository root:
+For intentional co-development against sibling checkouts, use this optional gitignored
+`.cargo/config.toml` at the repository root:
 
 ```toml
-[patch."ssh://git@github.com/jak-pan/symbiotic-memory"]
+[patch."ssh://git@github.com/symbiotic-sh/symbiotic-memory"]
 symbiotic-memory = { path = "../symbiotic-memory" }
 symbiotic-memory-config = { path = "../symbiotic-memory/config" }
 
@@ -77,8 +77,36 @@ symbiotic-core = { path = "../symbiotic-foundation/crates/symbiotic-core" }
 symbiotic-queue = { path = "../symbiotic-foundation/crates/symbiotic-queue" }
 ```
 
-Without that override, `cargo build --features symbiotic-memory-adapter` fails against the pinned
-public revisions. This is a known external blocker, tracked in `docs/oss-release-handoff.md`.
+Without the override, Cargo uses the exact remote revisions and
+`CARGO_NET_GIT_FETCH_WITH_CLI=true` may be needed when credentials live in the git CLI. Anonymous
+adapter builds remain blocked while the memory repository is private; see
+`docs/oss-release-handoff.md`.
+
+The f6 build graph also requires a verified native zvec package for the host target. Given a clean
+canonical `symbiotic-sh/symbiotic-memory` checkout whose `HEAD` equals
+`.symbiotic-memory-pin`, prepare it before Cargo:
+
+```bash
+target="$(rustc -vV | sed -n 's/^host: //p')"
+zvec_dir="$(mktemp -d "${TMPDIR:-/tmp}/membench-zvec.XXXXXX")"
+./scripts/prepare-adapter-zvec.sh /path/to/symbiotic-memory "$zvec_dir" "$target"
+export ZVEC_LIB_DIR="$zvec_dir"
+export LIBRARY_PATH="$zvec_dir${LIBRARY_PATH:+:$LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$zvec_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" # Linux
+export DYLD_LIBRARY_PATH="$zvec_dir${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" # macOS
+```
+
+The wrapper validates the checkout identity, pin, index state, and cleanliness, then delegates to
+the pinned upstream `scripts/zvec-package.sh` and writes a marker binding the resulting directory
+to that source pin, target, library digest, provenance digest, and SBOM digest. Adapter builds
+recompute those content hashes and require the exact marker; they never search sibling directories
+or Cargo caches for a first matching library. The exact source/tag object and commit,
+digest-pinned Linux builder image, target architecture, and SPDX SBOM and its hash are independent
+anchors. The native library digest is a self-consistency check: it is calculated during the build,
+written to provenance, and checked against that same build output rather than against a separately
+pinned expected binary digest. CI uses `x86_64-unknown-linux-gnu`, exports these paths through
+`GITHUB_ENV`, and intentionally does not cache Cargo target, native-build, or private-derived
+artifacts.
 
 ## Required Keys
 

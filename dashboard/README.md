@@ -62,6 +62,17 @@ Verify the static bundle locally by serving `dist/` without the API, e.g.:
 cd dashboard && npm run build && python3 -m http.server 4174 -d dist
 ```
 
+Every build writes `dist/version.json`. That evidence records the full source commit, declared
+release tag and version, records digest, source snapshot SHA-256, and a deterministic digest over
+the sorted dist tree excluding `version.json` itself. From the repository root, validate a PR
+artifact with:
+
+```bash
+./scripts/check-release-metadata.sh --candidate --artifact
+```
+
+Release/tag validation is stricter; see `RELEASING.md`.
+
 ## Server options
 
 ```text

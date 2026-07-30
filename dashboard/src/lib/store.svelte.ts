@@ -29,9 +29,9 @@ class Store {
   /** Server version/git, fetched once on mount for the status bar. */
   serverVersion = $state<string>("");
   serverSha = $state<string>("");
-  /** UI bundle content hash (the Vite de-cache hash) + build time. */
+  /** UI bundle content hash and the full source commit from landing evidence. */
   uiBundle = $state<string>("");
-  uiBuilt = $state<string>("");
+  uiCommit = $state<string>("");
 
   get online(): boolean {
     return this.mode === "live";
@@ -50,7 +50,7 @@ class Store {
       api.uiVersion().catch(() => null),
     ]);
     this.uiBundle = ui?.bundle ?? "";
-    this.uiBuilt = ui?.built ?? "";
+    this.uiCommit = ui?.commit ?? "";
 
     if (health) {
       this.serverVersion = health.version ?? "";

@@ -1,5 +1,6 @@
 /target
 /.debug-session
+/.adapter-source
 /runs
 /.env
 /.env.*

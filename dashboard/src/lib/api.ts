@@ -43,7 +43,16 @@ export const api = {
     // Fetch with no-store so a rebuilt bundle's new hash is always visible.
     const res = await fetch("/version.json", { cache: "no-store" });
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-    return res.json() as Promise<{ bundle: string; git: string; built: string }>;
+    return res.json() as Promise<{
+      schema: string;
+      version: string;
+      tag: string;
+      commit: string;
+      records_digest: string;
+      snapshot_sha256: string;
+      dist_tree_sha256: string;
+      bundle: string;
+    }>;
   },
   runs: () => get<{ runs: RunSummary[] }>("/runs").then((r) => r.runs),
   pending: () => get<{ pending: PendingRun[] }>("/pending").then((r) => r.pending),

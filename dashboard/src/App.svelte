@@ -182,8 +182,8 @@
   <span
     class="stk ver"
     title={store.isSnapshot
-      ? `static bundle built ${store.uiBuilt || "?"} — no server`
-      : `server v${store.serverVersion || "?"} · ui bundle built ${store.uiBuilt || "?"}`}
+      ? `static bundle ${store.uiCommit.slice(0, 12) || "?"} — no server`
+      : `server v${store.serverVersion || "?"} · ui ${store.uiCommit.slice(0, 12) || "?"}`}
   >
     {#if !store.isSnapshot}SRV <b>{store.serverSha || "?"}</b><span class="dim">·</span>{/if}UI
     <b>{store.uiBundle || "?"}</b>
