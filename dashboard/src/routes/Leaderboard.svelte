@@ -28,6 +28,7 @@
   import RingGauge from "../components/RingGauge.svelte";
   import Radar from "../components/Radar.svelte";
   import { trialBadge, runKindLabel, runKindChipClass } from "../lib/run";
+  import LeaderboardLanding from "../components/LeaderboardLanding.svelte";
 
   let cohorts = $state<Cohort[]>([]);
   // Records held back from ranking. Present in both modes — the live API and
@@ -36,6 +37,7 @@
   // Non-null when the page is serving the bundled `membench.leaderboard.v1`
   // export because no /api backend is present (a static deploy).
   let snapshot = $state<LeaderboardSnapshot | null>(null);
+  let loadError = $state<string | null>(null);
   let activeId = $state<string>("");
   let loading = $state(true);
   let sortKey = $state<string>("rank");
@@ -61,17 +63,24 @@
   });
 
   async function loadBoard(mode: string) {
+    loadError = null;
     if (mode === "snapshot") {
       snapshot = store.snapshot;
       cohorts = snapshot?.cohorts ?? [];
       unranked = snapshot?.unranked ?? [];
     } else if (mode === "live") {
+      snapshot = null;
       try {
         const view = await api.leaderboard();
         cohorts = view.cohorts;
         unranked = view.unranked;
-      } catch {
-        // The status bar reports backend failures; the empty state covers this.
+      } catch (error) {
+        // A failed live request is not an empty leaderboard. Keep the failure
+        // explicit so zeroes and trust claims cannot be inferred from missing
+        // data.
+        cohorts = [];
+        unranked = [];
+        loadError = (error as Error).message || "leaderboard request failed";
       }
     }
     if (cohorts.length && !cohorts.some((c) => c.cohort_id === activeId)) {
@@ -257,6 +266,7 @@
 
 <div class="lb">
   <div class="main">
+    <LeaderboardLanding {cohorts} {unranked} {snapshot} {loadError} />
     {#if snapshot}
       <div class="snapshot-note">
         <b>STATIC SNAPSHOT</b> — this deployment has no registry backend by
@@ -304,6 +314,14 @@
 
     {#if loading}
       <div class="empty">SCANNING REGISTRY…</div>
+    {:else if loadError}
+      <div class="empty error-state">
+        LEADERBOARD UNAVAILABLE<br />
+        <span class="empty-detail">
+          The live registry could not provide ranking data. No zero counts or
+          review claims are being inferred from this failed request.
+        </span>
+      </div>
     {:else if !active}
       <div class="empty">
         NO VERIFIED COHORTS<br />
