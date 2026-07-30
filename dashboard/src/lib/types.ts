@@ -66,8 +66,8 @@ export interface TrialMarker {
 
 export interface QTypeScore {
   accuracy: number;
-  n: number;
   correct: number;
+  total: number;
 }
 
 export type RankedRow = RunSummary & { rank: number };

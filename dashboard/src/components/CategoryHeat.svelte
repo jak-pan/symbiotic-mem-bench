@@ -19,7 +19,7 @@
         ? heatColor(s.accuracy)
         : 'var(--bg-elev)'}"
       title={s
-        ? `${qtypeShort(qt)}  ${pct(s.accuracy)}%  (${s.correct}/${s.n})`
+        ? `${qtypeShort(qt)}  ${pct(s.accuracy)}%  (${s.correct}/${s.total})`
         : `${qtypeShort(qt)}  no data`}
     ></div>
   {/each}
