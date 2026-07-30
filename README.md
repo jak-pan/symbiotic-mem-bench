@@ -139,6 +139,13 @@ Homebrew Node. For live frontend development run `membench-server` and `npm run 
 :5173, proxies `/api`). See `dashboard/README.md`. The same normalized index is available headless
 via `cargo run --bin membench -- explore --json`.
 
+The public leaderboard masthead is the first production slice of the Membench
+product UI v2. It reads only the live registry or the committed
+`membench.leaderboard.v1` snapshot: there is no mock-data fallback. “Product UI
+v2” is an interface version, not an official LongMemEval v2 score claim. The
+experimental `longmemeval-v2-text` projection remains ineligible for published
+rankings.
+
 The dashboard command preview intentionally emits the short `membench` command from the benchmark
 repo root. It omits default dataset, run-root, output, prompt, queue, and fresh-mode paths; those are
 owned by the harness.

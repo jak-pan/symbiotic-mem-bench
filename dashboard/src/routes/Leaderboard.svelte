@@ -28,6 +28,7 @@
   import RingGauge from "../components/RingGauge.svelte";
   import Radar from "../components/Radar.svelte";
   import { trialBadge, runKindLabel, runKindChipClass } from "../lib/run";
+  import LeaderboardLanding from "../components/LeaderboardLanding.svelte";
 
   let cohorts = $state<Cohort[]>([]);
   // Records held back from ranking. Present in both modes — the live API and
@@ -257,6 +258,7 @@
 
 <div class="lb">
   <div class="main">
+    <LeaderboardLanding {cohorts} {unranked} {snapshot} />
     {#if snapshot}
       <div class="snapshot-note">
         <b>STATIC SNAPSHOT</b> — this deployment has no registry backend by
