@@ -9,12 +9,15 @@
     cohorts,
     unranked,
     snapshot,
+    loadError,
   }: {
     cohorts: Cohort[];
     unranked: UnrankedRecord[];
     snapshot: LeaderboardSnapshot | null;
+    loadError: string | null;
   } = $props();
 
+  const available = $derived(loadError === null);
   const ranked = $derived(cohorts.reduce((total, cohort) => total + cohort.rows.length, 0));
   const comparable = $derived(cohorts.filter((cohort) => cohort.strictly_comparable).length);
   const generated = $derived(snapshot?.generated_at.slice(0, 10) ?? "live");
@@ -40,28 +43,34 @@
   <dl class="numbers" aria-label="Leaderboard release status">
     <div>
       <dt>RANKED</dt>
-      <dd class="ranked">{ranked}</dd>
+      <dd class:ranked={available}>{available ? ranked : "—"}</dd>
     </div>
     <div>
       <dt>HELD BACK</dt>
-      <dd>{unranked.length}</dd>
+      <dd>{available ? unranked.length : "—"}</dd>
     </div>
     <div>
       <dt>STRICT COHORTS</dt>
-      <dd>{comparable}/{cohorts.length}</dd>
+      <dd>{available ? `${comparable}/${cohorts.length}` : "—"}</dd>
     </div>
     <div>
       <dt>DATA</dt>
-      <dd class="data" title={sourceLabel}>{generated}</dd>
+      <dd class="data" title={loadError ?? sourceLabel}>{available ? generated : "unavailable"}</dd>
     </div>
   </dl>
 
   <div class="trust">
-    <span><i class="ok"></i> reviewed artifacts</span>
-    <span><i class="ok"></i> cohort-locked ranking</span>
-    <span title="The experimental LongMemEval v2 text projection is non-official and cannot enter published rankings.">
-      <i class="guard"></i> projections never rank
-    </span>
+    {#if available}
+      <span><i class="ok"></i> reviewed artifacts</span>
+      <span><i class="ok"></i> cohort-locked ranking</span>
+      <span title="The experimental LongMemEval v2 text projection is non-official and cannot enter published rankings.">
+        <i class="guard"></i> projections never rank
+      </span>
+    {:else}
+      <span class="load-error" title={loadError ?? "leaderboard request failed"}>
+        <i class="bad"></i> live leaderboard request failed — no ranking claims shown
+      </span>
+    {/if}
     <div class="links">
       <a
         href="https://github.com/jak-pan/symbiotic-mem-bench"
@@ -202,6 +211,13 @@
   .trust .guard {
     background: var(--amber);
     box-shadow: 0 0 5px rgba(255, 165, 36, 0.4);
+  }
+  .trust .bad {
+    background: var(--red);
+    box-shadow: 0 0 5px rgba(255, 79, 79, 0.45);
+  }
+  .trust .load-error {
+    color: var(--red);
   }
   .links {
     display: flex;
