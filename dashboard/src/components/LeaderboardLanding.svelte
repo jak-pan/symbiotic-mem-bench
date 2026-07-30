@@ -10,14 +10,16 @@
     unranked,
     snapshot,
     loadError,
+    loading,
   }: {
     cohorts: Cohort[];
     unranked: UnrankedRecord[];
     snapshot: LeaderboardSnapshot | null;
     loadError: string | null;
+    loading: boolean;
   } = $props();
 
-  const available = $derived(loadError === null);
+  const available = $derived(!loading && loadError === null);
   const ranked = $derived(cohorts.reduce((total, cohort) => total + cohort.rows.length, 0));
   const comparable = $derived(cohorts.filter((cohort) => cohort.strictly_comparable).length);
   const generated = $derived(snapshot?.generated_at.slice(0, 10) ?? "live");
@@ -55,12 +57,16 @@
     </div>
     <div>
       <dt>DATA</dt>
-      <dd class="data" title={loadError ?? sourceLabel}>{available ? generated : "unavailable"}</dd>
+      <dd class="data" title={loadError ?? sourceLabel}>
+        {available ? generated : loading ? "loading" : "unavailable"}
+      </dd>
     </div>
   </dl>
 
   <div class="trust">
-    {#if available}
+    {#if loading}
+      <span><i class="guard"></i> loading leaderboard data — no ranking claims yet</span>
+    {:else if available}
       <span><i class="ok"></i> reviewed artifacts</span>
       <span><i class="ok"></i> cohort-locked ranking</span>
       <span title="The experimental LongMemEval v2 text projection is non-official and cannot enter published rankings.">

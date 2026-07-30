@@ -266,7 +266,7 @@
 
 <div class="lb">
   <div class="main">
-    <LeaderboardLanding {cohorts} {unranked} {snapshot} {loadError} />
+    <LeaderboardLanding {cohorts} {unranked} {snapshot} {loadError} {loading} />
     {#if snapshot}
       <div class="snapshot-note">
         <b>STATIC SNAPSHOT</b> — this deployment has no registry backend by
