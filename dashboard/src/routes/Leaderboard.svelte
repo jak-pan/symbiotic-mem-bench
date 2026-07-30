@@ -384,7 +384,7 @@
                   {#each QTYPES as qt (qt)}
                     {@const s = r.per_question_type?.[qt]}
                     <span class="mx-cell" style="background:{s ? heatColor(s.accuracy) : 'var(--bg-elev)'}"
-                      title={s ? `${qtypeShort(qt)} ${pct(s.accuracy)}% (${s.correct}/${s.n})` : 'no data'}>
+                      title={s ? `${qtypeShort(qt)} ${pct(s.accuracy)}% (${s.correct}/${s.total})` : 'no data'}>
                       {s ? Math.round(s.accuracy * 100) : ""}
                     </span>
                   {/each}
