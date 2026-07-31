@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { store } from "./lib/store.svelte";
+  import { router } from "./lib/router.svelte";
+  import Debugger from "./routes/Debugger.svelte";
   import CockpitLeaderboard from "./routes/CockpitLeaderboard.svelte";
   import CockpitRuns from "./routes/CockpitRuns.svelte";
   import CockpitLab from "./routes/CockpitLab.svelte";
@@ -15,7 +17,7 @@
     { id: "catalog", fk: "F4", label: "Catalog", hint: "Systems, benchmarks and artifact coverage" },
   ];
 
-  let workspace = $state<Workspace>("leaderboard");
+  let workspace = $state<Workspace>(router.view === "debug" ? "runs" : "leaderboard");
   let clock = $state("");
   let clockDate = $state("");
 
@@ -24,10 +26,12 @@
       ? (store.snapshot?.unranked.length ?? 0)
       : store.runs.filter((run) => !run.eligibility?.eligible).length,
   );
-  const generated = $derived(store.snapshot?.generated_at.slice(0, 10) ?? "live");
+  const generated = $derived(!store.loaded ? "—" : store.snapshot?.generated_at.slice(0, 10) ?? "live");
 
   function go(next: Workspace) {
     workspace = next;
+    if (next === "leaderboard") router.go("leaderboard");
+    else if (next === "runs" && store.online) router.go("debug");
   }
 
   function tick() {
@@ -75,6 +79,7 @@
         <button
           class="mode"
           class:active={workspace === item.id}
+          aria-current={workspace === item.id ? "page" : undefined}
           title={`${item.hint} · ${item.fk}`}
           onclick={() => go(item.id)}
         ><span class="fk">{item.fk}</span>{item.label}</button>
@@ -104,7 +109,7 @@
     {#if workspace === "leaderboard"}
       <CockpitLeaderboard />
     {:else if workspace === "runs"}
-      <CockpitRuns />
+      {#if store.online}<Debugger />{:else}<CockpitRuns />{/if}
     {:else if workspace === "lab"}
       <CockpitLab />
     {:else}
@@ -114,10 +119,10 @@
 
   <footer class="statusbar">
     <span class="seg"><span class="dot" class:live={store.mode === "snapshot" || store.online}></span> {store.isSnapshot ? "STATIC SNAPSHOT" : store.online ? "LIVE" : store.mode.toUpperCase()}</span>
-    <span class="seg">RECORDS <b>{store.recordCount}</b></span>
-    <span class="seg">VERIFIED <b>{store.verifiedCount}</b></span>
-    <span class="seg">SYSTEMS <b>{store.systems.length}</b></span>
-    <span class="seg">BENCHMARKS <b>{store.benchmarks.length}</b></span>
+    <span class="seg">RECORDS <b>{store.loaded ? store.recordCount : "—"}</b></span>
+    <span class="seg">VERIFIED <b>{store.loaded ? store.verifiedCount : "—"}</b></span>
+    <span class="seg">SYSTEMS <b>{store.loaded ? store.systems.length : "—"}</b></span>
+    <span class="seg">BENCHMARKS <b>{store.loaded ? store.benchmarks.length : "—"}</b></span>
     <span class="seg">PEAK ACC <b class="amber">{store.bestAccuracy == null ? "—" : `${(store.bestAccuracy * 100).toFixed(1)}%`}</b></span>
     <span class="spacer"></span>
     <span class="seg hints">F1–F4 workspaces · all public claims are artifact-backed</span>

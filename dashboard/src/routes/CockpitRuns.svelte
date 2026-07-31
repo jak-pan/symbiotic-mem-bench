@@ -52,14 +52,19 @@
   const held = $derived(entries.length - verified);
 
   function pct(value: number | null) { return value == null ? "—" : `${(value * 100).toFixed(1)}%`; }
+  function setFilter(next: "all" | "verified" | "held") {
+    filter = next;
+    const first = entries.find((entry) => next === "all" || entry.state === next);
+    selectedId = first?.id ?? "";
+  }
 </script>
 
 <aside class="rail">
   <div class="rail-head"><span>RUN REGISTRY</span><b>{entries.length}</b></div>
   <div class="filters">
-    <button class:active={filter === "all"} onclick={() => filter = "all"}>ALL {entries.length}</button>
-    <button class:active={filter === "verified"} onclick={() => filter = "verified"}>RANKED {verified}</button>
-    <button class:active={filter === "held"} onclick={() => filter = "held"}>HELD {held}</button>
+    <button aria-pressed={filter === "all"} class:active={filter === "all"} onclick={() => setFilter("all")}>ALL {entries.length}</button>
+    <button aria-pressed={filter === "verified"} class:active={filter === "verified"} onclick={() => setFilter("verified")}>RANKED {verified}</button>
+    <button aria-pressed={filter === "held"} class:active={filter === "held"} onclick={() => setFilter("held")}>HELD {held}</button>
   </div>
   <div class="run-list">
     {#each visible as entry}
@@ -73,7 +78,15 @@
 </aside>
 
 <section class="work">
-  <div class="subtabs"><span class="active">OVERVIEW</span><span>QUESTIONS</span><span>EVIDENCE</span><span>TRACES</span><span>MEMORY</span><span>TELEMETRY</span><span>AUDIT</span></div>
+  <div class="subtabs" role="tablist" aria-label="Static run inspection availability">
+    <button role="tab" aria-selected="true">OVERVIEW</button>
+    <button role="tab" disabled title="Requires a live membench-server backend">QUESTIONS</button>
+    <button role="tab" disabled title="Requires a live membench-server backend">EVIDENCE</button>
+    <button role="tab" disabled title="Requires a live membench-server backend">TRACES</button>
+    <button role="tab" disabled title="Requires a live membench-server backend">MEMORY</button>
+    <button role="tab" disabled title="Requires a live membench-server backend">TELEMETRY</button>
+    <button role="tab" disabled title="Requires a live membench-server backend">AUDIT</button>
+  </div>
   {#if selected}
     <div class="scroll">
       <div class="run-hero">
@@ -139,8 +152,9 @@
   .empty { padding: 14px; color: var(--text-faint); font-size: 10px; }
   .work { min-width: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
   .subtabs { height: 34px; flex: none; display: flex; align-items: stretch; gap: 3px; padding: 0 7px; border-bottom: 1px solid var(--border); background: var(--bg-panel); }
-  .subtabs span { display: flex; align-items: center; padding: 0 10px; border-bottom: 2px solid transparent; color: var(--text-faint); font-family: var(--sans); font-size: 9px; font-weight: 700; letter-spacing: .1em; }
-  .subtabs .active { color: var(--amber); border-bottom-color: var(--amber); }
+  .subtabs button { display: flex; align-items: center; padding: 0 10px; background: none; border: 0; border-bottom: 2px solid transparent; color: var(--text-dim); font-family: var(--sans); font-size: 9px; font-weight: 700; letter-spacing: .1em; }
+  .subtabs button[aria-selected="true"] { color: var(--amber); border-bottom-color: var(--amber); }
+  .subtabs button:disabled { color: #747d89; cursor: not-allowed; }
   .scroll { flex: 1; overflow-y: auto; padding: 12px; }
   .run-hero { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border: 1px solid var(--border-bright); background: linear-gradient(100deg, rgba(70,169,255,.06), transparent 45%), var(--bg-panel); }
   .eyebrow { color: var(--cyan); font-family: var(--sans); font-size: 8px; font-weight: 800; letter-spacing: .17em; }

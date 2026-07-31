@@ -17,7 +17,12 @@
 </aside>
 
 <section class="work">
-  <div class="subtabs"><span class="active">REGISTRY</span><span>CAPABILITIES</span><span>DATASETS</span><span>CONTRACTS</span></div>
+  <div class="subtabs" role="tablist" aria-label="Catalog feature availability">
+    <button role="tab" aria-selected="true">REGISTRY</button>
+    <button role="tab" disabled title="Dedicated capability view is not yet connected">CAPABILITIES</button>
+    <button role="tab" disabled title="Dedicated dataset view is not yet connected">DATASETS</button>
+    <button role="tab" disabled title="Dedicated contract view is not yet connected">CONTRACTS</button>
+  </div>
   <div class="scroll">
     <div class="hero">
       <div><span class="eyebrow">AGNOSTIC REGISTRY</span><h1>Systems × benchmarks × evidence</h1><p>The catalog reflects the loaded publication snapshot, not prototype inventory.</p></div>
@@ -64,8 +69,9 @@
   .rail-section b { color: var(--amber); font-size: 18px; }.rail-note { padding: 12px; color: var(--text-dim); font-size: 10px; line-height: 1.5; }
   .work { min-width: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
   .subtabs { height: 34px; flex: none; display: flex; gap: 3px; padding: 0 7px; border-bottom: 1px solid var(--border); background: var(--bg-panel); }
-  .subtabs span { display: flex; align-items: center; padding: 0 11px; border-bottom: 2px solid transparent; color: var(--text-faint); font-family: var(--sans); font-size: 9px; font-weight: 700; letter-spacing: .1em; }
-  .subtabs .active { color: var(--amber); border-bottom-color: var(--amber); }
+  .subtabs button { display: flex; align-items: center; padding: 0 11px; background: none; border: 0; border-bottom: 2px solid transparent; color: var(--text-dim); font-family: var(--sans); font-size: 9px; font-weight: 700; letter-spacing: .1em; }
+  .subtabs button[aria-selected="true"] { color: var(--amber); border-bottom-color: var(--amber); }
+  .subtabs button:disabled { color: #747d89; cursor: not-allowed; }
   .scroll { flex: 1; overflow-y: auto; padding: 12px; }
   .hero { display: flex; justify-content: space-between; align-items: center; padding: 13px 14px; border: 1px solid var(--border-bright); background: linear-gradient(100deg, rgba(47,207,122,.07), transparent 46%), var(--bg-panel); }
   .eyebrow { color: var(--green); font-family: var(--sans); font-size: 8px; font-weight: 800; letter-spacing: .17em; }

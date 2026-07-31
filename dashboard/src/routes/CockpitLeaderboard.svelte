@@ -45,7 +45,7 @@
   const selected = $derived(liveCohorts.find((cohort) => cohort.cohort_id === selectedCohortId) ?? liveCohorts[0]);
   const rankedCount = $derived(liveCohorts.reduce((sum, cohort) => sum + cohort.rows.length, 0));
   const heldCount = $derived(store.snapshot?.unranked.length ?? store.runs.filter((run) => !run.eligibility?.eligible).length);
-  const generated = $derived(store.snapshot?.generated_at.slice(0, 10) ?? "live");
+  const generated = $derived(!store.loaded ? "—" : store.snapshot?.generated_at.slice(0, 10) ?? "live");
 
   function pct(value: number | null | undefined) {
     return value == null ? "—" : `${(value * 100).toFixed(1)}%`;
@@ -155,6 +155,12 @@
             <div><dt>JUDGE</dt><dd>{selected.judge_model ?? "unrecorded"}</dd></div>
             <div><dt>ORACLE GOLD</dt><dd>{selected.rows.some((row) => row.oracle_gold) ? "mixed — inspect rows" : "no"}</dd></div>
             <div><dt>COHORT KEY</dt><dd title={selected.cohort_id}>{selected.cohort_id.slice(0, 54)}…</dd></div>
+            {#if store.snapshot}
+              <div><dt>RECORDS ROOT</dt><dd title={store.snapshot.source.records_root}>{store.snapshot.source.records_root}</dd></div>
+              <div><dt>RECORDS DIGEST</dt><dd title={store.snapshot.source.records_digest ?? "unavailable"}>{store.snapshot.source.records_digest?.slice(0, 24) ?? "unavailable"}</dd></div>
+              <div><dt>EXPORTER SHA</dt><dd title={store.snapshot.source.git_sha}>{store.snapshot.source.git_sha}</dd></div>
+              <div><dt>GENERATED</dt><dd>{store.snapshot.generated_at}</dd></div>
+            {/if}
             <div><dt>SOURCE</dt><dd><a href="https://github.com/jak-pan/symbiotic-mem-bench" target="_blank" rel="noreferrer">repository ↗</a> · <a href="https://github.com/jak-pan/symbiotic-mem-bench/blob/master/docs/longmemeval-methodology.md" target="_blank" rel="noreferrer">methodology ↗</a></dd></div>
           </dl>
         </section>

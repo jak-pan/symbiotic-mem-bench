@@ -8,6 +8,11 @@
   const selectedSystem = $derived(system || store.systems[0] || "no system registered");
   const selectedBenchmark = $derived(benchmark || store.benchmarks[0] || "no benchmark registered");
   const canLaunch = $derived(store.online && false);
+
+  $effect(() => {
+    if (!system && store.systems[0]) system = store.systems[0];
+    if (!benchmark && store.benchmarks[0]) benchmark = store.benchmarks[0];
+  });
 </script>
 
 <aside class="rail">
@@ -25,7 +30,12 @@
 </aside>
 
 <section class="work">
-  <div class="subtabs"><span class="active">CONFIGURE</span><span>FLEET</span><span>ABLATIONS</span><span>STATE</span></div>
+  <div class="subtabs" role="tablist" aria-label="Lab feature availability">
+    <button role="tab" aria-selected="true">CONFIGURE</button>
+    <button role="tab" disabled title="Execution backend not connected">FLEET</button>
+    <button role="tab" disabled title="Execution backend not connected">ABLATIONS</button>
+    <button role="tab" disabled title="Execution backend not connected">STATE</button>
+  </div>
   <div class="scroll">
     <div class="hero">
       <div><span class="eyebrow">EXPERIMENT WORKBENCH</span><h1>Design an evidence-producing run</h1><p>The static public canary exposes the contract, never a fake launch.</p></div>
@@ -92,8 +102,9 @@
   .rail-section p { margin-top: 7px; color: var(--text-dim); font-size: 10px; line-height: 1.5; }
   .work { min-width: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
   .subtabs { height: 34px; flex: none; display: flex; gap: 3px; padding: 0 7px; border-bottom: 1px solid var(--border); background: var(--bg-panel); }
-  .subtabs span { display: flex; align-items: center; padding: 0 11px; border-bottom: 2px solid transparent; color: var(--text-faint); font-family: var(--sans); font-size: 9px; font-weight: 700; letter-spacing: .1em; }
-  .subtabs .active { color: var(--amber); border-bottom-color: var(--amber); }
+  .subtabs button { display: flex; align-items: center; padding: 0 11px; background: none; border: 0; border-bottom: 2px solid transparent; color: var(--text-dim); font-family: var(--sans); font-size: 9px; font-weight: 700; letter-spacing: .1em; }
+  .subtabs button[aria-selected="true"] { color: var(--amber); border-bottom-color: var(--amber); }
+  .subtabs button:disabled { color: #747d89; cursor: not-allowed; }
   .scroll { flex: 1; overflow-y: auto; padding: 12px; }
   .hero { display: flex; justify-content: space-between; align-items: center; padding: 13px 14px; border: 1px solid var(--border-bright); background: linear-gradient(100deg, rgba(178,133,255,.08), transparent 46%), var(--bg-panel); }
   .eyebrow { color: var(--violet); font-family: var(--sans); font-size: 8px; font-weight: 800; letter-spacing: .17em; }
