@@ -209,6 +209,10 @@
 
   type HeatRow = { run: string; stage: Stage; n: number; cells: number[] };
 
+  function shortRun(name: string): string {
+    return name.length > 28 ? `${name.slice(0, 25)}…` : name;
+  }
+
   const heatRows = $derived.by<HeatRow[]>(() => {
     const out: HeatRow[] = [];
     for (const cr of visibleCompare) {

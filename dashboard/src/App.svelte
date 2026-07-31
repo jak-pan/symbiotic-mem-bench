@@ -1,423 +1,161 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { router } from "./lib/router.svelte";
   import { store } from "./lib/store.svelte";
-  import { pct } from "./lib/format";
-  import Leaderboard from "./routes/Leaderboard.svelte";
-  import Debugger from "./routes/Debugger.svelte";
+  import CockpitLeaderboard from "./routes/CockpitLeaderboard.svelte";
+  import CockpitRuns from "./routes/CockpitRuns.svelte";
+  import CockpitLab from "./routes/CockpitLab.svelte";
+  import CockpitCatalog from "./routes/CockpitCatalog.svelte";
 
+  type Workspace = "leaderboard" | "runs" | "lab" | "catalog";
+
+  const workspaces: Array<{ id: Workspace; fk: string; label: string; hint: string }> = [
+    { id: "leaderboard", fk: "F1", label: "Leaderboard", hint: "Reviewed, cohort-locked results" },
+    { id: "runs", fk: "F2", label: "Runs", hint: "Inspect ranked and held-back records" },
+    { id: "lab", fk: "F3", label: "Lab", hint: "Configure and launch evidence-producing runs" },
+    { id: "catalog", fk: "F4", label: "Catalog", hint: "Systems, benchmarks and artifact coverage" },
+  ];
+
+  let workspace = $state<Workspace>("leaderboard");
   let clock = $state("");
-  let cmd = $state("");
-  let cmdEl: HTMLInputElement;
+  let clockDate = $state("");
+
+  const heldBack = $derived(
+    store.isSnapshot
+      ? (store.snapshot?.unranked.length ?? 0)
+      : store.runs.filter((run) => !run.eligibility?.eligible).length,
+  );
+  const generated = $derived(store.snapshot?.generated_at.slice(0, 10) ?? "live");
+
+  function go(next: Workspace) {
+    workspace = next;
+  }
 
   function tick() {
     const d = new Date();
-    clock =
-      d.toLocaleTimeString("en-GB", { hour12: false }) +
-      " " +
-      d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" }).toUpperCase();
+    const p = (n: number) => String(n).padStart(2, "0");
+    clock = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    clockDate = `${p(d.getDate())} ${d.toLocaleString("en", { month: "short" }).toUpperCase()} ${d.getFullYear()}`;
   }
 
   onMount(() => {
     store.boot();
     tick();
-    const t = setInterval(tick, 1000);
-    // Poll the registry, but skip while the tab is hidden and re-pull
-    // immediately on focus so background tabs don't churn the server.
-    // `store.load()` is a no-op outside live mode, so a static deploy never
-    // requests an endpoint it knows is not there.
-    const r = setInterval(() => {
+    const clockTimer = setInterval(tick, 1000);
+    const refreshTimer = setInterval(() => {
       if (document.visibilityState === "visible") store.load();
     }, 15000);
-    const onVisible = () => {
-      if (document.visibilityState === "visible") store.load();
-    };
-    document.addEventListener("visibilitychange", onVisible);
     return () => {
-      clearInterval(t);
-      clearInterval(r);
-      document.removeEventListener("visibilitychange", onVisible);
+      clearInterval(clockTimer);
+      clearInterval(refreshTimer);
     };
   });
 
-  function onKey(e: KeyboardEvent) {
-    // Never hijack typing in form fields (search box, selects, tuner inputs).
-    const t = e.target as HTMLElement | null;
-    const typing =
-      t instanceof HTMLInputElement ||
-      t instanceof HTMLSelectElement ||
-      t instanceof HTMLTextAreaElement ||
-      (t?.isContentEditable ?? false);
-    if (typing && !(e.key === "Escape")) return;
-    if (e.key === "/") {
-      e.preventDefault();
-      cmdEl?.focus();
-    } else if (e.key === "F1") {
-      e.preventDefault();
-      router.go("leaderboard");
-    } else if (e.key === "F2") {
-      e.preventDefault();
-      if (!store.isSnapshot) router.go("debug");
-    } else if (e.key === "Escape") {
-      cmdEl?.blur();
-    }
-  }
-
-  function runCommand() {
-    const q = cmd.trim().toLowerCase();
-    if (!q) return;
-    if (q === "lb" || q === "leaderboard") return router.go("leaderboard");
-    if (q === "dbg" || q === "debug") return router.go("debug");
-    const hit = store.runs.find(
-      (r) =>
-        r.run_name.toLowerCase().includes(q) || r.run_id.toLowerCase().includes(q),
-    );
-    if (hit) {
-      router.openRun(hit.run_id);
-      cmd = "";
+  function onKeydown(event: KeyboardEvent) {
+    const target = event.target as HTMLElement | null;
+    const typing = !!target &&
+      (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable);
+    if (typing || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (/^F[1-4]$/.test(event.key)) {
+      event.preventDefault();
+      go(workspaces[Number(event.key.slice(1)) - 1].id);
     }
   }
 </script>
 
-<svelte:window onkeydown={onKey} />
+<svelte:window onkeydown={onKeydown} />
 
-<header class="topbar">
-  <div class="brand">
-    <span class="mark">▮▮</span>
-    <span class="word">MEMBENCH</span>
-    <span class="sub">MEMORY&nbsp;SYSTEM&nbsp;TERMINAL</span>
-  </div>
-
-  <nav class="nav">
-    <button class="navbtn" class:active={router.view === "leaderboard"} onclick={() => router.go("leaderboard")}>
-      <span class="fk">F1</span> LEADERBOARD
-    </button>
-    <!-- The debugger reads per-run artifacts through /api; a static snapshot
-         deploy has no such endpoint, so the tab is disabled rather than
-         offered and then failing. -->
-    <button
-      class="navbtn"
-      class:active={router.view === "debug"}
-      disabled={store.isSnapshot}
-      title={store.isSnapshot ? "Run debugger needs a live membench-server backend" : ""}
-      onclick={() => router.go("debug")}
-    >
-      <span class="fk">F2</span> DEBUGGER
-    </button>
-  </nav>
-
-  <div class="cmd">
-    <span class="prompt">&gt;</span>
-    <input
-      bind:this={cmdEl}
-      bind:value={cmd}
-      name="command"
-      onkeydown={(e) => e.key === "Enter" && runCommand()}
-      placeholder="run / cmd  ( press / )"
-      spellcheck="false"
-      autocomplete="off"
-    />
-    <span class="cursor blink">_</span>
-  </div>
-
-  <div class="clock mono-num">{clock}</div>
-</header>
-
-<main class="stage">
-  {#if router.view === "debug"}
-    <Debugger />
-  {:else}
-    <Leaderboard />
-  {/if}
-</main>
-
-<footer class="statusbar">
-  <!-- Three distinct states, never conflated: a live backend, a deliberate
-       static snapshot, and an actual failure. A static deploy is not offline. -->
-  <span
-    class="st"
-    class:on={store.online}
-    class:snap={store.isSnapshot}
-    class:off={store.mode === "offline"}
-  >
-    <span class="dot"></span>{store.online
-      ? "LIVE"
-      : store.isSnapshot
-        ? "STATIC SNAPSHOT"
-        : store.mode === "boot"
-          ? "CONNECTING"
-          : "OFFLINE"}
-  </span>
-  {#if store.isSnapshot && store.snapshot}
-    <span class="sep">│</span>
-    <span class="stk" title={`Exported ${store.snapshot.generated_at} from ${store.snapshot.source.records_root}`}>
-      GENERATED <b>{store.snapshot.generated_at.slice(0, 10)}</b>
+<div class="cockpit">
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">▮▮ MEMBENCH</span>
+      <span class="tag">v2 · memory-system cockpit</span>
+    </div>
+    <nav class="modes" aria-label="Product workspaces">
+      {#each workspaces as item}
+        <button
+          class="mode"
+          class:active={workspace === item.id}
+          title={`${item.hint} · ${item.fk}`}
+          onclick={() => go(item.id)}
+        ><span class="fk">{item.fk}</span>{item.label}</button>
+      {/each}
+    </nav>
+    <div class="spacer"></div>
+    <span class="context" title="Every visible ranking comes from the published review gate">
+      <span>DATA</span><b>{store.mode === "boot" ? "loading" : store.isSnapshot ? "reviewed snapshot" : store.online ? "live registry" : "unavailable"}</b>
     </span>
-  {/if}
-  <span class="sep">│</span>
-  <span class="stk">{store.isSnapshot ? "RECORDS" : "RUNS"} <b>{store.recordCount}</b></span>
-  <span class="sep">│</span>
-  <span class="stk" title="Records that passed every review gate and may be ranked">
-    VERIFIED <b>{store.verifiedCount}</b>
-  </span>
-  <span class="sep">│</span>
-  <span class="stk">SYSTEMS <b>{store.systems.length}</b></span>
-  <span class="sep">│</span>
-  <span class="stk">BENCHMARKS <b>{store.benchmarks.length}</b></span>
-  <span class="sep">│</span>
-  <span class="stk" title="Best accuracy among verified records only">
-    PEAK&nbsp;ACC <b class="amber">{store.bestAccuracy == null ? "—" : `${pct(store.bestAccuracy)}%`}</b>
-  </span>
-  {#if store.active.length}
-    <span class="sep">│</span>
-    <button class="inflight" onclick={() => router.openRun(store.active[0].run_id, "live")}>
-      <span class="ifdot"></span>{store.active.length} IN&nbsp;FLIGHT
-    </button>
-  {/if}
-  {#if store.error}<span class="sep">│</span><span class="err">ERR {store.error}</span>{/if}
-  <span class="spacer"></span>
-  <span class="hint"><kbd>/</kbd> cmd</span>
-  <span class="hint"><kbd>F1</kbd>/<kbd>F2</kbd> view</span>
-  <span class="sep">│</span>
-  <span
-    class="stk ver"
-    title={store.isSnapshot
-      ? `static bundle built ${store.uiBuilt || "?"} — no server`
-      : `server v${store.serverVersion || "?"} · ui bundle built ${store.uiBuilt || "?"}`}
-  >
-    {#if !store.isSnapshot}SRV <b>{store.serverSha || "?"}</b><span class="dim">·</span>{/if}UI
-    <b>{store.uiBundle || "?"}</b>
-  </span>
-</footer>
+    <span class="chip" class:green={store.mode === "snapshot" || store.online} class:red={store.mode === "offline"}>
+      {store.mode === "snapshot" ? "verified" : store.online ? "live" : store.mode}
+    </span>
+    <span class="clock mono-num" title={clockDate}>{clock}</span>
+  </header>
+
+  <div class="truth-tape" role="status">
+    {#if store.mode === "boot"}
+      <span class="pulse-dot"></span><b>LOADING</b> validating the published leaderboard snapshot before showing claims
+    {:else if store.mode === "offline"}
+      <span class="error-dot"></span><b>DATA UNAVAILABLE</b> {store.error ?? "leaderboard could not be loaded"}
+    {:else}
+      <span class="ok-dot"></span><b>TRUTH GATE</b> {store.verifiedCount} ranked · {heldBack} held back · projections never rank · source artifacts remain the authority
+    {/if}
+  </div>
+
+  <main class="body">
+    {#if workspace === "leaderboard"}
+      <CockpitLeaderboard />
+    {:else if workspace === "runs"}
+      <CockpitRuns />
+    {:else if workspace === "lab"}
+      <CockpitLab />
+    {:else}
+      <CockpitCatalog />
+    {/if}
+  </main>
+
+  <footer class="statusbar">
+    <span class="seg"><span class="dot" class:live={store.mode === "snapshot" || store.online}></span> {store.isSnapshot ? "STATIC SNAPSHOT" : store.online ? "LIVE" : store.mode.toUpperCase()}</span>
+    <span class="seg">RECORDS <b>{store.recordCount}</b></span>
+    <span class="seg">VERIFIED <b>{store.verifiedCount}</b></span>
+    <span class="seg">SYSTEMS <b>{store.systems.length}</b></span>
+    <span class="seg">BENCHMARKS <b>{store.benchmarks.length}</b></span>
+    <span class="seg">PEAK ACC <b class="amber">{store.bestAccuracy == null ? "—" : `${(store.bestAccuracy * 100).toFixed(1)}%`}</b></span>
+    <span class="spacer"></span>
+    <span class="seg hints">F1–F4 workspaces · all public claims are artifact-backed</span>
+    <span class="seg">DATA <b>{generated}</b></span>
+  </footer>
+</div>
 
 <style>
-  .topbar {
-    height: var(--h-topbar);
-    flex: none;
-    display: flex;
-    align-items: stretch;
-    background: var(--bg-panel);
-    border-bottom: 1px solid var(--border-bright);
-  }
-  .brand {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    padding: 0 16px;
-    border-right: 1px solid var(--border);
-  }
-  .mark {
-    color: var(--amber);
-    letter-spacing: -2px;
-    font-size: 14px;
-    text-shadow: 0 0 8px rgba(255, 165, 36, 0.6);
-  }
-  .word {
-    font-family: var(--sans);
-    font-weight: 800;
-    letter-spacing: 0.16em;
-    font-size: 14px;
-    color: var(--text);
-  }
-  .sub {
-    font-family: var(--sans);
-    font-size: 8px;
-    font-weight: 700;
-    letter-spacing: 0.18em;
-    color: var(--text-faint);
-    align-self: center;
-    padding-top: 2px;
-  }
-  .nav {
-    display: flex;
-  }
-  .navbtn {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    padding: 0 16px;
-    background: transparent;
-    border: none;
-    border-right: 1px solid var(--border);
-    color: var(--text-dim);
-    font-family: var(--sans);
-    font-weight: 700;
-    font-size: 11px;
-    letter-spacing: 0.1em;
-    cursor: pointer;
-    transition: all 0.12s;
-  }
-  .navbtn:hover:not(:disabled) {
-    color: var(--text);
-    background: var(--bg-elev);
-  }
-  .navbtn:disabled {
-    color: var(--text-faint);
-    cursor: not-allowed;
-  }
-  .navbtn.active {
-    color: var(--amber);
-    background: rgba(255, 165, 36, 0.07);
-    box-shadow: inset 0 -2px 0 var(--amber);
-  }
-  .fk {
-    font-size: 8.5px;
-    color: var(--text-faint);
-    border: 1px solid var(--border-bright);
-    padding: 1px 3px;
-  }
-  .navbtn.active .fk {
-    color: var(--amber);
-    border-color: var(--amber-dim);
-  }
-  .cmd {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 0 14px;
-    border-right: 1px solid var(--border);
-  }
-  .prompt {
-    color: var(--amber);
-    font-weight: 700;
-  }
-  .cmd input {
-    flex: 1;
-    background: transparent;
-    border: none;
-    outline: none;
-    color: var(--text);
-    font-size: 12.5px;
-    letter-spacing: 0.02em;
-  }
-  .cmd input::placeholder {
-    color: var(--text-faint);
-  }
-  .cursor {
-    color: var(--amber);
-  }
-  .clock {
-    display: flex;
-    align-items: center;
-    padding: 0 16px;
-    color: var(--text-dim);
-    font-size: 11.5px;
-    letter-spacing: 0.04em;
-  }
-
-  .stage {
-    flex: 1;
-    min-height: 0;
-    display: flex;
-    overflow: hidden;
-  }
-
-  .statusbar {
-    height: var(--h-statusbar);
-    flex: none;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 0 12px;
-    background: var(--bg-panel);
-    border-top: 1px solid var(--border-bright);
-    font-size: 10.5px;
-    color: var(--text-dim);
-  }
-  .st {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-  }
-  .st .dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-  }
-  .st.on {
-    color: var(--green);
-  }
-  .st.on .dot {
-    background: var(--green);
-    box-shadow: 0 0 6px var(--green);
-    animation: pulse 2s ease infinite;
-  }
-  .st.off {
-    color: var(--red);
-  }
-  .st.off .dot {
-    background: var(--red);
-  }
-  /* A deliberate static deploy: informational, not an error colour. */
-  .st.snap {
-    color: var(--cyan);
-  }
-  .st.snap .dot {
-    background: var(--cyan);
-  }
-  .stk b {
-    color: var(--text);
-    font-weight: 700;
-  }
-  .ver {
-    font-family: var(--mono);
-    font-size: 10px;
-    color: var(--text-dim);
-  }
-  .ver b {
-    color: var(--amber);
-    font-weight: 600;
-  }
-  .ver .dim {
-    color: var(--text-faint);
-    margin: 0 5px;
-  }
-  .sep {
-    color: var(--border-bright);
-  }
-  .err {
-    color: var(--red);
-  }
-  .inflight {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    background: rgba(47, 207, 122, 0.08);
-    border: 1px solid var(--green-dim);
-    color: var(--green);
-    font-family: var(--mono);
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    padding: 1px 7px;
-    cursor: pointer;
-  }
-  .inflight:hover {
-    background: rgba(47, 207, 122, 0.16);
-  }
-  .ifdot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--green);
-    box-shadow: 0 0 6px var(--green);
-    animation: pulse 1.4s ease infinite;
-  }
-  .spacer {
-    flex: 1;
-  }
-  .hint {
-    color: var(--text-faint);
-    letter-spacing: 0.04em;
-  }
-  kbd {
-    font-family: var(--mono);
-    border: 1px solid var(--border-bright);
-    padding: 0 4px;
-    color: var(--text-dim);
-    font-size: 9.5px;
-  }
+  .cockpit { height: 100%; min-width: 980px; display: flex; flex-direction: column; overflow: hidden; }
+  .topbar { height: 40px; flex: none; display: flex; align-items: center; overflow: hidden; border-bottom: 1px solid var(--border-bright); background: var(--bg-panel); padding: 0 12px; }
+  .brand { display: flex; align-items: baseline; gap: 8px; padding-right: 16px; flex-shrink: 1; min-width: 0; overflow: hidden; white-space: nowrap; }
+  .logo { flex-shrink: 0; font-family: var(--sans); font-size: 14px; font-weight: 800; letter-spacing: .16em; color: var(--amber); }
+  .tag { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-faint); font-size: 9px; letter-spacing: .16em; text-transform: uppercase; }
+  .modes { height: 100%; display: flex; align-items: stretch; }
+  .mode { height: 100%; display: flex; align-items: center; gap: 7px; padding: 0 14px; cursor: pointer; background: none; border: none; border-bottom: 2px solid transparent; color: var(--text-dim); font-family: var(--sans); font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+  .mode:hover { color: var(--text); }
+  .mode.active { color: var(--amber); border-bottom-color: var(--amber); background: rgba(255,165,36,.05); }
+  .fk { padding: 0 3px; border: 1px solid var(--border-bright); color: var(--text-faint); font-size: 9px; }
+  .mode.active .fk { color: var(--amber); border-color: var(--amber-dim); }
+  .spacer { flex: 1; }
+  .context { flex-shrink: 0; display: flex; align-items: center; gap: 6px; margin-right: 8px; padding: 3px 8px; border: 1px solid var(--border); white-space: nowrap; }
+  .context span { color: var(--text-faint); font-family: var(--sans); font-size: 8.5px; font-weight: 700; letter-spacing: .1em; }
+  .context b { color: var(--text-dim); font-size: 10px; font-weight: 500; }
+  .clock { flex-shrink: 0; padding-left: 10px; color: var(--text-dim); font-size: 11px; letter-spacing: .06em; }
+  .truth-tape { height: 24px; flex: none; display: flex; align-items: center; gap: 7px; padding: 0 12px; overflow: hidden; border-bottom: 1px solid var(--border); background: var(--bg-panel); color: var(--text-dim); font-size: 10px; white-space: nowrap; }
+  .truth-tape b { color: var(--text); font-family: var(--sans); font-size: 8.5px; letter-spacing: .12em; }
+  .ok-dot, .error-dot, .pulse-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; }
+  .ok-dot { background: var(--green); box-shadow: 0 0 6px rgba(47,207,122,.5); }
+  .error-dot { background: var(--red); }
+  .pulse-dot { background: var(--amber); animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: .25; } }
+  .body { flex: 1; min-height: 0; display: flex; overflow: hidden; }
+  .statusbar { height: 26px; flex: none; display: flex; align-items: center; gap: 16px; padding: 0 12px; overflow: hidden; border-top: 1px solid var(--border-bright); background: var(--bg-panel); color: var(--text-dim); font-size: 10.5px; }
+  .seg { display: flex; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap; }
+  .seg b { color: var(--text); font-weight: 600; }
+  .seg b.amber { color: var(--amber); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); }
+  .dot.live { background: var(--green); }
+  .hints { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .chip { flex-shrink: 0; }
 </style>
