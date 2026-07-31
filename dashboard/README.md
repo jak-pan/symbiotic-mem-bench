@@ -1,15 +1,16 @@
 # Membench Dashboard
 
-A Bloomberg-terminal-style terminal for memory-system benchmarks (in-app:
-**MEMBENCH · MEMORY SYSTEM TERMINAL**). Two screens:
+A Bloomberg-terminal-style benchmark and debugging cockpit for memory systems.
+The v2 shell has four operator workspaces:
 
-- **Leaderboard** (`F1`) — Geekbench-style ranking of systems/configs within a
-  comparable cohort (same benchmark + size + question set + judge). Cohort
-  selector, ranked field, per-category matrix, and a head-to-head compare rail.
-- **Debugger** (`F2`) — per-run Overview, a filterable Questions browser,
-  baseline Compare, model/memory/queue Traces, a Live monitor for in-flight
-  native runs, and a **Tuner** that previews the exact `membench`/`symem`
-  command (live execution is the next phase).
+- **Leaderboard** (`F1`) — reviewed results within an exact dataset × scale ×
+  judge × prompt-mode cohort, with category evidence and methodology context.
+- **Runs** (`F2`) — ranked and held-back records, publication-gate failures,
+  and the artifact-coverage boundary for deeper inspection.
+- **Lab** (`F3`) — the evidence-producing run contract. Static deployments are
+  deliberately read-only until a safe execution endpoint is connected.
+- **Catalog** (`F4`) — observed systems, benchmarks and portable artifact
+  classes from the loaded registry or publication snapshot.
 
 Frontend is a no-SSR Svelte 5 + Vite SPA. The backend is the Rust
 `membench-server` binary, which serves the same `runs/` and `records/` files the
@@ -73,4 +74,4 @@ cd dashboard && npm run build && python3 -m http.server 4174 -d dist
 
 ## Keyboard
 
-`/` focus command · `F1` leaderboard · `F2` debugger · click rows to stack for compare.
+`F1` leaderboard · `F2` runs · `F3` lab · `F4` catalog.
