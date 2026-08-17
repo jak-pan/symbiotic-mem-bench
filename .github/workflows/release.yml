@@ -168,7 +168,7 @@ jobs:
           questions = json.load(urllib.request.urlopen(base + "/api/run/questions?id=" + encoded))
           assert questions["total"] == 500, questions["total"]
           traces = json.load(urllib.request.urlopen(base + "/api/run/traces?id=" + encoded))
-          assert traces, "release bundle exposed no trace response"
+          assert any(traces.values()), "release bundle exposed no trace artifacts"
           html = urllib.request.urlopen(base + "/").read().decode()
           assert "<!doctype html>" in html.lower()
           notices = open(bundle + "/THIRD_PARTY_NOTICES.md").read()
