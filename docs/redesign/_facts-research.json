@@ -2,7 +2,7 @@
   {
     "area": "schema-bp",
     "claim": "The repo already has a v1 dashboard protobuf schema, but it is a view/response schema (RunSummary, LiveResponse, TracesResponse, GoldEvalResponse) that is memory-benchmark-specific and heavily stringly-typed, not a generic source-of-truth trace model.",
-    "evidence": "/Users/k/p/symbiotic-mem-bench/proto/membench/dashboard/v1/debugger.proto lines 40-77, 367-534, 560-601"
+    "evidence": "proto/membench/dashboard/v1/debugger.proto lines 40-77, 367-534, 560-601"
   },
   {
     "area": "schema-bp",
@@ -42,7 +42,7 @@
   {
     "area": "schema-bp",
     "claim": "Connect-Web with protobuf-es is the current best browser choice for protobuf/gRPC, supports server-streaming via for-await, needs no translating proxy, and tree-shakes to small bundles; the repo already generates debugger_pb.ts via protobuf-es.",
-    "evidence": "https://buf.build/blog/connect-web-protobuf-grpc-in-the-browser ; /Users/k/p/symbiotic-mem-bench/dashboard/src/lib/gen/membench/dashboard/v1/debugger_pb.ts"
+    "evidence": "https://buf.build/blog/connect-web-protobuf-grpc-in-the-browser ; dashboard/src/lib/gen/membench/dashboard/v1/debugger_pb.ts"
   },
   {
     "area": "schema-bp",
@@ -67,7 +67,7 @@
   {
     "area": "schema-bp",
     "claim": "The build already compiles the proto via prost_build with a versioned package path membench.dashboard.v1, so a parallel membench.trace.v1 package for the generic trace model fits the existing toolchain.",
-    "evidence": "/Users/k/p/symbiotic-mem-bench/build.rs (prost_build compile_protos on proto/membench/dashboard/v1/debugger.proto); src/dashboard_proto.rs module path membench.dashboard.v1"
+    "evidence": "build.rs (prost_build compile_protos on proto/membench/dashboard/v1/debugger.proto); src/dashboard_proto.rs module path membench.dashboard.v1"
   },
   {
     "area": "product-bp",

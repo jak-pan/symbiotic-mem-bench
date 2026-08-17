@@ -39,9 +39,10 @@ struct Cli {
     /// Port to bind.
     #[arg(long, default_value_t = 8787)]
     port: u16,
-    /// Repository root; run ids are made relative to it.
-    #[arg(long, default_value = env!("CARGO_MANIFEST_DIR"))]
-    repo_root: PathBuf,
+    /// Repository root; run ids are made relative to it. Defaults to the
+    /// extracted release-bundle root, then to this source checkout.
+    #[arg(long)]
+    repo_root: Option<PathBuf>,
     /// Registry roots to scan. Defaults to `<repo>/runs` and `<repo>/records`.
     #[arg(long)]
     root: Vec<PathBuf>,
@@ -247,7 +248,10 @@ type Shared = Arc<AppState>;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let repo_root = cli.repo_root.clone();
+    let repo_root = resolve_repo_root(
+        cli.repo_root.clone(),
+        std::env::current_exe().ok().as_deref(),
+    );
     let roots = if cli.root.is_empty() {
         vec![repo_root.join("runs"), repo_root.join("records")]
     } else {
@@ -305,6 +309,20 @@ async fn main() -> anyhow::Result<()> {
     eprintln!("registry roots: {:?}", state.roots);
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+fn resolve_repo_root(explicit: Option<PathBuf>, executable: Option<&Path>) -> PathBuf {
+    if let Some(root) = explicit {
+        return root;
+    }
+    if let Some(root) = executable.and_then(Path::parent)
+        && root.join("PROVENANCE.json").is_file()
+        && root.join("dashboard/dist/index.html").is_file()
+        && root.join("records").is_dir()
+    {
+        return root.to_path_buf();
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
 fn err(status: StatusCode, message: impl Into<String>) -> (StatusCode, Json<Value>) {
@@ -2049,6 +2067,26 @@ async fn runner_plan(State(state): State<Shared>, Json(params): Json<Value>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_bundle_resolves_repo_root_beside_the_binary() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("dashboard/dist")).unwrap();
+        std::fs::create_dir_all(temp.path().join("records")).unwrap();
+        std::fs::write(
+            temp.path().join("dashboard/dist/index.html"),
+            "<!doctype html>",
+        )
+        .unwrap();
+        std::fs::write(temp.path().join("PROVENANCE.json"), "{}\n").unwrap();
+        let executable = temp.path().join("membench-server");
+
+        assert_eq!(resolve_repo_root(None, Some(&executable)), temp.path());
+        assert_eq!(
+            resolve_repo_root(Some(PathBuf::from("/explicit")), Some(&executable)),
+            PathBuf::from("/explicit")
+        );
+    }
 
     #[test]
     fn question_debug_path_accepts_run_local_debug_bundle() {

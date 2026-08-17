@@ -30,8 +30,12 @@ Each saved record should contain the normalized run files:
 - `benchmark-report.json`
 - `artifacts/`
 
-Native records may also include `raw/`, `vaults/`, `workflow/`, and `provider-queue/`. Imported
-records can be artifact-only; their `artifact_manifest` must make missing native state explicit.
+Public tracked records must be portable: normalized metadata plus `artifacts/` only. Do not commit
+`raw/`, `vaults/`, `workflow/`, `provider-queue/`, SQLite state, symlinks, or local debug bundles.
+If native state is intentionally retained, keep it in an access-controlled external archive and
+describe it through the external-artifact contract; do not put it in this source repository or a
+public product bundle. Imported records can be artifact-only; their `artifact_manifest` must make
+missing native state explicit.
 
 Use `--force` only when intentionally replacing a tracked record with a corrected version.
 
@@ -41,6 +45,6 @@ For dashboard-safe timing evidence, prefer meta records:
 scripts/save-run-meta-record.sh runs/{system}/{benchmark}/{limit}/{run_name}
 ```
 
-Meta records retain trace/timing artifacts and queue state, but omit vaults, raw outputs, raw
-provider request payloads, and question-level artifacts. They are intended to populate the
-dashboard without carrying source data.
+Meta records retain normalized trace/timing artifacts, but omit queue databases, vaults, raw
+outputs, raw provider request payloads, and question-level artifacts. They are intended to populate
+the dashboard without carrying source data.

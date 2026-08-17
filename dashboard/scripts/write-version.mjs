@@ -25,11 +25,18 @@ function gitSha() {
 const html = readFileSync(resolve(dist, "index.html"), "utf8");
 const match = html.match(/index-([A-Za-z0-9_-]+)\.js/);
 const bundle = match ? match[1] : "unknown";
+const sourceDateEpoch = process.env.SOURCE_DATE_EPOCH;
+if (sourceDateEpoch && !/^\d+$/.test(sourceDateEpoch)) {
+  throw new Error("SOURCE_DATE_EPOCH must be an integer number of seconds");
+}
+const built = sourceDateEpoch
+  ? new Date(Number.parseInt(sourceDateEpoch, 10) * 1000).toISOString()
+  : new Date().toISOString();
 
 const payload = {
   bundle,
   git: gitSha(),
-  built: new Date().toISOString(),
+  built,
 };
 
 writeFileSync(resolve(dist, "version.json"), JSON.stringify(payload, null, 2) + "\n");

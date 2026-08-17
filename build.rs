@@ -1,16 +1,4 @@
-use std::path::{Path, PathBuf};
-
 fn main() {
-    // The adapter links zvec's C API dynamically. zvec-sys emits an rpath from
-    // its own build script, but a build script's link args do not propagate to
-    // a downstream binary, so `membench` itself must carry the rpath — without
-    // it the CLI links fine and then dies at startup with a dyld error.
-    println!("cargo:rerun-if-env-changed=ZVEC_LIB_DIR");
-    if let Some(dir) = zvec_lib_dir() {
-        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
-        println!("cargo:rustc-link-arg-bins=-Wl,-rpath,{}", dir.display());
-    }
-
     // Bake the current git commit into the binary so the server can report the
     // exact code it was built from (refreshed whenever HEAD changes).
     println!("cargo:rerun-if-changed=.git/HEAD");
@@ -25,72 +13,6 @@ fn main() {
     println!("cargo:rustc-env=GIT_SHA={sha}");
 
     compile_contract_protos();
-}
-
-/// Locate the directory holding zvec's shared library, mirroring zvec-sys's own
-/// resolution order:
-///
-/// 1. `ZVEC_LIB_DIR` — the documented override.
-/// 2. A sibling `symbiotic-memory` checkout, for co-development.
-/// 3. The vendored copy inside the *pinned* cargo git checkout, which is what a
-///    clean clone actually builds against.
-///
-/// Returns `None` when the library is nowhere to be found — a plain (non-adapter)
-/// build does not link it, so that is not an error.
-fn zvec_lib_dir() -> Option<PathBuf> {
-    let vendored = |root: &Path| root.join("vendor/zvec-rust/vendor/lib");
-
-    if let Ok(dir) = std::env::var("ZVEC_LIB_DIR") {
-        let dir = PathBuf::from(dir);
-        if has_zvec_lib(&dir) {
-            return Some(dir);
-        }
-    }
-
-    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir"));
-    if let Some(parent) = manifest_dir.parent() {
-        let sibling = vendored(&parent.join("symbiotic-memory"));
-        println!("cargo:rerun-if-changed={}", sibling.display());
-        if has_zvec_lib(&sibling) {
-            return Some(sibling);
-        }
-    }
-
-    // ~/.cargo/git/checkouts/symbiotic-memory-<hash>/<short-rev>/vendor/...
-    let cargo_home = std::env::var("CARGO_HOME")
-        .map(PathBuf::from)
-        .ok()
-        .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .map(|home| PathBuf::from(home).join(".cargo"))
-        })?;
-    let checkouts = std::fs::read_dir(cargo_home.join("git/checkouts")).ok()?;
-    for repo in checkouts.flatten() {
-        if !repo
-            .file_name()
-            .to_string_lossy()
-            .starts_with("symbiotic-memory-")
-        {
-            continue;
-        }
-        let Ok(revisions) = std::fs::read_dir(repo.path()) else {
-            continue;
-        };
-        for revision in revisions.flatten() {
-            let candidate = vendored(&revision.path());
-            if has_zvec_lib(&candidate) {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
-
-fn has_zvec_lib(dir: &Path) -> bool {
-    ["libzvec_c_api.dylib", "libzvec_c_api.so"]
-        .iter()
-        .any(|name| dir.join(name).is_file())
 }
 
 /// Compiles the bench-owned contract schemas (proto/CONTRACTS.md) into

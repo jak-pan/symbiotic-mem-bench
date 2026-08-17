@@ -59,16 +59,16 @@ intentionally testing a different environment.
 ## Dependency Sources
 
 The Symbiotic Memory adapter dependencies (`symbiotic-memory`, `symbiotic-memory-config`,
-`symbiotic-core`, `symbiotic-queue`) are pinned public git revisions in `Cargo.toml`, so the core
-crate and the `server` feature build from a clean clone with no sibling checkouts.
+`symbiotic-core`, `symbiotic-queue`) are pinned to exact Git revisions in `Cargo.toml`. The neutral
+core and `server` feature do not activate the adapter dependencies and build from a clean clone.
+The two Symbiotic Memory crates currently live in the private
+`symbiotic-sh/symbiotic-memory` repository, so an adapter build needs read access to that repository.
 
-The `symbiotic-memory-adapter` feature additionally requires APIs that are not yet published on
-the public kit branches (the YAML `providers:` role bindings and `queue.resolve_provider_queue`).
-Until those land upstream, adapter builds must override the pins to sibling checkouts in a
-gitignored `.cargo/config.toml` at this repository root:
+The pinned APIs are complete and build directly without a sibling override. For intentional
+co-development only, a gitignored `.cargo/config.toml` can point those pins at sibling checkouts:
 
 ```toml
-[patch."ssh://git@github.com/jak-pan/symbiotic-memory"]
+[patch."ssh://git@github.com/symbiotic-sh/symbiotic-memory"]
 symbiotic-memory = { path = "../symbiotic-memory" }
 symbiotic-memory-config = { path = "../symbiotic-memory/config" }
 
@@ -77,8 +77,10 @@ symbiotic-core = { path = "../symbiotic-foundation/crates/symbiotic-core" }
 symbiotic-queue = { path = "../symbiotic-foundation/crates/symbiotic-queue" }
 ```
 
-Without that override, `cargo build --features symbiotic-memory-adapter` fails against the pinned
-public revisions. This is a known external blocker, tracked in `docs/oss-release-handoff.md`.
+Do not use the override as release evidence. The private adapter gate must build the exact locked
+Git revisions. Public consumers can build and install the default/server-backed product without
+private access, but cannot enable this opt-in adapter until Symbiotic Memory is public or otherwise
+distributed. This boundary is tracked in `docs/oss-release-handoff.md`.
 
 ## Required Keys
 

@@ -13,12 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: authenticate private git dependencies
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
-      - name: rewrite github https to ssh
-        run: git config --global url."git@github.com:".insteadOf "https://github.com/"
       - uses: dtolnay/rust-toolchain@1.93.0
         with:
           components: rustfmt, clippy
@@ -31,13 +25,6 @@ jobs:
         run: cargo test
       - name: test (server)
         run: cargo test --features server
-      # The v2 scorer/preflight/artifact unit tests live behind the adapter feature
-      # (`src/benchmark.rs` and the `membench` bin only compile with it), so they must
-      # run here in the mandatory job, not only in the key-gated `adapter-build` job.
-      - name: test (adapter lib/bin + v2 contract)
-        env:
-          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-        run: cargo test --locked --features symbiotic-memory-adapter --lib --bin membench --test benchmark_v2
       - name: production build (server)
         run: cargo build --release --features server
 
@@ -62,23 +49,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.93.0
       - uses: EmbarkStudios/cargo-deny-action@v2
-        env:
-          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
         with:
           command: check advisories licenses sources
-          ssh-key: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
-          ssh-known-hosts: github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
 
   leaderboard-contract:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: authenticate private git dependencies
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
-      - name: rewrite github https to ssh
-        run: git config --global url."git@github.com:".insteadOf "https://github.com/"
       - uses: dtolnay/rust-toolchain@1.93.0
       - uses: Swatinem/rust-cache@v2
       - name: canary export matches committed contract
@@ -99,8 +76,19 @@ jobs:
       - name: git dependencies are pinned and locked
         run: ./scripts/check-adapter-pins.sh
 
-  # Credentialed half: does the documented `membench` CLI actually build
-  # against those pins? The adapter depends on a private repository, so this
+  release-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: v2 release versions and dependency boundary
+        run: ./scripts/check-release-version.sh v2.0.0
+      - name: public source and record hygiene
+        run: ./scripts/check-publication-hygiene.sh
+      - name: release packager is valid Python
+        run: python3 -m py_compile scripts/package-release.py
+
+  # Credentialed half: does the opt-in native `membench` CLI actually build
+  # against those pins? Its isolated package depends on a private repository, so this
   # job runs only where a read-only deploy key is configured. Until that repository is
   # public, `scripts/check-adapter-build.sh` is a mandatory manual release gate
   # (RELEASING.md) rather than an enforced CI gate.
@@ -138,5 +126,3 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: adapter CLI builds against the pinned revisions
         run: ./scripts/check-adapter-build.sh
-      - name: LongMemEval-V2 text projection contract
-        run: cargo test --features symbiotic-memory-adapter --test benchmark_v2

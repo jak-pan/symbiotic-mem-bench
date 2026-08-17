@@ -5,27 +5,24 @@ external action; the code-side work is done and gated in CI.
 
 ## Blockers
 
-1. **`jak-pan/symbiotic-memory` is private** (verified anonymously 2026-07-24: GitHub API
-   404 / `ls-remote` denied; `symbiotic-sh/symbiotic-foundation` is public). Measured
-   impact: none for default + `server` builds — an anonymous, clean-`CARGO_HOME`
-   `cargo check --features server` succeeds because Cargo does not fetch inactive optional
-   git deps. But `--features symbiotic-memory-adapter` cannot build without access to that
-   repo. Options: make it public, vendor the needed crates, or keep the adapter as an
-   access-gated feature and say so in the README.
-   Consequence for CI: the `adapter-build` job runs only where a read-only
-   `SYMBIOTIC_MEMORY_DEPLOY_KEY` secret is configured, so on a public fork the
-   documented `membench` CLI is **not**
-   verified by CI. `scripts/check-adapter-build.sh` is the mandatory manual release gate
-   until this is resolved (`RELEASING.md`).
+1. **`symbiotic-sh/symbiotic-memory` is private** (verified through repository metadata on
+   2026-08-18 after its transfer from `jak-pan`). Measured impact: none for default + `server`
+   builds because the public root manifest contains no private Git dependencies. The public v2
+   product bundle therefore contains the server, v2 dashboard, leaderboard exporter, and portable
+   records, but deliberately excludes the private adapter binary. The isolated
+   `adapters/symbiotic-memory/Cargo.toml` package requires explicit repository access and is not
+   part of the public install contract.
+   Do not vendor private source or credentials into Membench. The adapter can enter the public
+   release only after its complete pinned dependency and zvec runtime are publicly reproducible.
 2. ~~**Adapter APIs not yet published upstream.**~~ **Resolved 2026-07-24.** The kit APIs the
    adapter needs *are* on the pinned revision — they were renamed: what membench called
    `symbiotic_memory::MemoryConfig` (YAML `providers:` role bindings,
    `queue.resolve_provider_queue`) is `symbiotic_memory::EngineConfig` upstream, while
    `MemoryConfig` now names the newer layered TOML config in `symbiotic-memory-config`.
-   `--features symbiotic-memory-adapter` builds and runs against the exact pins with no
+   the isolated adapter package builds and runs against the exact pins with no
    sibling checkout and no `.cargo/config.toml` override. The override block in
    `docs/environment.md` remains available for co-development, not as a requirement.
-3. ~~**Mandatory opposite-model release approval.**~~ **Resolved 2026-07-24.** K3 independently
+3. ~~**Mandatory opposite-model v0.1.0 release approval.**~~ **Resolved 2026-07-24.** K3 independently
    rebuilt the adapter, reproduced the traversal refusal, recounted 437/500, matched the three
    review hashes, verified the public-hygiene and leaderboard snapshot gates, and ran all 142
    tests before returning `K3_APPROVE`.
@@ -38,12 +35,24 @@ external action; the code-side work is done and gated in CI.
   whether it belongs in a release asset, object-storage bucket, or Hugging Face dataset. This
   is not a blocker for the ranked public record; see
   `docs/canonical-record-storage-task.md`.
-- **Landing deploy target.** The dashboard `dist/` is static-host ready with the snapshot
-  fallback; choose host and domain, deploy only from a tagged commit.
+- **v2 production promotion.** A server-backed canary exists, but production promotion must use the
+  exact tagged product bundle and verify both the API-backed evidence views and the static
+  leaderboard fallback. A static-only host is not the complete v2 product.
 - **Repository naming.** The crate is `membench`; the repo URL is still
   `symbiotic-mem-bench`. Rename or keep before announcing.
 - **NOTICE/attribution.** LICENSE is Apache-2.0; decide whether a NOTICE file naming the
   copyright holder is wanted.
+
+## v2.0.0 release boundary
+
+- The crate and dashboard versions are `2.0.0`; the Cargo package is intentionally
+  `publish = false`. `cargo package`/crates.io are not the distribution path while adapter crates
+  remain Git-only.
+- GitHub source archives are the source distribution. Release automation produces deterministic
+  platform bundles for the self-contained, read-only server-backed product and checksum/provenance
+  files. The release starts as a draft and is promoted only after unpack-and-serve smoke checks.
+- The private adapter is an additional credentialed source-build gate for maintainers. Its success
+  proves integration compatibility but does not make it a public release asset.
 
 ## Already done (for orientation)
 

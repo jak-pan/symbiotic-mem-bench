@@ -1,50 +1,73 @@
 # Releasing
 
-## Versioning
+## Versioning and distribution
 
-- The crate (`Cargo.toml`) and the dashboard (`dashboard/package.json`) share the release
-  version. Pre-1.0, minor bumps may break contracts; patch bumps are fixes only.
-- JSON contracts are versioned independently by schema id (`membench.report.v1`,
-  `membench.leaderboard.v1`, …). Breaking a contract means a new schema id, not a silent
-  field change — the CI canary (`canary/`) enforces this for the leaderboard export.
+- The Rust package (`Cargo.toml`) and dashboard (`dashboard/package.json`) share one release
+  version. JSON contracts keep independent schema ids (`membench.report.v1`,
+  `membench.leaderboard.v1`, and so on).
+- Membench is distributed through GitHub source archives and attached product bundles. The Cargo
+  package is deliberately `publish = false`. The Symbiotic Memory adapter lives in a separate,
+  non-workspace package because its private Git-only crates cannot be a hidden public dependency.
+- Public product bundles are self-contained and read-only: `membench-server`,
+  `membench-leaderboard`, the built v2 dashboard, and portable tracked records. They never contain
+  the credentialed adapter binary, private source, provider credentials, local runs, or native
+  state.
 
-## Release checklist
+## Pre-tag checklist
 
-1. Gates green (same set as CI):
-   - `cargo fmt -- --check`, `cargo clippy --all-targets --features server -- -D warnings`
-   - `cargo test` and `cargo test --features server`
-   - `cargo build --release --features server`
+Run from an exact clean checkout of the intended release commit:
+
+1. Verify version and release contract:
+   `./scripts/check-release-version.sh vX.Y.Z`.
+2. Run the same source gates as CI:
+   - `cargo fmt -- --check`
+   - `cargo clippy --locked --all-targets --features server -- -D warnings`
+   - `cargo test --locked` and `cargo test --locked --features server`
+   - `cargo build --locked --release --features server`
    - `cargo deny check advisories licenses sources`
    - `cd dashboard && npm ci && npm run build`
-   - `./scripts/check-adapter-pins.sh` — git deps pinned to exact revs, resolved by `Cargo.lock`
-   - canary diff: deterministic export over `canary/records` matches
-     `canary/expected-leaderboard.json`
-   - `./scripts/check-leaderboard-snapshot.sh` — the bundled snapshot still matches `records/`
-2. **Adapter CLI gate, manual until the dependency is public:**
-   `./scripts/check-adapter-build.sh` on a machine with access to
-   `jak-pan/symbiotic-memory`. This is the only check that the documented `membench` CLI
-   builds *and runs* against the pinned revisions; it also runs the
-   `benchmark_v2` projection/evaluator contract test. The mandatory `rust` CI job runs the
-   adapter-enabled lib/bin unit suites plus the same contract test, but both it and the
-   conditional `adapter-build` job need the repository's read-only
-   `SYMBIOTIC_MEMORY_DEPLOY_KEY` secret, so forks and keyless checkouts leave the path
-   unverified in CI. Do not tag a release without running the script somewhere.
-3. No stray state: `git status --short --ignored` shows only expected ignored paths
-   (`runs/`, external target dir, local env files).
-4. Bump versions in `Cargo.toml` + `dashboard/package.json`, update `Cargo.lock`, commit.
-5. Tag `vX.Y.Z` and create a GitHub release with notes (contract changes called out
-   explicitly).
-6. Deploying the leaderboard landing (optional): publish `dashboard/dist/` to a static host.
-   Build from the tagged commit, and verify the deployed document by recomputing
-   `source.records_digest` from that checkout — that hash, not the exporter git sha, is what
-   proves the published board describes the records in the tag.
+   - `./scripts/check-adapter-pins.sh`
+   - deterministic canary export matches `canary/expected-leaderboard.json`
+   - `./scripts/check-leaderboard-snapshot.sh`
+   - tracked-tree secret scan and release-bundle forbidden-path scan
+3. Maintainers with read access must run `./scripts/check-adapter-build.sh`. This proves the private
+   integration remains compatible with the exact pins; it does **not** put that adapter in the
+   public asset.
+4. Build a local platform bundle with `scripts/package-release.py`, build it a second time with the
+   same inputs/epoch, and require identical SHA-256 hashes. Extract it away from the checkout, start
+   `./membench-server`, and verify `/api/health`, `/api/runs`, `/api/leaderboard`, the v2 shell,
+   Questions, and Traces.
+5. Confirm the release notes identify product UI v2 separately from the experimental,
+   non-promotable `longmemeval-v2-text` score lane.
+
+Do not create `vX.Y.Z` until every item above is green on the exact commit.
+
+## Tag automation
+
+Push an annotated `vX.Y.Z` tag only after the pre-tag checklist. `.github/workflows/release.yml`
+then fails closed unless the tag, Cargo version, dashboard version, dashboard lockfile version, and
+Cargo lockfile package version match exactly. It reruns the release gates, builds the supported
+platform bundles, smoke-tests each extracted archive, publishes checksums and provenance, and
+creates a **draft** GitHub release. It never publishes the release automatically.
+
+Before promoting that draft:
+
+1. Verify every asset against `SHA256SUMS`.
+2. Confirm each `PROVENANCE.json` names the tag commit, target, records digest, UI tree digest, and
+   binary hashes.
+3. Repeat one unpack-and-serve smoke from the downloaded asset, not a workspace build.
+4. Deploy any production/canary service from that exact downloaded asset and verify the same commit,
+   binary hash, UI bundle hash, and records digest.
+5. Publish the release only after the server-backed canary passes. A static-only dashboard is a
+   leaderboard fallback, not the complete v2 product.
 
 ## What a release must never do
 
-- Publish ranked scores that do not come from tracked records passing the review gate in
-  `docs/longmemeval-methodology.md`. The gate is enforced in code, but a *new* gate condition
-  that is only documented and not implemented must not be described as enforced.
-- Publish a leaderboard built from `canary/records`. Those are synthetic fixtures; the export
-  flags them (`source.contains_fixtures`, per-row `fixture: true`) and the landing page warns,
-  but the fixtures exist to test the contract, never to populate a board.
-- Include `runs/`, secrets, raw prompts, or provider payloads in any artifact.
+- Publish ranked scores not derived from tracked records passing the implemented review gate in
+  `docs/longmemeval-methodology.md`.
+- Populate a public board from `canary/records`; those are synthetic contract fixtures.
+- Include `runs/`, `.debug-session/`, secrets, raw prompts, provider payloads, `raw/`, `vaults/`,
+  `workflow/`, `provider-queue/`, SQLite state, or private adapter source in a product bundle.
+- Claim the `longmemeval-v2-text` projection is an official LongMemEval-V2 score.
+- Publish a tag or release from a dirty checkout, a commit other than the reviewed head, or an asset
+  that has not passed the extracted-bundle smoke.

@@ -8,7 +8,8 @@ description: Use when Codex needs to run, inspect, import, validate, compare, de
 ## Core Workflow
 
 Work from the `symbiotic-mem-bench` repository root when possible. If called from a sibling repo,
-use `--manifest-path ../symbiotic-mem-bench/Cargo.toml`.
+use `--manifest-path ../symbiotic-mem-bench/adapters/symbiotic-memory/Cargo.toml` for the native
+adapter CLI. The public root package is the credential-free core/server/leaderboard product.
 
 Use `membench` for benchmark orchestration and inspection. Do not recreate old Python scoring
 scripts, manually enter scores, or infer missing traces. Missing artifacts must stay missing and be
@@ -26,13 +27,13 @@ declared through `artifact_manifest`.
 List known scratch runs:
 
 ```bash
-cargo run --bin membench -- explore
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- explore
 ```
 
 Inspect one run:
 
 ```bash
-cargo run --bin membench -- explore \
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- explore \
   --run-root runs/{system}/{benchmark}/{limit}/{run_name}
 ```
 
@@ -55,7 +56,7 @@ or regressed.
 When source runs exist, derive trial artifacts through the runner instead of hand-writing the ledger:
 
 ```bash
-cargo run --bin membench -- trials derive \
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- trials derive \
   --trial-run-root runs/{system}/{benchmark}/{limit}/{candidate_run} \
   --comparison-run-root runs/{system}/{benchmark}/{limit}/{previous_run} \
   --original-baseline-run-root runs/{system}/{benchmark}/{limit}/{baseline_run} \
@@ -99,8 +100,9 @@ alternate environment.
 - Tracked records live under `records/{system}/{benchmark}/{limit}/{run_name}/`.
 - Standard LongMemEval runs may omit `--dataset`; `membench` auto-downloads the cleaned S dataset to
   ignored local storage under `runs/inputs/longmemeval-cleaned/` when missing.
-- `membench` does not auto-download `symbiotic-memory`; the current adapter uses the sibling local
-  crate dependency `../symbiotic-memory`.
+- `membench` does not auto-download or vendor `symbiotic-memory`; the adapter resolves exact locked
+  Git revisions from the private `symbiotic-sh/symbiotic-memory` repository and therefore requires
+  explicit repository access. A sibling override is only for deliberate co-development.
 - LongMemEval small runs default to `--sample stratified`, not first-N row order. Use `--sample first`
   only for exact row-order reproductions.
 - Native runs re-ingest by default; state reuse must be explicit with `--resume` or `--answer-only`.
@@ -219,7 +221,7 @@ Before calling a run or repo publish-ready:
 CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo fmt -- --check
 CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo test
 CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo clippy --all-targets -- -D warnings
-cargo run --bin membench -- explore
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- explore
 git status --short --ignored
 ```
 

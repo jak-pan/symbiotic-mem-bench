@@ -64,7 +64,7 @@
           "latency_ms_p50": null,
           "latency_ms_p95": null,
           "limit": 500,
-          "modified_ms": 1784945031578,
+          "modified_ms": 1786993729811,
           "native_state_available": false,
           "oracle_gold": false,
           "origin": "records",
@@ -126,14 +126,14 @@
       "strictly_comparable": true
     }
   ],
-  "generated_at": "2026-07-25T03:17:26Z",
+  "generated_at": "2026-08-17T19:28:53Z",
   "methodology": "docs/longmemeval-methodology.md",
   "schema": "membench.leaderboard.v1",
   "source": {
     "contains_fixtures": false,
-    "git_sha": "f453e5a",
+    "git_sha": "61eb0bc",
     "ranked_count": 1,
-    "records_digest": "4c42a71f61f6b2e126800bd581754b3ceed70ef06dd0ce98b24aa008477f5d74",
+    "records_digest": "d125fa7a70804bf16c46851695003a9447acc4ccf0160da8093f54803d0899a7",
     "records_root": "records",
     "run_count": 12,
     "unranked_count": 11

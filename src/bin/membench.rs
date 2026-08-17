@@ -2889,7 +2889,7 @@ fn vault_store_dir_opt() -> Option<PathBuf> {
 fn require_vault_store_dir() -> anyhow::Result<PathBuf> {
     vault_store_dir_opt().ok_or_else(|| {
         anyhow::anyhow!(
-            "{MEMBENCH_VAULT_STORE_ENV} is not set; export it to an absolute store directory, e.g. {MEMBENCH_VAULT_STORE_ENV}=/Users/me/membench-vaults"
+            "{MEMBENCH_VAULT_STORE_ENV} is not set; export it to an absolute store directory, e.g. {MEMBENCH_VAULT_STORE_ENV}=/absolute/path/to/membench-vaults"
         )
     })
 }

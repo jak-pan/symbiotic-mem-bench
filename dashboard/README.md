@@ -67,7 +67,7 @@ cd dashboard && npm run build && python3 -m http.server 4174 -d dist
 
 ```text
 --port <PORT>          default 8787
---repo-root <PATH>     run ids are made relative to this (default: crate root)
+--repo-root <PATH>     run ids are made relative to this (default: extracted bundle root, then crate root)
 --root <PATH>          registry root(s) to scan (default: <repo>/runs and /records)
 --dist <PATH>          built SPA directory (default: <repo>/dashboard/dist)
 ```

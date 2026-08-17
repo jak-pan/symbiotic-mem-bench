@@ -87,7 +87,7 @@ The runner intentionally uses `./target/release/membench` by default and fails
 if that binary is missing. Build deliberately before paid runs:
 
 ```bash
-cargo build --release --features symbiotic-memory-adapter --bin membench
+CARGO_TARGET_DIR=target cargo build --release --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench
 ```
 
 ## Evidence Runs
