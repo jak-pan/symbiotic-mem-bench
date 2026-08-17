@@ -27,6 +27,8 @@ Run from an exact clean checkout of the intended release commit:
    - `cargo deny check advisories licenses sources`
    - `cd dashboard && npm ci && npm run build`
    - `./scripts/check-adapter-pins.sh`
+   - `python3 scripts/generate-third-party-notices.py --check`
+   - `python3 -m unittest scripts.tests.test_package_release`
    - deterministic canary export matches `canary/expected-leaderboard.json`
    - `./scripts/check-leaderboard-snapshot.sh`
    - tracked-tree secret scan and release-bundle forbidden-path scan
@@ -68,6 +70,8 @@ Before promoting that draft:
 - Populate a public board from `canary/records`; those are synthetic contract fixtures.
 - Include `runs/`, `.debug-session/`, secrets, raw prompts, provider payloads, `raw/`, `vaults/`,
   `workflow/`, `provider-queue/`, SQLite state, or private adapter source in a product bundle.
+- Omit `THIRD_PARTY_NOTICES.md`, or ship a notice inventory that does not match the locked Cargo and
+  dashboard graphs or the redistributed LongMemEval-derived artifacts.
 - Claim the `longmemeval-v2-text` projection is an official LongMemEval-V2 score.
 - Publish a tag or release from a dirty checkout, a commit other than the reviewed head, or an asset
   that has not passed the extracted-bundle smoke.

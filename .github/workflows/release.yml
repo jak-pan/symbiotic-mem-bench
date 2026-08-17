@@ -6,7 +6,7 @@ on:
       - "v*.*.*"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -18,21 +18,17 @@ env:
 jobs:
   preflight:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - name: authenticate private adapter dependency
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
-      - name: use SSH for GitHub dependencies
-        run: git config --global url."git@github.com:".insteadOf "https://github.com/"
-      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: dtolnay/rust-toolchain@d8dfd7155fea72af4ad34a8fe97364d210e2d020 # 1.93.0
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -52,8 +48,6 @@ jobs:
         run: cargo test --locked
       - name: server tests
         run: cargo test --locked --features server
-      - name: private adapter compatibility gate
-        run: ./scripts/check-adapter-build.sh
       - name: production server build
         run: cargo build --locked --release --features server --bin membench-server --bin membench-leaderboard
       - name: dashboard build
@@ -61,6 +55,10 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
         run: npm ci && npm run build
+      - name: third-party notice inventory is current
+        run: python3 scripts/generate-third-party-notices.py --check
+      - name: release packager rejects special filesystem entries
+        run: python3 -m unittest scripts.tests.test_package_release
       - name: deterministic leaderboard canary
         shell: bash
         run: |
@@ -68,12 +66,37 @@ jobs:
           diff <(python3 -m json.tool /tmp/canary-out.json) <(python3 -m json.tool canary/expected-leaderboard.json)
       - name: public snapshot matches portable records
         run: ./scripts/check-leaderboard-snapshot.sh
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
           command: check advisories licenses sources
 
+  private-adapter:
+    runs-on: macos-14
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@d8dfd7155fea72af4ad34a8fe97364d210e2d020 # 1.93.0
+        with:
+          components: rustfmt, clippy
+      - name: private adapter exact-pin compatibility gate
+        env:
+          SYMBIOTIC_MEMORY_DEPLOY_KEY: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
+        run: |
+          set -eu
+          test -n "$SYMBIOTIC_MEMORY_DEPLOY_KEY" || { echo "SYMBIOTIC_MEMORY_DEPLOY_KEY is required" >&2; exit 1; }
+          key="$RUNNER_TEMP/membench-symbiotic-memory-key"
+          known_hosts="$RUNNER_TEMP/membench-github-known-hosts"
+          trap 'rm -f "$key" "$known_hosts"' EXIT
+          umask 077
+          printf '%s\n' "$SYMBIOTIC_MEMORY_DEPLOY_KEY" > "$key"
+          printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > "$known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o UserKnownHostsFile=$known_hosts -o StrictHostKeyChecking=yes"
+          export CARGO_NET_GIT_FETCH_WITH_CLI=true
+          ./scripts/check-adapter-build.sh
+
   product-bundle:
-    needs: preflight
+    needs: [preflight, private-adapter]
     strategy:
       fail-fast: false
       matrix:
@@ -83,13 +106,15 @@ jobs:
           - runner: macos-14
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@1.93.0
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: dtolnay/rust-toolchain@d8dfd7155fea72af4ad34a8fe97364d210e2d020 # 1.93.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -121,8 +146,9 @@ jobs:
           "$bundle/membench-server" --port 18787 > /tmp/membench-release-server.log 2>&1 &
           server_pid=$!
           trap 'kill "$server_pid" 2>/dev/null || true' EXIT
-          RELEASE_VERSION="${GITHUB_REF_NAME#v}" python3 - <<'PY'
+          BUNDLE_ROOT="$bundle" RELEASE_VERSION="${GITHUB_REF_NAME#v}" python3 - <<'PY'
           import json, os, time, urllib.parse, urllib.request
+          bundle = os.environ["BUNDLE_ROOT"]
           base = "http://127.0.0.1:18787"
           for _ in range(60):
               try:
@@ -145,8 +171,11 @@ jobs:
           assert traces, "release bundle exposed no trace response"
           html = urllib.request.urlopen(base + "/").read().decode()
           assert "<!doctype html>" in html.lower()
+          notices = open(bundle + "/THIRD_PARTY_NOTICES.md").read()
+          assert "Copyright (c) 2024 Di Wu" in notices
+          assert "LongMemEval dataset attribution" in notices
           PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-${{ matrix.target }}
           path: release-a/*
@@ -155,8 +184,10 @@ jobs:
   draft-release:
     needs: product-bundle
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: release-*
           path: release-assets

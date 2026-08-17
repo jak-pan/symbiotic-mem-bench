@@ -18,7 +18,10 @@ cargo run --bin membench-leaderboard -- export --records-root records
 The native `membench` CLI uses the isolated
 `adapters/symbiotic-memory/Cargo.toml` package, which builds against an exact revision of the private
 `symbiotic-sh/symbiotic-memory` repository. A clean clone without access can build and use the
-neutral core, leaderboard exporter, server, and dashboard, but not that adapter. With read access:
+neutral core, leaderboard exporter, server, and dashboard, but not that adapter. The exact pinned
+adapter revision currently ships a verified macOS arm64 zvec dylib only, so its release gate runs on
+macOS 14 arm64; the public server-backed product is still packaged for Linux x86-64 and macOS arm64.
+With repository read access:
 
 ```bash
 cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- explore
@@ -109,6 +112,10 @@ Membench is distributed from GitHub, not crates.io. The crate manifest is delibe
 dependencies and is not part of the public package graph. Tagged releases attach server-backed
 product bundles containing the Rust dashboard server, leaderboard exporter, built v2 SPA, and
 portable tracked records; GitHub's source archives remain the source distribution.
+
+Every bundle includes `THIRD_PARTY_NOTICES.md`, generated from the locked supported-target Cargo
+graphs and dashboard lockfile. It carries the redistributed dependency notices and the complete
+upstream LongMemEval MIT copyright and permission notice.
 
 These local `--smoke` adapter runs map internally to deterministic no-network providers and no
 scorer. They are smoke tests, not benchmark records. By default they run under `runs/.tmp/` and

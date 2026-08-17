@@ -52,7 +52,11 @@ def git(*args: str, cwd: pathlib.Path) -> str:
 
 
 def copy_file(source: pathlib.Path, destination: pathlib.Path, executable: bool = False) -> None:
-    if source.is_symlink() or not source.is_file():
+    try:
+        mode = source.lstat().st_mode
+    except OSError as error:
+        raise SystemExit(f"cannot inspect release input {source}: {error}") from error
+    if not stat.S_ISREG(mode):
         raise SystemExit(f"refusing non-regular release input: {source}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, destination)
@@ -60,15 +64,25 @@ def copy_file(source: pathlib.Path, destination: pathlib.Path, executable: bool 
 
 
 def copy_tree(source: pathlib.Path, destination: pathlib.Path) -> None:
+    try:
+        root_mode = source.lstat().st_mode
+    except OSError as error:
+        raise SystemExit(f"cannot inspect release input {source}: {error}") from error
+    if not stat.S_ISDIR(root_mode):
+        raise SystemExit(f"refusing non-directory release tree: {source}")
     for path in sorted(source.rglob("*")):
-        if path.is_symlink():
-            raise SystemExit(f"refusing symlink in release input: {path}")
+        try:
+            mode = path.lstat().st_mode
+        except OSError as error:
+            raise SystemExit(f"cannot inspect release input {path}: {error}") from error
         relative = path.relative_to(source)
         target = destination / relative
-        if path.is_dir():
+        if stat.S_ISDIR(mode):
             target.mkdir(parents=True, exist_ok=True)
-        elif path.is_file():
+        elif stat.S_ISREG(mode):
             copy_file(path, target)
+        else:
+            raise SystemExit(f"refusing special release input: {path}")
 
 
 def copy_portable_records(repo: pathlib.Path, destination: pathlib.Path) -> int:
@@ -92,6 +106,9 @@ def copy_portable_records(repo: pathlib.Path, destination: pathlib.Path) -> int:
 
 
 def add_archive_member(archive: tarfile.TarFile, path: pathlib.Path, arcname: str, epoch: int) -> None:
+    mode = path.lstat().st_mode
+    if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
+        raise SystemExit(f"refusing special staged archive member: {path}")
     info = archive.gettarinfo(str(path), arcname=arcname)
     info.uid = 0
     info.gid = 0
@@ -173,7 +190,13 @@ def main() -> None:
 
         copy_tree(dashboard_dist, product / "dashboard/dist")
         record_count = copy_portable_records(repo, product / "records")
-        for name in ("README.md", "RELEASING.md", "SECURITY.md", "LICENSE"):
+        for name in (
+            "README.md",
+            "RELEASING.md",
+            "SECURITY.md",
+            "LICENSE",
+            "THIRD_PARTY_NOTICES.md",
+        ):
             copy_file(repo / name, product / name)
 
         release_readme = f"""# Membench v{args.version} server-backed product bundle
@@ -215,6 +238,7 @@ from source through `adapters/symbiotic-memory/Cargo.toml`; see the top-level RE
             "dashboard_bundle": ui_version.get("bundle", "unknown"),
             "dashboard_tree_sha256": tree_digest(product / "dashboard/dist"),
             "records_tree_sha256": tree_digest(product / "records"),
+            "third_party_notices_sha256": sha256_file(product / "THIRD_PARTY_NOTICES.md"),
             "binaries": binaries,
         }
         encoded = json.dumps(provenance, indent=2, sort_keys=True) + "\n"

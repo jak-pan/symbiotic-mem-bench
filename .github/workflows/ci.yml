@@ -5,6 +5,9 @@ on:
     branches: [master]
   pull_request:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -12,11 +15,11 @@ jobs:
   rust:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@d8dfd7155fea72af4ad34a8fe97364d210e2d020 # 1.93.0
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: fmt
         run: cargo fmt -- --check
       - name: clippy
@@ -34,8 +37,8 @@ jobs:
       run:
         working-directory: dashboard
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -46,18 +49,18 @@ jobs:
   deps:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.93.0
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@d8dfd7155fea72af4ad34a8fe97364d210e2d020 # 1.93.0
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
           command: check advisories licenses sources
 
   leaderboard-contract:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.93.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@d8dfd7155fea72af4ad34a8fe97364d210e2d020 # 1.93.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: canary export matches committed contract
         run: |
           cargo run --bin membench-leaderboard -- export --records-root canary/records --deterministic > /tmp/canary-out.json
@@ -72,20 +75,30 @@ jobs:
   adapter-pins:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: git dependencies are pinned and locked
         run: ./scripts/check-adapter-pins.sh
 
   release-contract:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@d8dfd7155fea72af4ad34a8fe97364d210e2d020 # 1.93.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
       - name: v2 release versions and dependency boundary
         run: ./scripts/check-release-version.sh v2.0.0
       - name: public source and record hygiene
         run: ./scripts/check-publication-hygiene.sh
-      - name: release packager is valid Python
-        run: python3 -m py_compile scripts/package-release.py
+      - name: install locked notice inputs
+        run: cargo fetch --locked && npm ci --prefix dashboard
+      - name: third-party notice inventory is current
+        run: python3 scripts/generate-third-party-notices.py --check
+      - name: release packager rejects special filesystem entries
+        run: python3 -m unittest scripts.tests.test_package_release
 
   # Credentialed half: does the opt-in native `membench` CLI actually build
   # against those pins? Its isolated package depends on a private repository, so this
@@ -111,18 +124,24 @@ jobs:
   adapter-build:
     needs: adapter-key
     if: needs.adapter-key.outputs.available == 'true'
-    runs-on: ubuntu-latest
+    runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
-      - name: authenticate private git dependencies
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
-      - name: rewrite github https to ssh
-        run: git config --global url."git@github.com:".insteadOf "https://github.com/"
-      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@d8dfd7155fea72af4ad34a8fe97364d210e2d020 # 1.93.0
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: adapter CLI builds against the pinned revisions
-        run: ./scripts/check-adapter-build.sh
+        env:
+          SYMBIOTIC_MEMORY_DEPLOY_KEY: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
+        run: |
+          set -eu
+          key="$RUNNER_TEMP/membench-symbiotic-memory-key"
+          known_hosts="$RUNNER_TEMP/membench-github-known-hosts"
+          trap 'rm -f "$key" "$known_hosts"' EXIT
+          umask 077
+          printf '%s\n' "$SYMBIOTIC_MEMORY_DEPLOY_KEY" > "$key"
+          printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > "$known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o UserKnownHostsFile=$known_hosts -o StrictHostKeyChecking=yes"
+          export CARGO_NET_GIT_FETCH_WITH_CLI=true
+          ./scripts/check-adapter-build.sh

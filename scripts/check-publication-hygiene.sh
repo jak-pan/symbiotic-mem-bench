@@ -18,14 +18,16 @@ tracked = [
 failures = []
 native_parts = {"raw", "vaults", "workflow", "provider-queue", ".debug-session"}
 database_suffixes = {".sqlite", ".sqlite3", ".db"}
+macos_home = b"/" + b"Users/"
+linux_home = b"/" + b"home/"
 secret_patterns = {
     "private key": re.compile(rb"-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----"),
     "GitHub token": re.compile(rb"gh[pousr]_[A-Za-z0-9]{30,}"),
     "OpenAI-style key": re.compile(rb"sk-[A-Za-z0-9_-]{20,}"),
     "Google API key": re.compile(rb"AIza[0-9A-Za-z_-]{35}"),
     "AWS access key": re.compile(rb"AKIA[0-9A-Z]{16}"),
-    "absolute macOS home path": re.compile(rb"/Users/[^/\s]+/"),
-    "absolute Linux home path": re.compile(rb"/home/[^/\s]+/"),
+    "absolute macOS home path": re.compile(re.escape(macos_home) + rb"[^/\s]+/"),
+    "absolute Linux home path": re.compile(re.escape(linux_home) + rb"[^/\s]+/"),
 }
 
 for path in tracked:

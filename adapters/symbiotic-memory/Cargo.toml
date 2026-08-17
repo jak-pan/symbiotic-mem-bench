@@ -44,3 +44,6 @@ path = "../../src/bin/membench.rs"
 [[test]]
 name = "benchmark_v2"
 path = "../../tests/benchmark_v2.rs"
+
+[build-dependencies]
+sha2 = "0.10"

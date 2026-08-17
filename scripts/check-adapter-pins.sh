@@ -20,6 +20,7 @@ import sys
 root_manifest = open("Cargo.toml").read()
 manifest = open("adapters/symbiotic-memory/Cargo.toml").read()
 lock = open("adapters/symbiotic-memory/Cargo.lock").read()
+build_script = open("adapters/symbiotic-memory/build.rs").read()
 
 # `name = { git = "URL", rev = "SHA", ... }` — one line per dependency.
 pattern = re.compile(r'^(?P<name>[A-Za-z0-9_-]+)\s*=\s*\{[^}]*git\s*=\s*"(?P<url>[^"]+)"[^}]*\}', re.M)
@@ -41,6 +42,19 @@ for match in pattern.finditer(manifest):
         failures.append(
             f"{name}: Cargo.lock does not resolve {url} to the pinned rev {rev}"
         )
+
+memory_rev = re.search(
+    r'^symbiotic-memory\s*=\s*\{[^}]*rev\s*=\s*"([0-9a-f]{40})"',
+    manifest,
+    re.M,
+)
+build_rev = re.search(
+    r'^const SYMBIOTIC_MEMORY_REV: &str = "([0-9a-f]{40})";',
+    build_script,
+    re.M,
+)
+if not memory_rev or not build_rev or memory_rev.group(1) != build_rev.group(1):
+    failures.append("adapter build.rs zvec provenance revision does not match the locked symbiotic-memory dependency")
 
 if not checked:
     failures.append("no pinned git dependencies found — did the manifest change shape?")
