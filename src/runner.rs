@@ -221,8 +221,8 @@ impl SymemRunPlan {
             args.push("--release".to_string());
         }
         args.extend([
-            "--features".to_string(),
-            "symbiotic-memory-adapter".to_string(),
+            "--manifest-path".to_string(),
+            "adapters/symbiotic-memory/Cargo.toml".to_string(),
             "--bin".to_string(),
             "membench".to_string(),
             "--".to_string(),
@@ -746,8 +746,8 @@ mod tests {
             &[
                 "run",
                 "--release",
-                "--features",
-                "symbiotic-memory-adapter",
+                "--manifest-path",
+                "adapters/symbiotic-memory/Cargo.toml",
                 "--bin",
                 "membench",
                 "--",
@@ -863,7 +863,7 @@ mod tests {
         assert!(command.args.contains(&"--score".to_string()));
         assert_eq!(
             command.to_shell(),
-            "cargo run --release --features symbiotic-memory-adapter --bin membench -- --symbiotic-memory --long-mem-eval --memory-config config/symbiotic-memory/longmemeval-raw-light.yaml --answerer --consolidate-briefs --score"
+            "cargo run --release --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- --symbiotic-memory --long-mem-eval --memory-config config/symbiotic-memory/longmemeval-raw-light.yaml --answerer --consolidate-briefs --score"
         );
     }
 

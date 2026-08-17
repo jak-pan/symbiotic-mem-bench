@@ -1,0 +1,49 @@
+[package]
+name = "membench-symbiotic-memory-adapter"
+version = "2.0.0"
+edition = "2024"
+description = "Credentialed Symbiotic Memory adapter for Membench"
+license = "Apache-2.0"
+repository = "https://github.com/jak-pan/symbiotic-mem-bench"
+publish = false
+build = "build.rs"
+
+[features]
+default = ["symbiotic-memory-adapter"]
+symbiotic-memory-adapter = []
+
+[dependencies]
+membench-core = { package = "membench", path = "../.." }
+anyhow = "1"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+futures = "0.3"
+hex = "0.4"
+regex = "1"
+reqwest = { version = "0.13.4", features = ["json"] }
+rusqlite = { version = "0.37", features = ["bundled", "chrono"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+symbiotic-core = { git = "https://github.com/symbiotic-sh/symbiotic-foundation", rev = "814060cd3c31b976234c171608196293c1fed4eb" }
+symbiotic-memory-config = { git = "ssh://git@github.com/symbiotic-sh/symbiotic-memory", rev = "c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e" }
+symbiotic-memory = { git = "ssh://git@github.com/symbiotic-sh/symbiotic-memory", rev = "c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e", default-features = false, features = ["http", "cli"] }
+symbiotic-queue = { git = "https://github.com/symbiotic-sh/symbiotic-foundation", rev = "814060cd3c31b976234c171608196293c1fed4eb" }
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
+
+[lib]
+name = "membench"
+path = "src/lib.rs"
+
+[[bin]]
+name = "membench"
+path = "../../src/bin/membench.rs"
+
+[[test]]
+name = "benchmark_v2"
+path = "../../tests/benchmark_v2.rs"
+
+[build-dependencies]
+sha2 = "0.10"

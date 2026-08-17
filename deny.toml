@@ -1,5 +1,6 @@
-# Dependency policy for membench. Audited in CI (`cargo deny check`).
-# Scope: the full release graph, including the credentialed adapter feature.
+# Dependency policy for the public Membench release graph. Audited in CI
+# (`cargo deny check`). The credentialed adapter has a separate, non-workspace
+# manifest and is not part of the public product package.
 
 [graph]
 all-features = false
@@ -16,14 +17,11 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "BSD-3-Clause",
     "BSL-1.0",
-    "CDLA-Permissive-2.0",
-    "ISC",
-    "MIT-0",
     "Unicode-3.0",
     "Zlib",
     "Unlicense",
 ]
 
 [sources]
-# The adapter feature pins public ecosystem git revisions (see Cargo.toml).
-unknown-git = "allow"
+# The public root manifest must not contain Git dependencies.
+unknown-git = "deny"

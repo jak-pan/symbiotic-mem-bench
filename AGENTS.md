@@ -6,8 +6,8 @@ agent to run, inspect, and publish results without reverse-engineering local scr
 ## Core Rules
 
 - Work from this repository root when possible.
-- Prefer `cargo run --bin membench -- ...` over ad hoc scripts, and use `cargo run --release`
-  for paid/provider-backed benchmark runs.
+- Prefer `cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- ...`
+  over ad hoc scripts, and use `cargo run --release` for paid/provider-backed benchmark runs.
 - Do not add Python scoring scripts or manual score entry paths.
 - Do not commit `runs/`, `.debug-session/`, `target/`, secrets, provider queues, or raw local
   datasets.
@@ -113,7 +113,7 @@ Run native Symbiotic Memory benchmarks through the adapter:
 
 ```bash
 CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run --release \
-  --features symbiotic-memory-adapter \
+  --manifest-path adapters/symbiotic-memory/Cargo.toml \
   --bin membench -- \
   --system symbiotic-memory \
   --benchmark long-mem-eval \
@@ -141,7 +141,7 @@ no-network smoke test must be requested explicitly:
 
 ```bash
 CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run \
-  --features symbiotic-memory-adapter \
+  --manifest-path adapters/symbiotic-memory/Cargo.toml \
   --bin membench -- \
   --system symbiotic-memory \
   --benchmark long-mem-eval \
@@ -197,7 +197,7 @@ Adapters must preserve the system under test's native pipeline:
 Use imports when artifacts already exist and should be normalized without regenerating answers:
 
 ```bash
-cargo run --bin membench -- \
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- \
   --system symbiotic-memory \
   --benchmark long-mem-eval \
   --import-report \
@@ -218,20 +218,20 @@ only portable artifact presence and missing-artifact metadata in `run-params.jso
 List runs:
 
 ```bash
-cargo run --bin membench -- explore
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- explore
 ```
 
 Inspect one run:
 
 ```bash
-cargo run --bin membench -- explore \
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- explore \
   --run-root runs/symbiotic-memory/long-mem-eval/500/baseline-clean
 ```
 
 Promote a local run to tracked records:
 
 ```bash
-cargo run --bin membench -- save-record \
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- save-record \
   --run-root runs/symbiotic-memory/long-mem-eval/500/baseline-clean
 ```
 
@@ -243,7 +243,7 @@ Use trials to record improvement experiments from existing debug artifacts. Do n
 JSON/JSONL ledger when the source runs exist; derive it from run artifacts:
 
 ```bash
-cargo run --bin membench -- trials derive \
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- trials derive \
   --trial-run-root runs/symbiotic-memory/long-mem-eval/50/candidate \
   --comparison-run-root runs/symbiotic-memory/long-mem-eval/50/previous \
   --original-baseline-run-root runs/symbiotic-memory/long-mem-eval/500/baseline \
@@ -297,7 +297,7 @@ Before publishing or opening a PR:
 ```bash
 CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo fmt -- --check
 CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo test
-cargo run --bin membench -- explore
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- explore
 ```
 
 Then check:
@@ -350,7 +350,7 @@ reranker moved the needle.** ALWAYS verify a lever FIRED (changed the prompt/evi
 
 ## CORE LOOP — answer-only A/B
 - Source vault: `runs/symbiotic-memory/long-mem-eval/500/factconsol-thinkon-500-20260624/vaults`
-- Rebuild after symem code change: `cargo build --release --features symbiotic-memory-adapter --bin membench`
+- Rebuild after symem code change: `CARGO_TARGET_DIR=target cargo build --release --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench`
 - Run (repo root; `.env.test.local` auto-loads keys; var names post-SYMEM-removal — see docs/environment.md):
   `env MEMBENCH_DISTILL_THINKING=off MEMBENCH_ANSWER_THINKING=on MEMBENCH_EMBED_MODEL=qwen/qwen3-embedding-8b MEMBENCH_EMBED_DIMS=1024 MEMBENCH_EMBED_REQUEST_DIMS=1024 SYMBIOTIC_MEMORY__TRANSPORT__HTTP1_ONLY=true MEMBENCH_RERANK=on MEMBENCH_RERANK_MODEL=cohere/rerank-4-fast SYMBIOTIC_MEMORY__RECALL__RERANK_CANDIDATES=100 <LEVER_ENV> ./target/release/membench --system symbiotic-memory --benchmark long-mem-eval --limit 500 --sample stratified --embedder openrouter --store zvec-hybrid --memory-config config/symbiotic-memory/longmemeval-raw-light.yaml --prompt-dir /tmp/prompts-v3 --answer-only --source-vault-root <SRC> --score --run-name <name>`
   (rerank is ON by default; the harness default model is `nvidia/llama-nemotron-rerank-vl-1b-v2:free` — pin `MEMBENCH_RERANK_MODEL` explicitly for A/B comparability)

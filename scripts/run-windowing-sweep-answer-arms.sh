@@ -6,7 +6,7 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/symbiotic-mem-bench-target}"
 
 LIMIT="${1:-50}"
 ROOT="runs/symbiotic-memory/long-mem-eval/$LIMIT"
-BIN=(cargo run --release --features symbiotic-memory-adapter --bin membench --
+BIN=(cargo run --release --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench --
      --system symbiotic-memory --benchmark long-mem-eval --limit "$LIMIT")
 
 arm_done() { [ -f "$ROOT/$1/artifacts/verdicts.jsonl" ]; }

@@ -227,7 +227,7 @@ whenever `records/` changes — CI fails if the committed snapshot no longer mat
 ## Machine-readable Index
 
 ```bash
-cargo run --bin membench -- explore --json
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- explore --json
 ```
 
 Emits the normalized run index (one `RunSummary` per run) as JSON — the same shape the dashboard
@@ -321,7 +321,7 @@ new rows when the answer content or scoring changed.
 Generate or update these files from existing run artifacts with:
 
 ```bash
-cargo run --bin membench -- trials derive \
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- trials derive \
   --trial-run-root runs/{system}/{benchmark}/{limit}/{candidate_run} \
   --comparison-run-root runs/{system}/{benchmark}/{limit}/{previous_run} \
   --original-baseline-run-root runs/{system}/{benchmark}/{limit}/{baseline_run} \
@@ -400,7 +400,8 @@ and post-provider work. It must not duplicate raw prompts, raw retrieval query t
 documents, or secrets. Backfill or refresh it for an existing run with:
 
 ```bash
-cargo run --bin membench -- analytics --run-root runs/{system}/{benchmark}/{limit}/{run_name}
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- \
+  analytics --run-root runs/{system}/{benchmark}/{limit}/{run_name}
 ```
 
 The live monitor derives model-queue diagnostics from provider queue events:
@@ -500,7 +501,7 @@ budget is the per-item model window.
 Provider/model queue event JSONL can be summarized with:
 
 ```bash
-cargo run --bin membench -- summarize-queue-events \
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- summarize-queue-events \
   --jsonl runs/{system}/{benchmark}/{limit}/{run_name}/provider-queue/model-queue-traces.jsonl
 ```
 

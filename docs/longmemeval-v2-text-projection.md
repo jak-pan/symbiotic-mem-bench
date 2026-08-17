@@ -50,7 +50,7 @@ provider construction, ingest, answering, or any run-root mutation, so an existi
 survives the rejected launch untouched. Run it unscored to inspect recall behavior:
 
 ```sh
-cargo run --features symbiotic-memory-adapter --bin membench -- \
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- \
   --system symbiotic-memory \
   --benchmark longmemeval-v2-text \
   --dataset /path/to/LongMemEval-V2/data/processed \

@@ -1,27 +1,17 @@
 [package]
 name = "membench"
-version = "0.1.0"
+version = "2.0.0"
 edition = "2024"
 description = "Benchmark contracts and tooling for memory systems"
 readme = "README.md"
 license = "Apache-2.0"
 repository = "https://github.com/jak-pan/symbiotic-mem-bench"
+publish = false
+autobins = false
+autotests = false
 
 [features]
 default = []
-symbiotic-memory-adapter = [
-    "dep:async-trait",
-    "dep:futures",
-    "dep:hex",
-    "dep:reqwest",
-    "dep:regex",
-    "dep:rusqlite",
-    "dep:symbiotic-core",
-    "dep:symbiotic-memory",
-    "dep:symbiotic-memory-config",
-    "dep:symbiotic-queue",
-    "dep:tokio",
-]
 # Dashboard backend. Feature-gated so the core harness and `cargo test` stay lean.
 server = ["dep:axum", "dep:rusqlite", "dep:tokio", "dep:tower-http"]
 
@@ -34,19 +24,7 @@ sha2 = "0.10"
 clap = { version = "4", features = ["derive"] }
 prost = "0.14"
 prost-types = "0.14"
-# The adapter deps are pinned git revs so a clean clone builds without sibling
-# checkouts. For local co-development against sibling checkouts, override them
-# in a gitignored `.cargo/config.toml` — see docs/environment.md.
-symbiotic-memory-config = { git = "ssh://git@github.com/jak-pan/symbiotic-memory", rev = "c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e", optional = true }
-symbiotic-memory = { git = "ssh://git@github.com/jak-pan/symbiotic-memory", rev = "c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e", default-features = false, features = ["http", "cli"], optional = true }
-async-trait = { version = "0.1", optional = true }
-futures = { version = "0.3", optional = true }
-hex = { version = "0.4", optional = true }
-reqwest = { version = "0.13.4", features = ["json"], optional = true }
-regex = { version = "1", optional = true }
 rusqlite = { version = "0.37", features = ["bundled", "chrono"], optional = true }
-symbiotic-core = { git = "https://github.com/symbiotic-sh/symbiotic-foundation", rev = "814060cd3c31b976234c171608196293c1fed4eb", optional = true }
-symbiotic-queue = { git = "https://github.com/symbiotic-sh/symbiotic-foundation", rev = "814060cd3c31b976234c171608196293c1fed4eb", optional = true }
 axum = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"], optional = true }
 tower-http = { version = "0.6", features = ["fs", "cors"], optional = true }
@@ -55,13 +33,6 @@ tempfile = "3"
 [build-dependencies]
 prost-build = "0.14"
 protoc-bin-vendored = "3"
-
-[[bin]]
-name = "membench"
-path = "src/bin/membench.rs"
-# Requires the adapter feature: a plain `cargo build` SKIPS this bin rather than
-# silently emitting a feature-less binary that compiles but fails every native run.
-required-features = ["symbiotic-memory-adapter"]
 
 [[bin]]
 name = "membench-server"

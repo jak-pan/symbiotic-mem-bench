@@ -15,13 +15,16 @@ CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo test
 cargo run --bin membench-leaderboard -- export --records-root records
 ```
 
-The `membench` CLI itself (`cargo run --bin membench -- explore`) needs the
-`symbiotic-memory-adapter` feature, which builds against the pinned
-`jak-pan/symbiotic-memory` revision — currently a **private** repository, so a clean clone
-without access cannot build it (see `docs/oss-release-handoff.md`). With access:
+The native `membench` CLI uses the isolated
+`adapters/symbiotic-memory/Cargo.toml` package, which builds against an exact revision of the private
+`symbiotic-sh/symbiotic-memory` repository. A clean clone without access can build and use the
+neutral core, leaderboard exporter, server, and dashboard, but not that adapter. The exact pinned
+adapter revision currently ships a verified macOS arm64 zvec dylib only, so its release gate runs on
+macOS 14 arm64; the public server-backed product is still packaged for Linux x86-64 and macOS arm64.
+With repository read access:
 
 ```bash
-cargo run --features symbiotic-memory-adapter --bin membench -- explore
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- explore
 ```
 
 `scripts/check-adapter-build.sh` is the gate for that path; `scripts/check-adapter-pins.sh`
@@ -56,7 +59,7 @@ Run a default Symbiotic Memory LongMemEval benchmark through the native adapter:
 
 ```bash
 CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run --release \
-  --features symbiotic-memory-adapter \
+  --manifest-path adapters/symbiotic-memory/Cargo.toml \
   --bin membench -- \
   --system symbiotic-memory \
   --benchmark long-mem-eval \
@@ -91,18 +94,28 @@ Run a no-network smoke test explicitly:
 
 ```bash
 CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run \
-  --features symbiotic-memory-adapter \
+  --manifest-path adapters/symbiotic-memory/Cargo.toml \
   --bin membench -- \
   --system symbiotic-memory \
   --benchmark long-mem-eval \
   --smoke
 ```
 
-The Symbiotic Memory adapter dependencies are pinned public git revisions in `Cargo.toml`, so the
-core crate and the dashboard server build from a clean clone. Building the
-`symbiotic-memory-adapter` feature currently requires overriding those pins to sibling checkouts
-via `.cargo/config.toml` — see `docs/environment.md` ("Dependency Sources") for the exact block
-and the upstream-publication blocker behind it.
+The Symbiotic Memory adapter dependencies are pinned to exact Git revisions in `Cargo.toml`. The
+neutral core and dashboard server do not activate or fetch them. The adapter builds directly from
+those pins when the checkout has repository access; a local `.cargo/config.toml` override is only
+for intentional sibling-repository co-development. See `docs/environment.md` and
+`docs/oss-release-handoff.md`.
+
+Membench is distributed from GitHub, not crates.io. The crate manifest is deliberately
+`publish = false`; the native adapter is a separate non-workspace package with Git-only private
+dependencies and is not part of the public package graph. Tagged releases attach server-backed
+product bundles containing the Rust dashboard server, leaderboard exporter, built v2 SPA, and
+portable tracked records; GitHub's source archives remain the source distribution.
+
+Every bundle includes `THIRD_PARTY_NOTICES.md`, generated from the locked supported-target Cargo
+graphs and dashboard lockfile. It carries the redistributed dependency notices and the complete
+upstream LongMemEval MIT copyright and permission notice.
 
 These local `--smoke` adapter runs map internally to deterministic no-network providers and no
 scorer. They are smoke tests, not benchmark records. By default they run under `runs/.tmp/` and
@@ -128,6 +141,11 @@ systems within a comparable cohort, plus a debugger/tuner for inspecting runs, q
 verdicts, traces, and previewing new runs. It is a no-SSR Svelte SPA served by the Rust
 `membench-server` binary over the same registry files the CLI reads.
 
+Release bundles are self-contained for read-only exploration. Extract the archive for your platform
+and run `./membench-server`; the bundle keeps `dashboard/dist/` and the portable `records/` tree in
+the locations the server expects. Native benchmark execution remains a source build because it must
+link an explicitly authorized system adapter and provider configuration.
+
 ```bash
 # build the SPA once, then serve it + the API from one binary
 cd dashboard && npm install && npm run build && cd ..
@@ -137,7 +155,8 @@ cargo run --features server --bin membench-server   # http://localhost:8787
 Dashboard commands expect `node` and `npm` to resolve to the user `nvm` install from PATH, not
 Homebrew Node. For live frontend development run `membench-server` and `npm run dev` (Vite on
 :5173, proxies `/api`). See `dashboard/README.md`. The same normalized index is available headless
-via `cargo run --bin membench -- explore --json`.
+via
+`cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- explore --json`.
 
 The public leaderboard masthead is the first production slice of the Membench
 product UI v2. It reads only the live registry or the committed
@@ -212,20 +231,20 @@ repo root, not from the caller's current working directory.
 List local runs:
 
 ```bash
-cargo run --bin membench -- explore
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- explore
 ```
 
 Inspect one run:
 
 ```bash
-cargo run --bin membench -- explore \
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- explore \
   --run-root runs/symbiotic-memory/long-mem-eval/500/baseline-clean
 ```
 
 Import existing artifacts into the normalized registry:
 
 ```bash
-cargo run --bin membench -- \
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- \
   --system symbiotic-memory \
   --benchmark long-mem-eval \
   --import-report \
@@ -244,7 +263,7 @@ not preserve noisy source paths in `run-params.json`.
 Promote a scratch run to a tracked record:
 
 ```bash
-cargo run --bin membench -- save-record \
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- save-record \
   --run-root runs/symbiotic-memory/long-mem-eval/500/baseline-clean
 ```
 
@@ -262,7 +281,7 @@ run and optional external retention of oversized native state.
 Summarize queue timing from queue event JSONL:
 
 ```bash
-cargo run --bin membench -- summarize-queue-events \
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- summarize-queue-events \
   --jsonl runs/symbiotic-memory/long-mem-eval/500/baseline-clean/provider-queue/model-queue-traces.jsonl
 ```
 
@@ -517,6 +536,7 @@ via `SECURITY.md`; release process in `RELEASING.md`.
 - `docs/longmemeval-methodology.md`: scoring methodology, honest current result, and the
   leaderboard review gate.
 - `docs/oss-release-handoff.md`: external decisions/blockers for taking the repo public.
+- `docs/releases/v2.0.0.md`: exact v2.0.0 candidate assets, boundaries, and tag checklist.
 - `docs/run-registry.md`: run layout and lifecycle reference.
 - `docs/symbiotic-memory/openrouter-qwen-embedding-tuning.md`: OpenRouter Qwen raw-embedding
   transport tuning evidence and reproduction scripts.

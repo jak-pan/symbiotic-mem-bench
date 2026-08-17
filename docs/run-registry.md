@@ -168,7 +168,7 @@ artifacts in `artifact_manifest`.
 Promote a run with:
 
 ```bash
-cargo run --bin membench -- save-record \
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- save-record \
   --run-root runs/{system}/{benchmark}/{limit}/{run_name}
 ```
 
@@ -198,13 +198,13 @@ substrates locally when needed for answer-only reruns.
 Default:
 
 ```bash
-cargo run --bin membench -- explore
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- explore
 ```
 
 Specific run:
 
 ```bash
-cargo run --bin membench -- explore \
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- explore \
   --run-root runs/symbiotic-memory/long-mem-eval/500/baseline-clean
 ```
 

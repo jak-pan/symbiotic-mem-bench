@@ -11,7 +11,7 @@ cd ../symbiotic-mem-bench
 From another repo, use:
 
 ```bash
-cargo run --manifest-path ../symbiotic-mem-bench/Cargo.toml --bin membench -- ...
+cargo run --manifest-path ../symbiotic-mem-bench/adapters/symbiotic-memory/Cargo.toml --bin membench -- ...
 ```
 
 ## Explore Runs
@@ -19,13 +19,13 @@ cargo run --manifest-path ../symbiotic-mem-bench/Cargo.toml --bin membench -- ..
 List local scratch runs:
 
 ```bash
-cargo run --bin membench -- explore
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- explore
 ```
 
 Inspect one run:
 
 ```bash
-cargo run --bin membench -- explore \
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- explore \
   --run-root runs/symbiotic-memory/long-mem-eval/500/baseline-clean
 ```
 
@@ -47,7 +47,7 @@ Run a fresh default benchmark:
 
 ```bash
 CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run --release \
-  --features symbiotic-memory-adapter \
+  --manifest-path adapters/symbiotic-memory/Cargo.toml \
   --bin membench -- \
   --system symbiotic-memory \
   --benchmark long-mem-eval \
@@ -93,7 +93,7 @@ it only for a named experiment:
 ```bash
 MEMBENCH_REFERENCE_DATETIME=2026-06-19T15:15:42+08:00 \
 CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run --release \
-  --features symbiotic-memory-adapter \
+  --manifest-path adapters/symbiotic-memory/Cargo.toml \
   --bin membench -- \
   --system symbiotic-memory \
   --benchmark long-mem-eval \
@@ -144,7 +144,7 @@ Run a local no-network smoke explicitly:
 
 ```bash
 CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run \
-  --features symbiotic-memory-adapter \
+  --manifest-path adapters/symbiotic-memory/Cargo.toml \
   --bin membench -- \
   --system symbiotic-memory \
   --benchmark long-mem-eval \
@@ -161,7 +161,8 @@ The older generic semantic grader remains available for A/B comparisons via
 DeepSeek judge cache prewarm should remain opt-in and mainly for rejudge/score-heavy runs:
 
 ```bash
-CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run --release --bin membench -- \
+CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run --release \
+  --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- \
   --system symbiotic-memory \
   --benchmark long-mem-eval \
   --dataset path/to/longmemeval.json \
@@ -183,7 +184,7 @@ pipelines stay fully async.
 Use imports for frozen or external artifacts:
 
 ```bash
-cargo run --bin membench -- \
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- \
   --system symbiotic-memory \
   --benchmark long-mem-eval \
   --import-report \
@@ -204,7 +205,7 @@ absolute source paths, and writes artifact availability into `artifact_manifest`
 Promote a scratch run to tracked records:
 
 ```bash
-cargo run --bin membench -- save-record \
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- save-record \
   --run-root runs/{system}/{benchmark}/{limit}/{run_name}
 ```
 
@@ -216,7 +217,7 @@ intentionally replacing an existing record.
 Derive typed improvement-trial artifacts from existing run outputs:
 
 ```bash
-cargo run --bin membench -- trials derive \
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- trials derive \
   --trial-run-root runs/{system}/{benchmark}/{limit}/{candidate_run} \
   --comparison-run-root runs/{system}/{benchmark}/{limit}/{previous_run} \
   --original-baseline-run-root runs/{system}/{benchmark}/{limit}/{baseline_run} \
@@ -254,7 +255,7 @@ claims.
 Summarize queue events:
 
 ```bash
-cargo run --bin membench -- summarize-queue-events \
+cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- summarize-queue-events \
   --jsonl runs/{system}/{benchmark}/{limit}/{run_name}/provider-queue/model-queue-traces.jsonl
 ```
 

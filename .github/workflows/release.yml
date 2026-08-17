@@ -1,0 +1,217 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@d8dfd7155fea72af4ad34a8fe97364d210e2d020 # 1.93.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - id: epoch
+        name: resolve source epoch
+        run: echo "value=$(git show -s --format=%ct HEAD)" >> "$GITHUB_OUTPUT"
+      - name: exact release version contract
+        run: ./scripts/check-release-version.sh "${GITHUB_REF_NAME}"
+      - name: publication hygiene
+        run: ./scripts/check-publication-hygiene.sh
+      - name: Rust formatting
+        run: cargo fmt -- --check
+      - name: Rust lint
+        run: cargo clippy --locked --all-targets --features server -- -D warnings
+      - name: core tests
+        run: cargo test --locked
+      - name: server tests
+        run: cargo test --locked --features server
+      - name: production server build
+        run: cargo build --locked --release --features server --bin membench-server --bin membench-leaderboard
+      - name: dashboard build
+        working-directory: dashboard
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
+        run: npm ci && npm run build
+      - name: third-party notice inventory is current
+        run: python3 scripts/generate-third-party-notices.py --check
+      - name: release packager rejects special filesystem entries
+        run: python3 -m unittest scripts.tests.test_package_release
+      - name: deterministic leaderboard canary
+        shell: bash
+        run: |
+          cargo run --locked --quiet --bin membench-leaderboard -- export --records-root canary/records --deterministic > /tmp/canary-out.json
+          diff <(python3 -m json.tool /tmp/canary-out.json) <(python3 -m json.tool canary/expected-leaderboard.json)
+      - name: public snapshot matches portable records
+        run: ./scripts/check-leaderboard-snapshot.sh
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+        with:
+          command: check advisories licenses sources
+
+  private-adapter:
+    runs-on: macos-14
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@d8dfd7155fea72af4ad34a8fe97364d210e2d020 # 1.93.0
+        with:
+          components: rustfmt, clippy
+      - name: private adapter exact-pin compatibility gate
+        env:
+          SYMBIOTIC_MEMORY_DEPLOY_KEY: ${{ secrets.SYMBIOTIC_MEMORY_DEPLOY_KEY }}
+        run: |
+          set -eu
+          test -n "$SYMBIOTIC_MEMORY_DEPLOY_KEY" || { echo "SYMBIOTIC_MEMORY_DEPLOY_KEY is required" >&2; exit 1; }
+          key="$RUNNER_TEMP/membench-symbiotic-memory-key"
+          known_hosts="$RUNNER_TEMP/membench-github-known-hosts"
+          trap 'rm -f "$key" "$known_hosts"' EXIT
+          umask 077
+          printf '%s\n' "$SYMBIOTIC_MEMORY_DEPLOY_KEY" > "$key"
+          printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > "$known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o UserKnownHostsFile=$known_hosts -o StrictHostKeyChecking=yes"
+          export CARGO_NET_GIT_FETCH_WITH_CLI=true
+          ./scripts/check-adapter-build.sh
+
+  product-bundle:
+    needs: [preflight, private-adapter]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-14
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@d8dfd7155fea72af4ad34a8fe97364d210e2d020 # 1.93.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - id: epoch
+        name: resolve source epoch
+        run: echo "value=$(git show -s --format=%ct HEAD)" >> "$GITHUB_OUTPUT"
+      - name: require native runner target
+        run: >-
+          test "$(rustc -vV | sed -n 's/^host: //p')" = "${{ matrix.target }}"
+      - name: build v2 dashboard deterministically
+        working-directory: dashboard
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
+        run: npm ci && npm run build
+      - name: build public product binaries
+        run: cargo build --locked --release --features server --bin membench-server --bin membench-leaderboard
+      - name: build product bundle twice
+        run: |
+          python3 scripts/package-release.py --repo-root . --binary-dir target/release --dashboard-dist dashboard/dist --output-dir release-a --version "${GITHUB_REF_NAME#v}" --target "${{ matrix.target }}" --source-date-epoch "${{ steps.epoch.outputs.value }}"
+          python3 scripts/package-release.py --repo-root . --binary-dir target/release --dashboard-dist dashboard/dist --output-dir release-b --version "${GITHUB_REF_NAME#v}" --target "${{ matrix.target }}" --source-date-epoch "${{ steps.epoch.outputs.value }}"
+          cmp release-a/*.tar.gz.sha256 release-b/*.tar.gz.sha256
+      - name: unpack and smoke the shipped product
+        shell: bash
+        run: |
+          mkdir release-smoke
+          tar -xzf release-a/*.tar.gz -C release-smoke
+          bundle=$(find release-smoke -mindepth 1 -maxdepth 1 -type d -print -quit)
+          "$bundle/membench-server" --port 18787 > /tmp/membench-release-server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          BUNDLE_ROOT="$bundle" RELEASE_VERSION="${GITHUB_REF_NAME#v}" python3 - <<'PY'
+          import json, os, time, urllib.parse, urllib.request
+          bundle = os.environ["BUNDLE_ROOT"]
+          base = "http://127.0.0.1:18787"
+          for _ in range(60):
+              try:
+                  health = json.load(urllib.request.urlopen(base + "/api/health"))
+                  break
+              except Exception:
+                  time.sleep(0.5)
+          else:
+              raise SystemExit("release server did not become healthy")
+          assert health["ok"] is True and health["version"] == os.environ["RELEASE_VERSION"], health
+          runs = json.load(urllib.request.urlopen(base + "/api/runs"))["runs"]
+          assert runs, "release bundle exposed no tracked runs"
+          leaderboard = json.load(urllib.request.urlopen(base + "/api/leaderboard"))
+          assert leaderboard["cohorts"], "release bundle exposed no ranked cohort"
+          run_id = "records/symbiotic-memory/long-mem-eval/500/factconsol-thinkon-500-20260624"
+          encoded = urllib.parse.quote(run_id, safe="")
+          questions = json.load(urllib.request.urlopen(base + "/api/run/questions?id=" + encoded))
+          assert questions["total"] == 500, questions["total"]
+          traces = json.load(urllib.request.urlopen(base + "/api/run/traces?id=" + encoded))
+          assert any(traces.values()), "release bundle exposed no trace artifacts"
+          html = urllib.request.urlopen(base + "/").read().decode()
+          assert "<!doctype html>" in html.lower()
+          notices = open(bundle + "/THIRD_PARTY_NOTICES.md").read()
+          assert "Copyright (c) 2024 Di Wu" in notices
+          assert "LongMemEval dataset attribution" in notices
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ matrix.target }}
+          path: release-a/*
+          if-no-files-found: error
+
+  draft-release:
+    needs: product-bundle
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: aggregate checksums
+        working-directory: release-assets
+        run: |
+          python3 - <<'PY'
+          import hashlib, pathlib
+          paths = sorted([*pathlib.Path(".").glob("*.tar.gz"), *pathlib.Path(".").glob("*.provenance.json")])
+          if not paths:
+              raise SystemExit("no release assets downloaded")
+          with open("SHA256SUMS", "w") as output:
+              for path in paths:
+                  output.write(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n")
+          PY
+      - name: create or refresh draft release
+        working-directory: release-assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft > /tmp/release.json 2>/dev/null; then
+            python3 -c 'import json; assert json.load(open("/tmp/release.json"))["isDraft"], "refusing to mutate a published release"'
+            gh release upload "$GITHUB_REF_NAME" ./* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" ./* --repo "$GITHUB_REPOSITORY" --draft --verify-tag --generate-notes --title "Membench ${GITHUB_REF_NAME}"
+          fi

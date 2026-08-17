@@ -97,7 +97,7 @@ if [[ ! -x "$membench_bin" ]]; then
 Missing executable release binary: $membench_bin
 
 Build it deliberately before paid tuning runs:
-  cargo build --release --features symbiotic-memory-adapter --bin membench
+  CARGO_TARGET_DIR=target cargo build --release --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench
 
 Or set MEMBENCH_BIN=/path/to/membench.
 EOF
