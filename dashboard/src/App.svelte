@@ -34,6 +34,14 @@
     else if (next === "runs" && store.online) router.go("debug");
   }
 
+  // Keep browser history and hand-edited hashes authoritative. Workspace-only
+  // views (Lab/Catalog) intentionally remain local until they gain routes of
+  // their own, while the two routed views must always follow hash navigation.
+  $effect(() => {
+    if (router.view === "leaderboard") workspace = "leaderboard";
+    else if (router.view === "debug") workspace = "runs";
+  });
+
   function tick() {
     const d = new Date();
     const p = (n: number) => String(n).padStart(2, "0");
@@ -126,6 +134,9 @@
     <span class="seg">PEAK ACC <b class="amber">{store.bestAccuracy == null ? "—" : `${(store.bestAccuracy * 100).toFixed(1)}%`}</b></span>
     <span class="spacer"></span>
     <span class="seg hints">F1–F4 workspaces · all public claims are artifact-backed</span>
+    <span class="seg">SERVER <b>{store.serverSha || "—"}</b></span>
+    <span class="seg">UI <b>{store.uiBundle || "—"}</b></span>
+    <span class="seg" title={store.uiBuilt}>BUILT <b>{store.uiBuilt || "—"}</b></span>
     <span class="seg">DATA <b>{generated}</b></span>
   </footer>
 </div>
