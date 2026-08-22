@@ -484,6 +484,98 @@ pub trait MultimodalRecallAdapter {
         spend: &mut SpendJournal,
         reader: &mut ReaderJournal,
     ) -> Result<RecallResponse, AdapterFailure>;
+
+    /// Retrieval-only Cell-E boundary. It cannot receive reader bytes and cannot return an answer.
+    fn retrieve(
+        &mut self,
+        _request: &RetrievalRequest,
+        _spend: &mut SpendJournal,
+    ) -> Result<RetrievalResponse, AdapterFailure> {
+        Err(AdapterFailure::CapabilityUnavailable(
+            "retrieval-only cell E boundary".to_string(),
+        ))
+    }
+}
+
+pub trait MultimodalReaderAdapter {
+    fn descriptor(&self) -> ReaderDescriptor;
+    fn read(
+        &mut self,
+        request: &BoundReaderRequest,
+        spend: &mut SpendJournal,
+    ) -> Result<BoundReaderResponse, AdapterFailure>;
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReaderDescriptor {
+    pub reader_id: String,
+    pub reader_version: String,
+    pub mode: ReaderMode,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetrievalRequest {
+    pub case_id: String,
+    pub corpus_id: String,
+    pub question: ContentSpec,
+    pub corpus: CapturedCorpus,
+    pub lane: RecallLane,
+    pub budget: RemainingBudget,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetrievalResponse {
+    pub retrieved: Vec<RetrievedEvidence>,
+    pub execution: RetrievalExecutionProof,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetrievalExecutionProof {
+    pub effective_lane: RecallLane,
+    pub text_branch_candidates: Vec<BranchCandidate>,
+    pub native_branch_candidates: Vec<BranchCandidate>,
+    pub collapse_clusters: Vec<CollapseCluster>,
+    pub oracle_regions_applied: Vec<EvidenceRegion>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoundReaderInput {
+    pub evidence_id: String,
+    pub mode: ReaderMode,
+    pub binding_id: String,
+    pub media_type: String,
+    pub verified_sha256: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoundReaderInvocation {
+    pub case_id: String,
+    pub question: ContentSpec,
+    pub frozen_retrieval_sha256: String,
+    pub inputs: Vec<BoundReaderInput>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoundReaderRequest {
+    pub request_sha256: String,
+    pub invocation: BoundReaderInvocation,
+    pub budget: RemainingBudget,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoundReaderResponse {
+    pub answer: String,
+    pub effective_request_sha256: String,
+    pub effective_input_sha256: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -578,10 +670,41 @@ pub enum SpendStatus {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SpendReservation {
     call_id: String,
+    operation_id: String,
 }
 
-/// Harness-owned provider budget and durable journal. `reserve` appends and fsyncs before it
-/// returns, so an adapter cannot begin a provider dispatch with only an after-the-fact claim.
+const SPEND_LEDGER_SCHEMA: &str = "membench.multimodal_spend_ledger.v2";
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SpendLedgerPayload {
+    run_instance_id: String,
+    effective_config_sha256: String,
+    generation: u64,
+    operations: BTreeMap<String, PersistedSpendOperation>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SpendLedgerEnvelope {
+    schema: String,
+    payload_sha256: String,
+    payload: SpendLedgerPayload,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedSpendOperation {
+    operation_id: String,
+    case_id: String,
+    reservation: SpendTrace,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    terminal: Option<SpendTrace>,
+}
+
+/// Harness-owned provider budget and durable journal. The ledger is a checksummed, atomically
+/// replaced state file guarded by a cross-process create-new lock. Each operation has one stable
+/// id and at most one authoritative terminal, including after an ambiguous directory-fsync error.
 #[derive(Debug)]
 pub struct SpendJournal {
     provider_calls_allowed: bool,
@@ -598,11 +721,11 @@ pub struct SpendJournal {
     injected_persist_failure: Option<SpendPersistFailurePoint>,
 }
 
-#[cfg(test)]
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SpendPersistFailurePoint {
-    Append,
-    Fsync,
+    BeforeRename,
+    AfterRenameBeforeDirectoryFsync,
 }
 
 impl SpendJournal {
@@ -630,19 +753,71 @@ impl SpendJournal {
         }
     }
 
-    fn persist(&mut self, traces: &[SpendTrace]) -> anyhow::Result<()> {
+    fn injected_failure(&mut self) -> Option<SpendPersistFailurePoint> {
         #[cfg(test)]
-        let failure = self.injected_persist_failure.take();
+        {
+            self.injected_persist_failure.take()
+        }
         #[cfg(not(test))]
-        let failure = None;
-        persist_spend(
+        {
+            None
+        }
+    }
+
+    fn operation_id(&self, call_id: &str) -> String {
+        sha256(
+            format!(
+                "{}\0{}\0{}\0{}",
+                self.run_instance_id, self.effective_config_sha256, self.case_id, call_id
+            )
+            .as_bytes(),
+        )
+    }
+
+    fn persist_reservation(
+        &mut self,
+        operation_id: &str,
+        trace: &SpendTrace,
+    ) -> anyhow::Result<()> {
+        let failure = self.injected_failure();
+        update_spend_ledger(
             self.ledger_path.as_deref(),
             &self.run_instance_id,
             &self.effective_config_sha256,
+            operation_id,
             &self.case_id,
-            traces,
+            SpendTransition::Reserve(trace.clone()),
             failure,
+        )?;
+        Ok(())
+    }
+
+    fn persist_terminal(
+        &mut self,
+        operation_id: &str,
+        terminal: &SpendTrace,
+    ) -> anyhow::Result<()> {
+        let failure = self.injected_failure();
+        update_spend_ledger(
+            self.ledger_path.as_deref(),
+            &self.run_instance_id,
+            &self.effective_config_sha256,
+            operation_id,
+            &self.case_id,
+            SpendTransition::Finish(terminal.clone()),
+            failure,
+        )?;
+        Ok(())
+    }
+
+    fn authoritative_terminal(&self, operation_id: &str) -> anyhow::Result<Option<SpendTrace>> {
+        read_spend_operation(
+            self.ledger_path.as_deref(),
+            &self.run_instance_id,
+            &self.effective_config_sha256,
+            operation_id,
         )
+        .map(|operation| operation.and_then(|operation| operation.terminal))
     }
 
     pub fn reserve(
@@ -692,13 +867,17 @@ impl SpendJournal {
             cost_micro_usd: max_cost_micro_usd,
             pricing_table_version,
         };
-        self.persist(std::slice::from_ref(&trace))
+        let operation_id = self.operation_id(&call_id);
+        self.persist_reservation(&operation_id, &trace)
             .map_err(adapter_budget_error)?;
         self.reserved_calls = next_calls;
         self.reserved_cost_micro_usd = next_cost;
         self.open.insert(call_id.clone(), trace.clone());
         self.traces.push(trace);
-        Ok(SpendReservation { call_id })
+        Ok(SpendReservation {
+            call_id,
+            operation_id,
+        })
     }
 
     pub fn finish(
@@ -734,7 +913,12 @@ impl SpendJournal {
             cost_micro_usd: actual_cost_micro_usd,
             ..reserved
         };
-        self.persist(std::slice::from_ref(&terminal))
+        if reservation.operation_id != self.operation_id(&reservation.call_id) {
+            return Err(AdapterFailure::Failed(
+                "provider reservation operation id mismatch".to_string(),
+            ));
+        }
+        self.persist_terminal(&reservation.operation_id, &terminal)
             .map_err(adapter_budget_error)?;
         self.open.remove(&reservation.call_id);
         self.traces.push(terminal);
@@ -745,6 +929,12 @@ impl SpendJournal {
         let had_unfinished = !self.open.is_empty();
         let unfinished: Vec<_> = self.open.values().cloned().collect();
         for reserved in unfinished {
+            let operation_id = self.operation_id(&reserved.call_id);
+            if let Some(authoritative) = self.authoritative_terminal(&operation_id)? {
+                self.open.remove(&authoritative.call_id);
+                self.traces.push(authoritative);
+                continue;
+            }
             let terminal = SpendTrace {
                 status: SpendStatus::Failed,
                 input_units: 0,
@@ -753,7 +943,7 @@ impl SpendJournal {
                 cost_micro_usd: reserved.cost_micro_usd,
                 ..reserved
             };
-            self.persist(std::slice::from_ref(&terminal))?;
+            self.persist_terminal(&operation_id, &terminal)?;
             self.open.remove(&terminal.call_id);
             self.traces.push(terminal);
         }
@@ -1097,6 +1287,8 @@ pub struct MultimodalRunResult {
     pub fixture_digest: String,
     pub arm: ExperimentArm,
     pub adapter: AdapterDescriptor,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reader: Option<ReaderDescriptor>,
     pub scorer_id: String,
     pub hypothesis: PreregisteredHypothesis,
     pub provenance: RunProvenance,
@@ -1151,6 +1343,12 @@ pub struct FiredProof {
     pub collapse_fingerprint: String,
     pub oracle_region_count: usize,
     pub reader_input_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_reader_request_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_reader_effective_request_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_reader_effective_input_fingerprint: Option<String>,
     pub retrieved_region_fingerprint: String,
 }
 
@@ -1168,41 +1366,24 @@ pub fn run_experiment<A: MultimodalRecallAdapter, S: MultimodalScorer>(
 }
 
 /// Run cell E with one frozen hybrid retrieval artifact shared byte-identically by both readers.
-pub fn run_reader_modality_pair<A: MultimodalRecallAdapter, S: MultimodalScorer>(
+pub fn run_reader_modality_pair<
+    A: MultimodalRecallAdapter,
+    T: MultimodalReaderAdapter,
+    B: MultimodalReaderAdapter,
+    S: MultimodalScorer,
+>(
     fixture: &MultimodalFixtureSet,
     plan: &MultimodalRunPlan,
     adapter: &mut A,
+    text_reader: &mut T,
+    blob_reader: &mut B,
     scorer: &S,
 ) -> anyhow::Result<(MultimodalRunResult, MultimodalRunResult)> {
     anyhow::ensure!(
         plan.arm.cell == ExperimentCell::EReaderModality,
         "paired runner requires cell E"
     );
-    validate_run_plan(plan)?;
-    claim_run_instance(plan)?;
-    let mut text_plan = plan.clone();
-    text_plan.arm.reader_mode = ReaderMode::TextProjection;
-    text_plan.run_instance_id = format!("{}-text", plan.run_instance_id);
-    let text = run_experiment_internal(fixture, &text_plan, adapter, scorer, None, false)?;
-    let frozen: BTreeMap<_, _> = text
-        .cases
-        .iter()
-        .map(|case| {
-            let retrieved = frozen_retrieval_identity(&case.retrieved);
-            Ok((
-                case.case_id.clone(),
-                FrozenRetrieval {
-                    fingerprint: stable_json_hash(&retrieved)?,
-                    retrieved,
-                },
-            ))
-        })
-        .collect::<anyhow::Result<_>>()?;
-    let mut blob_plan = plan.clone();
-    blob_plan.arm.reader_mode = ReaderMode::SourceBlob;
-    blob_plan.run_instance_id = format!("{}-blob", plan.run_instance_id);
-    let blob = run_experiment_internal(fixture, &blob_plan, adapter, scorer, Some(&frozen), false)?;
-    Ok((text, blob))
+    run_reader_modality_pair_internal(fixture, plan, adapter, text_reader, blob_reader, scorer)
 }
 
 fn validate_run_plan(plan: &MultimodalRunPlan) -> anyhow::Result<()> {
@@ -1285,6 +1466,562 @@ fn claim_run_instance(plan: &MultimodalRunPlan) -> anyhow::Result<()> {
     claim.write_all(b"\n")?;
     claim.sync_all()?;
     Ok(())
+}
+
+fn validate_reader_descriptor(
+    descriptor: &ReaderDescriptor,
+    expected_mode: ReaderMode,
+) -> anyhow::Result<()> {
+    validate_id("reader_id", &descriptor.reader_id)?;
+    non_empty("reader version", &descriptor.reader_version)?;
+    anyhow::ensure!(
+        descriptor.mode == expected_mode,
+        "reader '{}' advertises {:?}, expected {:?}",
+        descriptor.reader_id,
+        descriptor.mode,
+        expected_mode
+    );
+    Ok(())
+}
+
+fn resolve_bound_reader_request(
+    case: &MultimodalCase,
+    corpus: &CapturedCorpus,
+    material: &VerifiedCorpusMaterial,
+    retrieved: &[RetrievedEvidence],
+    frozen_retrieval_sha256: &str,
+    mode: ReaderMode,
+    budget: RemainingBudget,
+) -> anyhow::Result<(
+    BoundReaderRequest,
+    Vec<ReaderInputProof>,
+    Vec<Option<String>>,
+)> {
+    let mut journal = ReaderJournal::new(mode, corpus, material);
+    let mut inputs = Vec::with_capacity(retrieved.len());
+    let mut rendered = Vec::with_capacity(retrieved.len());
+    for item in retrieved {
+        match mode {
+            ReaderMode::TextProjection => {
+                let projection = item
+                    .artifact
+                    .projection
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("text reader artifact has no projection"))?;
+                let binding_id = projection
+                    .output_binding_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("projection output binding missing"))?;
+                let bytes = journal
+                    .read_text_projection(&item.evidence_id, binding_id)
+                    .map_err(anyhow::Error::new)?;
+                let text = String::from_utf8(bytes.clone())
+                    .with_context(|| "registered text projection is not UTF-8")?;
+                inputs.push(BoundReaderInput {
+                    evidence_id: item.evidence_id.clone(),
+                    mode,
+                    binding_id: binding_id.to_string(),
+                    media_type: "text/plain; charset=utf-8".to_string(),
+                    verified_sha256: sha256(&bytes),
+                    bytes,
+                });
+                rendered.push(Some(text));
+            }
+            ReaderMode::SourceBlob => {
+                let bytes = journal
+                    .read_source_blob(&item.evidence_id, &item.artifact.binding_id)
+                    .map_err(anyhow::Error::new)?;
+                inputs.push(BoundReaderInput {
+                    evidence_id: item.evidence_id.clone(),
+                    mode,
+                    binding_id: item.artifact.binding_id.clone(),
+                    media_type: item.artifact.blob.detected_media_type.clone(),
+                    verified_sha256: sha256(&bytes),
+                    bytes,
+                });
+                rendered.push(None);
+            }
+        }
+    }
+    let invocation = BoundReaderInvocation {
+        case_id: case.case_id.clone(),
+        question: ContentSpec {
+            text: case.question.text.clone(),
+            media: Vec::new(),
+        },
+        frozen_retrieval_sha256: frozen_retrieval_sha256.to_string(),
+        inputs,
+    };
+    let request_sha256 = stable_json_hash(&(invocation.clone(), budget.clone()))?;
+    Ok((
+        BoundReaderRequest {
+            request_sha256,
+            invocation,
+            budget,
+        },
+        journal.reads,
+        rendered,
+    ))
+}
+
+fn validate_bound_reader_response(
+    request: &BoundReaderRequest,
+    response: &BoundReaderResponse,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !response.answer.trim().is_empty(),
+        "reader returned empty answer"
+    );
+    anyhow::ensure!(
+        request.request_sha256
+            == stable_json_hash(&(request.invocation.clone(), request.budget.clone()))?,
+        "harness reader request hash is invalid"
+    );
+    anyhow::ensure!(
+        response.effective_request_sha256 == request.request_sha256,
+        "reader effective request hash does not match invocation"
+    );
+    let expected_inputs: Vec<_> = request
+        .invocation
+        .inputs
+        .iter()
+        .map(|input| sha256(&input.bytes))
+        .collect();
+    anyhow::ensure!(
+        request
+            .invocation
+            .inputs
+            .iter()
+            .zip(&expected_inputs)
+            .all(|(input, digest)| input.verified_sha256 == *digest),
+        "harness reader input digest is invalid"
+    );
+    anyhow::ensure!(
+        response.effective_input_sha256 == expected_inputs,
+        "reader effective input hashes do not match resolved bytes"
+    );
+    Ok(())
+}
+
+fn run_reader_modality_pair_internal<
+    A: MultimodalRecallAdapter,
+    T: MultimodalReaderAdapter,
+    B: MultimodalReaderAdapter,
+    S: MultimodalScorer,
+>(
+    fixture: &MultimodalFixtureSet,
+    plan: &MultimodalRunPlan,
+    adapter: &mut A,
+    text_reader: &mut T,
+    blob_reader: &mut B,
+    scorer: &S,
+) -> anyhow::Result<(MultimodalRunResult, MultimodalRunResult)> {
+    validate_fixture(fixture)?;
+    validate_run_plan(plan)?;
+    claim_run_instance(plan)?;
+    let descriptor = adapter.descriptor();
+    validate_descriptor(&descriptor)?;
+    preflight_capabilities(fixture, &plan.arm, &descriptor.capabilities)?;
+    let text_reader_descriptor = text_reader.descriptor();
+    let blob_reader_descriptor = blob_reader.descriptor();
+    validate_reader_descriptor(&text_reader_descriptor, ReaderMode::TextProjection)?;
+    validate_reader_descriptor(&blob_reader_descriptor, ReaderMode::SourceBlob)?;
+
+    let mut pair_calls = 0u64;
+    let mut pair_cost = 0u64;
+    let mut shared_calls = 0u64;
+    let mut shared_cost = 0u64;
+    let mut text_calls = 0u64;
+    let mut text_cost = 0u64;
+    let mut blob_calls = 0u64;
+    let mut blob_cost = 0u64;
+    let mut shared_spend = Vec::new();
+    let mut text_spend = Vec::new();
+    let mut blob_spend = Vec::new();
+    let mut captured_by_corpus = BTreeMap::new();
+    let mut material_by_corpus = BTreeMap::new();
+    for corpus in &fixture.corpora {
+        let verified_items =
+            verify_corpus_assets(corpus, &plan.asset_root, plan.max_import_asset_bytes)?;
+        let material = VerifiedCorpusMaterial::from_items(&verified_items);
+        let remaining = RemainingBudget {
+            provider_calls: plan.budget.max_provider_calls.saturating_sub(pair_calls),
+            cost_micro_usd: plan.budget.max_cost_micro_usd.saturating_sub(pair_cost),
+        };
+        let mut journal = SpendJournal::new(
+            &plan.run_instance_id,
+            &plan.effective_config_sha256,
+            &format!("import: {}", corpus.corpus_id),
+            plan.spend_ledger_path.as_deref(),
+            remaining.clone(),
+            plan.budget.max_step.permits_provider_calls(),
+        );
+        let captured = adapter.import_corpus(
+            &CorpusImportRequest {
+                corpus_id: corpus.corpus_id.clone(),
+                items: verified_items,
+            },
+            &mut journal,
+        );
+        let had_unfinished = journal.close_unfinished_as_failed()?;
+        let spent = validate_spend(&journal.traces, &remaining)?;
+        pair_calls = pair_calls.saturating_add(spent.0);
+        pair_cost = pair_cost.saturating_add(spent.1);
+        shared_calls = shared_calls.saturating_add(spent.0);
+        shared_cost = shared_cost.saturating_add(spent.1);
+        shared_spend.extend(journal.traces);
+        enforce_budget(&plan.budget, pair_calls, pair_cost)?;
+        let captured = captured
+            .map_err(|error| anyhow::anyhow!("import corpus '{}': {error}", corpus.corpus_id))?;
+        anyhow::ensure!(
+            !had_unfinished,
+            "import returned with unfinished reservation"
+        );
+        validate_captured_corpus(corpus, &captured)?;
+        captured_by_corpus.insert(corpus.corpus_id.as_str(), captured);
+        material_by_corpus.insert(corpus.corpus_id.as_str(), material);
+    }
+
+    let mut text_cases = Vec::with_capacity(fixture.cases.len());
+    let mut blob_cases = Vec::with_capacity(fixture.cases.len());
+    for case in &fixture.cases {
+        let corpus = captured_by_corpus
+            .get(case.corpus_id.as_str())
+            .ok_or_else(|| anyhow::anyhow!("case references absent corpus"))?;
+        let material = material_by_corpus
+            .get(case.corpus_id.as_str())
+            .ok_or_else(|| anyhow::anyhow!("case has no verified material"))?;
+        let retrieval_budget = RemainingBudget {
+            provider_calls: plan.budget.max_provider_calls.saturating_sub(pair_calls),
+            cost_micro_usd: plan.budget.max_cost_micro_usd.saturating_sub(pair_cost),
+        };
+        let retrieval_request = RetrievalRequest {
+            case_id: case.case_id.clone(),
+            corpus_id: case.corpus_id.clone(),
+            question: ContentSpec {
+                text: case.question.text.clone(),
+                media: Vec::new(),
+            },
+            corpus: corpus.clone(),
+            lane: RecallLane::HybridCollapsed,
+            budget: retrieval_budget.clone(),
+        };
+        let mut journal = SpendJournal::new(
+            &plan.run_instance_id,
+            &plan.effective_config_sha256,
+            &format!("retrieve: {}", case.case_id),
+            plan.spend_ledger_path.as_deref(),
+            retrieval_budget.clone(),
+            plan.budget.max_step.permits_provider_calls(),
+        );
+        let retrieval = adapter.retrieve(&retrieval_request, &mut journal);
+        let had_unfinished = journal.close_unfinished_as_failed()?;
+        let spent = validate_spend(&journal.traces, &retrieval_budget)?;
+        pair_calls = pair_calls.saturating_add(spent.0);
+        pair_cost = pair_cost.saturating_add(spent.1);
+        shared_calls = shared_calls.saturating_add(spent.0);
+        shared_cost = shared_cost.saturating_add(spent.1);
+        shared_spend.extend(journal.traces);
+        enforce_budget(&plan.budget, pair_calls, pair_cost)?;
+        let retrieval = retrieval
+            .map_err(|error| anyhow::anyhow!("case '{}' retrieval: {error}", case.case_id))?;
+        anyhow::ensure!(
+            !had_unfinished,
+            "retrieval returned with unfinished reservation"
+        );
+        anyhow::ensure!(
+            retrieval
+                .retrieved
+                .iter()
+                .all(|item| item.rendered_text.is_none()),
+            "retrieval-only adapter attempted to return reader material"
+        );
+        let frozen_items = frozen_retrieval_identity(&retrieval.retrieved);
+        let frozen = FrozenRetrieval {
+            fingerprint: stable_json_hash(&frozen_items)?,
+            retrieved: frozen_items,
+        };
+
+        let text_budget = RemainingBudget {
+            provider_calls: plan.budget.max_provider_calls.saturating_sub(pair_calls),
+            cost_micro_usd: plan.budget.max_cost_micro_usd.saturating_sub(pair_cost),
+        };
+        let (text_request, text_inputs, text_rendered) = resolve_bound_reader_request(
+            case,
+            corpus,
+            material,
+            &retrieval.retrieved,
+            &frozen.fingerprint,
+            ReaderMode::TextProjection,
+            text_budget.clone(),
+        )?;
+        let mut validation_retrieved = retrieval.retrieved.clone();
+        for (item, rendered_text) in validation_retrieved.iter_mut().zip(&text_rendered) {
+            item.rendered_text = rendered_text.clone();
+        }
+        let validation_request = RecallRequest {
+            case_id: case.case_id.clone(),
+            corpus_id: case.corpus_id.clone(),
+            question: ContentSpec {
+                text: case.question.text.clone(),
+                media: Vec::new(),
+            },
+            corpus: corpus.clone(),
+            lane: RecallLane::HybridCollapsed,
+            reader_mode: ReaderMode::TextProjection,
+            oracle_regions: Vec::new(),
+            frozen_retrieval: Some(frozen.clone()),
+            budget: RemainingBudget {
+                provider_calls: 0,
+                cost_micro_usd: 0,
+            },
+        };
+        validate_response(
+            case,
+            &validation_request,
+            &RecallResponse {
+                answer: "retrieval-only validation".to_string(),
+                retrieved: validation_retrieved,
+                execution: AdapterExecutionProof {
+                    effective_lane: retrieval.execution.effective_lane,
+                    effective_reader_mode: ReaderMode::TextProjection,
+                    text_branch_candidates: retrieval.execution.text_branch_candidates.clone(),
+                    native_branch_candidates: retrieval.execution.native_branch_candidates.clone(),
+                    collapse_clusters: retrieval.execution.collapse_clusters.clone(),
+                    oracle_regions_applied: retrieval.execution.oracle_regions_applied.clone(),
+                },
+            },
+            &text_inputs,
+        )?;
+        let mut text_journal = SpendJournal::new(
+            &plan.run_instance_id,
+            &plan.effective_config_sha256,
+            &format!("reader:text:{}", case.case_id),
+            plan.spend_ledger_path.as_deref(),
+            text_budget.clone(),
+            plan.budget.max_step.permits_provider_calls(),
+        );
+        let text_response = text_reader.read(&text_request, &mut text_journal);
+        let text_unfinished = text_journal.close_unfinished_as_failed()?;
+        let spent = validate_spend(&text_journal.traces, &text_budget)?;
+        pair_calls = pair_calls.saturating_add(spent.0);
+        pair_cost = pair_cost.saturating_add(spent.1);
+        text_calls = text_calls.saturating_add(spent.0);
+        text_cost = text_cost.saturating_add(spent.1);
+        text_spend.extend(text_journal.traces);
+        enforce_budget(&plan.budget, pair_calls, pair_cost)?;
+        let text_response = text_response
+            .map_err(|error| anyhow::anyhow!("case '{}' text reader: {error}", case.case_id))?;
+        anyhow::ensure!(
+            !text_unfinished,
+            "text reader returned unfinished reservation"
+        );
+        validate_bound_reader_response(&text_request, &text_response)?;
+
+        let blob_budget = RemainingBudget {
+            provider_calls: plan.budget.max_provider_calls.saturating_sub(pair_calls),
+            cost_micro_usd: plan.budget.max_cost_micro_usd.saturating_sub(pair_cost),
+        };
+        let (blob_request, blob_inputs, blob_rendered) = resolve_bound_reader_request(
+            case,
+            corpus,
+            material,
+            &retrieval.retrieved,
+            &frozen.fingerprint,
+            ReaderMode::SourceBlob,
+            blob_budget.clone(),
+        )?;
+        let mut blob_journal = SpendJournal::new(
+            &plan.run_instance_id,
+            &plan.effective_config_sha256,
+            &format!("reader:blob:{}", case.case_id),
+            plan.spend_ledger_path.as_deref(),
+            blob_budget.clone(),
+            plan.budget.max_step.permits_provider_calls(),
+        );
+        let blob_response = blob_reader.read(&blob_request, &mut blob_journal);
+        let blob_unfinished = blob_journal.close_unfinished_as_failed()?;
+        let spent = validate_spend(&blob_journal.traces, &blob_budget)?;
+        pair_calls = pair_calls.saturating_add(spent.0);
+        pair_cost = pair_cost.saturating_add(spent.1);
+        blob_calls = blob_calls.saturating_add(spent.0);
+        blob_cost = blob_cost.saturating_add(spent.1);
+        blob_spend.extend(blob_journal.traces);
+        enforce_budget(&plan.budget, pair_calls, pair_cost)?;
+        let blob_response = blob_response
+            .map_err(|error| anyhow::anyhow!("case '{}' blob reader: {error}", case.case_id))?;
+        anyhow::ensure!(
+            !blob_unfinished,
+            "blob reader returned unfinished reservation"
+        );
+        validate_bound_reader_response(&blob_request, &blob_response)?;
+
+        let build_case = |mode: ReaderMode,
+                          response: &BoundReaderResponse,
+                          inputs: Vec<ReaderInputProof>,
+                          rendered: Vec<Option<String>>|
+         -> anyhow::Result<CaseResult> {
+            let mut retrieved = retrieval.retrieved.clone();
+            for (item, rendered_text) in retrieved.iter_mut().zip(rendered) {
+                item.rendered_text = rendered_text;
+            }
+            let execution = AdapterExecutionProof {
+                effective_lane: retrieval.execution.effective_lane,
+                effective_reader_mode: mode,
+                text_branch_candidates: retrieval.execution.text_branch_candidates.clone(),
+                native_branch_candidates: retrieval.execution.native_branch_candidates.clone(),
+                collapse_clusters: retrieval.execution.collapse_clusters.clone(),
+                oracle_regions_applied: retrieval.execution.oracle_regions_applied.clone(),
+            };
+            let request = RecallRequest {
+                case_id: case.case_id.clone(),
+                corpus_id: case.corpus_id.clone(),
+                question: ContentSpec {
+                    text: case.question.text.clone(),
+                    media: Vec::new(),
+                },
+                corpus: corpus.clone(),
+                lane: RecallLane::HybridCollapsed,
+                reader_mode: mode,
+                oracle_regions: Vec::new(),
+                frozen_retrieval: Some(frozen.clone()),
+                budget: RemainingBudget {
+                    provider_calls: 0,
+                    cost_micro_usd: 0,
+                },
+            };
+            let recalled = RecallResponse {
+                answer: response.answer.clone(),
+                retrieved: retrieved.clone(),
+                execution,
+            };
+            validate_response(case, &request, &recalled, &inputs)?;
+            let correct = scorer.score(&case.gold.scoring, &case.gold.value, &response.answer)?;
+            let mut proof = fired_proof(&request, &recalled, &inputs)?;
+            proof.bound_reader_request_sha256 = Some(match mode {
+                ReaderMode::TextProjection => text_request.request_sha256.clone(),
+                ReaderMode::SourceBlob => blob_request.request_sha256.clone(),
+            });
+            proof.bound_reader_effective_request_sha256 =
+                Some(response.effective_request_sha256.clone());
+            proof.bound_reader_effective_input_fingerprint =
+                Some(stable_json_hash(&response.effective_input_sha256)?);
+            Ok(CaseResult {
+                case_id: case.case_id.clone(),
+                correct,
+                answer: response.answer.clone(),
+                requested_lane: RecallLane::HybridCollapsed,
+                fired_proof: proof,
+                retrieved,
+                reader_inputs: inputs,
+            })
+        };
+        text_cases.push(build_case(
+            ReaderMode::TextProjection,
+            &text_response,
+            text_inputs,
+            text_rendered,
+        )?);
+        blob_cases.push(build_case(
+            ReaderMode::SourceBlob,
+            &blob_response,
+            blob_inputs,
+            blob_rendered,
+        )?);
+    }
+
+    let make_result = |mode: ReaderMode,
+                       reader: ReaderDescriptor,
+                       cases: Vec<CaseResult>,
+                       reader_calls: u64,
+                       reader_cost: u64,
+                       reader_spend: Vec<SpendTrace>|
+     -> anyhow::Result<MultimodalRunResult> {
+        let mut arm = plan.arm.clone();
+        arm.reader_mode = mode;
+        let fixture_digest = stable_json_hash(fixture)?;
+        let experiment_id = format!(
+            "mmx-{}",
+            &stable_json_hash(&serde_json::json!({
+                "fixture_digest": fixture_digest,
+                "arm": arm,
+                "adapter": descriptor,
+                "reader": reader,
+                "scorer": scorer.scorer_id(),
+                "hypothesis": plan.hypothesis,
+                "budget": plan.budget,
+                "effective_config_sha256": plan.effective_config_sha256,
+                "git_sha": plan.git_sha,
+            }))?[..16]
+        );
+        let media_ids: HashSet<_> = fixture
+            .cases
+            .iter()
+            .filter(|case| case.media_dependent)
+            .map(|case| case.case_id.as_str())
+            .collect();
+        let metrics = MultimodalMetrics {
+            correct: cases.iter().filter(|case| case.correct).count(),
+            total: cases.len(),
+            media_dependent_correct: cases
+                .iter()
+                .filter(|case| case.correct && media_ids.contains(case.case_id.as_str()))
+                .count(),
+            media_dependent_total: media_ids.len(),
+        };
+        let mut spend = shared_spend.clone();
+        spend.extend(reader_spend);
+        Ok(MultimodalRunResult {
+            schema: RESULT_SCHEMA.to_string(),
+            run_id: format!(
+                "{}-{}",
+                plan.run_instance_id,
+                match mode {
+                    ReaderMode::TextProjection => "text",
+                    ReaderMode::SourceBlob => "blob",
+                }
+            ),
+            experiment_id,
+            fixture_set_id: fixture.fixture_set_id.clone(),
+            fixture_digest,
+            arm,
+            adapter: descriptor.clone(),
+            reader: Some(reader),
+            scorer_id: scorer.scorer_id().to_string(),
+            hypothesis: plan.hypothesis.clone(),
+            provenance: RunProvenance {
+                git_sha: plan.git_sha.clone(),
+                started_at: plan.started_at.clone(),
+                provider_calls: shared_calls.saturating_add(reader_calls),
+                cost_micro_usd: shared_cost.saturating_add(reader_cost),
+                oracle_gold: false,
+                leaderboard_eligible: false,
+                budget: plan.budget.clone(),
+                effective_config_sha256: plan.effective_config_sha256.clone(),
+                spend,
+            },
+            metrics,
+            cases,
+        })
+    };
+    Ok((
+        make_result(
+            ReaderMode::TextProjection,
+            text_reader_descriptor,
+            text_cases,
+            text_calls,
+            text_cost,
+            text_spend,
+        )?,
+        make_result(
+            ReaderMode::SourceBlob,
+            blob_reader_descriptor,
+            blob_cases,
+            blob_calls,
+            blob_cost,
+            blob_spend,
+        )?,
+    ))
 }
 
 fn run_experiment_internal<A: MultimodalRecallAdapter, S: MultimodalScorer>(
@@ -1474,6 +2211,7 @@ fn run_experiment_internal<A: MultimodalRecallAdapter, S: MultimodalScorer>(
         fixture_digest,
         arm: plan.arm.clone(),
         adapter: descriptor,
+        reader: None,
         scorer_id: scorer.scorer_id().to_string(),
         hypothesis: plan.hypothesis.clone(),
         provenance: RunProvenance {
@@ -1509,66 +2247,15 @@ fn verify_corpus_assets(
     asset_root: &Path,
     max_asset_bytes: u64,
 ) -> anyhow::Result<Vec<VerifiedEvidenceImport>> {
-    let root_metadata = std::fs::symlink_metadata(asset_root)
-        .with_context(|| format!("stat asset root {}", asset_root.display()))?;
-    anyhow::ensure!(
-        root_metadata.file_type().is_dir() && !root_metadata.file_type().is_symlink(),
-        "asset root must be a real directory, not a symlink"
-    );
-    let canonical_root = std::fs::canonicalize(asset_root)
-        .with_context(|| format!("canonicalize asset root {}", asset_root.display()))?;
     let mut verified = Vec::with_capacity(corpus.evidence.len());
     for item in &corpus.evidence {
         let relative = Path::new(&item.source_media.locator);
         ensure_safe_relative(relative, "media locator")?;
-        let mut cursor = asset_root.to_path_buf();
-        for component in relative.components() {
-            let Component::Normal(component) = component else {
-                anyhow::bail!("media locator contains an unsafe path component");
-            };
-            cursor.push(component);
-            let metadata = std::fs::symlink_metadata(&cursor)
-                .with_context(|| format!("stat fixture path {}", cursor.display()))?;
-            anyhow::ensure!(
-                !metadata.file_type().is_symlink(),
-                "fixture path must not traverse symlinks"
-            );
-        }
-        let unresolved = asset_root.join(relative);
-        let link_metadata = std::fs::symlink_metadata(&unresolved)
-            .with_context(|| format!("stat fixture media {}", unresolved.display()))?;
+        let source_bytes = read_fixture_asset(asset_root, relative, max_asset_bytes)?;
         anyhow::ensure!(
-            link_metadata.file_type().is_file() && !link_metadata.file_type().is_symlink(),
-            "fixture media must be a regular non-symlink file"
-        );
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            anyhow::ensure!(
-                link_metadata.nlink() == 1,
-                "fixture media must not be hard-linked"
-            );
-        }
-        let canonical = std::fs::canonicalize(&unresolved)
-            .with_context(|| format!("canonicalize fixture media {}", unresolved.display()))?;
-        anyhow::ensure!(
-            canonical.starts_with(&canonical_root),
-            "fixture media resolves outside the asset root"
-        );
-        anyhow::ensure!(
-            link_metadata.len() == item.source_media.size_bytes,
+            source_bytes.len() as u64 == item.source_media.size_bytes,
             "fixture media size mismatch for '{}'",
             item.source_media.asset_id
-        );
-        anyhow::ensure!(
-            link_metadata.len() <= max_asset_bytes,
-            "fixture media exceeds max_import_asset_bytes"
-        );
-        let source_bytes = std::fs::read(&canonical)
-            .with_context(|| format!("read fixture media {}", canonical.display()))?;
-        anyhow::ensure!(
-            source_bytes.len() as u64 == link_metadata.len(),
-            "fixture media changed while being read"
         );
         anyhow::ensure!(
             sha256(&source_bytes) == item.source_media.sha256,
@@ -1582,6 +2269,112 @@ fn verify_corpus_assets(
         });
     }
     Ok(verified)
+}
+
+#[cfg(unix)]
+fn read_fixture_asset(
+    asset_root: &Path,
+    relative: &Path,
+    max_asset_bytes: u64,
+) -> anyhow::Result<Vec<u8>> {
+    use std::ffi::CString;
+    use std::io::Read;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    let root = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(asset_root)
+        .with_context(|| {
+            format!(
+                "open asset root without following links {}",
+                asset_root.display()
+            )
+        })?;
+    let components: Vec<_> = relative.components().collect();
+    anyhow::ensure!(!components.is_empty(), "media locator is empty");
+    let mut directory = root;
+    let mut source = None;
+    for (index, component) in components.iter().enumerate() {
+        let Component::Normal(name) = component else {
+            anyhow::bail!("media locator contains an unsafe path component");
+        };
+        let name = CString::new(name.as_bytes())
+            .map_err(|_| anyhow::anyhow!("media locator contains NUL"))?;
+        let final_component = index + 1 == components.len();
+        let flags = libc::O_RDONLY
+            | libc::O_NOFOLLOW
+            | libc::O_CLOEXEC
+            | if final_component {
+                0
+            } else {
+                libc::O_DIRECTORY
+            };
+        // SAFETY: `directory` owns a valid directory fd, `name` is NUL-terminated, and the
+        // returned descriptor is immediately wrapped in `File` for single ownership.
+        let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error()).with_context(|| {
+                format!(
+                    "open fixture component without following links {}",
+                    relative.display()
+                )
+            });
+        }
+        // SAFETY: `openat` returned a new owned descriptor on the success path above.
+        let opened = unsafe { std::fs::File::from_raw_fd(fd) };
+        if final_component {
+            source = Some(opened);
+        } else {
+            directory = opened;
+        }
+    }
+    let source = source.ok_or_else(|| anyhow::anyhow!("fixture media was not opened"))?;
+    let metadata = source
+        .metadata()
+        .with_context(|| format!("stat opened fixture media {}", relative.display()))?;
+    anyhow::ensure!(
+        metadata.file_type().is_file(),
+        "fixture media must be a regular non-symlink file"
+    );
+    anyhow::ensure!(
+        metadata.nlink() == 1,
+        "fixture media must not be hard-linked"
+    );
+    anyhow::ensure!(
+        metadata.len() <= max_asset_bytes,
+        "fixture media exceeds max_import_asset_bytes"
+    );
+    let read_limit = max_asset_bytes
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("max_import_asset_bytes is too large"))?;
+    let initial_capacity = usize::try_from(metadata.len().min(1024 * 1024))
+        .map_err(|_| anyhow::anyhow!("fixture media size is not addressable"))?;
+    let mut bytes = Vec::with_capacity(initial_capacity);
+    source
+        .take(read_limit)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("read opened fixture media {}", relative.display()))?;
+    anyhow::ensure!(
+        bytes.len() as u64 <= max_asset_bytes,
+        "fixture media exceeds max_import_asset_bytes while streaming"
+    );
+    anyhow::ensure!(
+        bytes.len() as u64 == metadata.len(),
+        "fixture media changed while being read"
+    );
+    Ok(bytes)
+}
+
+#[cfg(not(unix))]
+fn read_fixture_asset(
+    _asset_root: &Path,
+    _relative: &Path,
+    _max_asset_bytes: u64,
+) -> anyhow::Result<Vec<u8>> {
+    anyhow::bail!("secure no-follow fixture import is unsupported on this platform")
 }
 
 fn validate_importable_media(media_type: &str, bytes: &[u8]) -> anyhow::Result<()> {
@@ -1629,6 +2422,9 @@ fn validate_captured_corpus(
         .map(|item| (item.evidence_id.as_str(), item))
         .collect();
     let mut seen = HashSet::new();
+    let mut raw_bindings: BTreeMap<String, CapturedBlobRef> = BTreeMap::new();
+    let mut projection_bindings: BTreeMap<String, CapturedBlobRef> = BTreeMap::new();
+    let mut all_bindings: BTreeMap<String, CapturedBlobRef> = BTreeMap::new();
     for artifact in &captured.artifacts {
         anyhow::ensure!(
             seen.insert(artifact.evidence_id.as_str()),
@@ -1638,6 +2434,18 @@ fn validate_captured_corpus(
             .get(artifact.evidence_id.as_str())
             .ok_or_else(|| anyhow::anyhow!("captured corpus invented evidence"))?;
         validate_binding_id(&artifact.binding_id)?;
+        record_unique_binding(
+            &mut raw_bindings,
+            "raw",
+            &artifact.binding_id,
+            &artifact.blob,
+        )?;
+        record_unique_binding(
+            &mut all_bindings,
+            "raw or projection",
+            &artifact.binding_id,
+            &artifact.blob,
+        )?;
         anyhow::ensure!(
             artifact.blob.id.algorithm == "sha256",
             "blob algorithm must be sha256"
@@ -1679,6 +2487,18 @@ fn validate_captured_corpus(
                         anyhow::anyhow!("ready projection must bind its output bytes")
                     })?;
                 validate_binding_id(output_binding_id)?;
+                record_unique_binding(
+                    &mut projection_bindings,
+                    "projection output",
+                    output_binding_id,
+                    output_blob,
+                )?;
+                record_unique_binding(
+                    &mut all_bindings,
+                    "raw or projection",
+                    output_binding_id,
+                    output_blob,
+                )?;
                 if let Some(transformed_at) = &projection.transformed_at {
                     chrono::DateTime::parse_from_rfc3339(transformed_at)
                         .with_context(|| "projection transformed_at must be RFC3339")?;
@@ -1709,6 +2529,23 @@ fn validate_captured_corpus(
             ),
             _ => anyhow::bail!("captured projection presence does not match fixture"),
         }
+    }
+    Ok(())
+}
+
+fn record_unique_binding(
+    bindings: &mut BTreeMap<String, CapturedBlobRef>,
+    kind: &str,
+    binding_id: &str,
+    blob: &CapturedBlobRef,
+) -> anyhow::Result<()> {
+    if let Some(existing) = bindings.get(binding_id) {
+        anyhow::ensure!(
+            existing == blob,
+            "{kind} binding '{binding_id}' maps to conflicting blob metadata"
+        );
+    } else {
+        bindings.insert(binding_id.to_string(), blob.clone());
     }
     Ok(())
 }
@@ -2166,51 +3003,251 @@ fn validate_spend(
     Ok((calls, cost))
 }
 
-fn persist_spend(
+enum SpendTransition {
+    Reserve(SpendTrace),
+    Finish(SpendTrace),
+}
+
+struct SpendLedgerLock {
+    path: PathBuf,
+    _file: std::fs::File,
+}
+
+impl Drop for SpendLedgerLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn spend_sibling_path(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
+}
+
+fn lock_spend_ledger(path: &Path, run_instance_id: &str) -> anyhow::Result<SpendLedgerLock> {
+    let lock_path = spend_sibling_path(path, ".lock");
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path)
+        .with_context(|| {
+            format!(
+                "spend ledger is locked by another process at {}",
+                lock_path.display()
+            )
+        })?;
+    file.write_all(run_instance_id.as_bytes())?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    Ok(SpendLedgerLock {
+        path: lock_path,
+        _file: file,
+    })
+}
+
+fn empty_spend_ledger(run_instance_id: &str, effective_config_sha256: &str) -> SpendLedgerPayload {
+    SpendLedgerPayload {
+        run_instance_id: run_instance_id.to_string(),
+        effective_config_sha256: effective_config_sha256.to_string(),
+        generation: 0,
+        operations: BTreeMap::new(),
+    }
+}
+
+fn read_spend_ledger(path: &Path) -> anyhow::Result<Option<SpendLedgerPayload>> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("stat spend ledger {}", path.display()));
+        }
+    };
+    anyhow::ensure!(
+        metadata.file_type().is_file() && !metadata.file_type().is_symlink(),
+        "spend ledger must be a regular non-symlink file"
+    );
+    anyhow::ensure!(
+        metadata.len() <= 16 * 1024 * 1024,
+        "spend ledger exceeds safety limit"
+    );
+    let bytes =
+        std::fs::read(path).with_context(|| format!("read spend ledger {}", path.display()))?;
+    let envelope: SpendLedgerEnvelope = serde_json::from_slice(&bytes)
+        .with_context(|| format!("decode spend ledger {}", path.display()))?;
+    anyhow::ensure!(
+        envelope.schema == SPEND_LEDGER_SCHEMA,
+        "unsupported spend ledger schema"
+    );
+    anyhow::ensure!(
+        envelope.payload_sha256 == stable_json_hash(&envelope.payload)?,
+        "spend ledger checksum mismatch"
+    );
+    Ok(Some(envelope.payload))
+}
+
+fn validate_spend_ledger_owner(
+    payload: &SpendLedgerPayload,
+    run_instance_id: &str,
+    effective_config_sha256: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        payload.run_instance_id == run_instance_id
+            && payload.effective_config_sha256 == effective_config_sha256,
+        "spend ledger is owned by another run/configuration"
+    );
+    Ok(())
+}
+
+fn write_spend_ledger_atomic(
+    path: &Path,
+    payload: &SpendLedgerPayload,
+    injected_failure: Option<SpendPersistFailurePoint>,
+) -> anyhow::Result<()> {
+    #[cfg(not(test))]
+    let _ = injected_failure;
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("spend ledger path has no parent"))?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("create spend ledger directory {}", parent.display()))?;
+    let envelope = SpendLedgerEnvelope {
+        schema: SPEND_LEDGER_SCHEMA.to_string(),
+        payload_sha256: stable_json_hash(payload)?,
+        payload: payload.clone(),
+    };
+    let temp_path = spend_sibling_path(
+        path,
+        &format!(".tmp.{}.{}", std::process::id(), payload.generation),
+    );
+    struct TempGuard(PathBuf);
+    impl Drop for TempGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _guard = TempGuard(temp_path.clone());
+    use std::io::Write;
+    let mut temp = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)
+        .with_context(|| format!("create spend ledger temp file {}", temp_path.display()))?;
+    serde_json::to_writer(&mut temp, &envelope)?;
+    temp.write_all(b"\n")?;
+    temp.sync_all()?;
+    #[cfg(test)]
+    if injected_failure == Some(SpendPersistFailurePoint::BeforeRename) {
+        anyhow::bail!("injected spend ledger failure before atomic rename");
+    }
+    std::fs::rename(&temp_path, path)
+        .with_context(|| format!("replace spend ledger {}", path.display()))?;
+    #[cfg(test)]
+    if injected_failure == Some(SpendPersistFailurePoint::AfterRenameBeforeDirectoryFsync) {
+        anyhow::bail!("injected spend ledger failure after rename before directory fsync");
+    }
+    std::fs::File::open(parent)
+        .with_context(|| format!("open spend ledger directory {}", parent.display()))?
+        .sync_all()
+        .with_context(|| format!("fsync spend ledger directory {}", parent.display()))?;
+    Ok(())
+}
+
+fn update_spend_ledger(
     path: Option<&Path>,
     run_instance_id: &str,
     effective_config_sha256: &str,
+    operation_id: &str,
     case_id: &str,
-    traces: &[SpendTrace],
-    #[cfg(test)] injected_failure: Option<SpendPersistFailurePoint>,
-    #[cfg(not(test))] _injected_failure: Option<()>,
-) -> anyhow::Result<()> {
-    if traces.is_empty() {
-        return Ok(());
-    }
+    transition: SpendTransition,
+    injected_failure: Option<SpendPersistFailurePoint>,
+) -> anyhow::Result<PersistedSpendOperation> {
     let path = path.ok_or_else(|| anyhow::anyhow!("provider spend has no durable ledger"))?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create spend ledger directory {}", parent.display()))?;
     }
-    use std::io::Write;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("open spend ledger {}", path.display()))?;
-    #[cfg(test)]
-    if injected_failure == Some(SpendPersistFailurePoint::Append) {
-        anyhow::bail!("injected spend ledger append failure");
+    let _lock = lock_spend_ledger(path, run_instance_id)?;
+    let mut payload = read_spend_ledger(path)?
+        .unwrap_or_else(|| empty_spend_ledger(run_instance_id, effective_config_sha256));
+    validate_spend_ledger_owner(&payload, run_instance_id, effective_config_sha256)?;
+    match transition {
+        SpendTransition::Reserve(reservation) => {
+            anyhow::ensure!(
+                reservation.status == SpendStatus::Reserved,
+                "reservation transition has non-reserved status"
+            );
+            if let Some(existing) = payload.operations.get(operation_id) {
+                anyhow::ensure!(
+                    existing.operation_id == operation_id
+                        && existing.case_id == case_id
+                        && existing.reservation == reservation,
+                    "spend reservation replay changed immutable operation fields"
+                );
+                return Ok(existing.clone());
+            }
+            payload.operations.insert(
+                operation_id.to_string(),
+                PersistedSpendOperation {
+                    operation_id: operation_id.to_string(),
+                    case_id: case_id.to_string(),
+                    reservation,
+                    terminal: None,
+                },
+            );
+        }
+        SpendTransition::Finish(terminal) => {
+            anyhow::ensure!(
+                matches!(
+                    terminal.status,
+                    SpendStatus::Succeeded | SpendStatus::Failed
+                ),
+                "terminal transition has reserved status"
+            );
+            let existing = payload
+                .operations
+                .get_mut(operation_id)
+                .ok_or_else(|| anyhow::anyhow!("terminal transition has no durable reservation"))?;
+            anyhow::ensure!(
+                existing.case_id == case_id
+                    && existing.reservation.call_id == terminal.call_id
+                    && existing.reservation.provider == terminal.provider
+                    && existing.reservation.model == terminal.model
+                    && existing.reservation.pricing_table_version == terminal.pricing_table_version,
+                "terminal transition changed immutable reservation identity"
+            );
+            if let Some(authoritative) = &existing.terminal {
+                anyhow::ensure!(
+                    authoritative == &terminal,
+                    "spend operation already has a different authoritative terminal"
+                );
+                return Ok(existing.clone());
+            }
+            existing.terminal = Some(terminal);
+        }
     }
-    for trace in traces {
-        serde_json::to_writer(
-            &mut file,
-            &serde_json::json!({
-                "run_instance_id": run_instance_id,
-                "effective_config_sha256": effective_config_sha256,
-                "case_id": case_id,
-                "trace": trace,
-            }),
-        )?;
-        file.write_all(b"\n")?;
-    }
-    #[cfg(test)]
-    if injected_failure == Some(SpendPersistFailurePoint::Fsync) {
-        anyhow::bail!("injected spend ledger fsync failure");
-    }
-    file.sync_all()?;
-    Ok(())
+    payload.generation = payload.generation.saturating_add(1);
+    write_spend_ledger_atomic(path, &payload, injected_failure)?;
+    payload
+        .operations
+        .get(operation_id)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("persisted spend operation disappeared"))
+}
+
+fn read_spend_operation(
+    path: Option<&Path>,
+    run_instance_id: &str,
+    effective_config_sha256: &str,
+    operation_id: &str,
+) -> anyhow::Result<Option<PersistedSpendOperation>> {
+    let path = path.ok_or_else(|| anyhow::anyhow!("provider spend has no durable ledger"))?;
+    let Some(payload) = read_spend_ledger(path)? else {
+        return Ok(None);
+    };
+    validate_spend_ledger_owner(&payload, run_instance_id, effective_config_sha256)?;
+    Ok(payload.operations.get(operation_id).cloned())
 }
 
 /// Builds a media-dependent LongMemEval-v2 subset from explicit human-reviewed annotations.
@@ -3454,6 +4491,9 @@ fn fired_proof(
         collapse_fingerprint: stable_json_hash(&response.execution.collapse_clusters)?,
         oracle_region_count: response.execution.oracle_regions_applied.len(),
         reader_input_fingerprint: stable_json_hash(reader_inputs)?,
+        bound_reader_request_sha256: None,
+        bound_reader_effective_request_sha256: None,
+        bound_reader_effective_input_fingerprint: None,
         retrieved_region_fingerprint: stable_json_hash(&regions)?,
     })
 }
@@ -3912,6 +4952,8 @@ mod repair_tests {
         observed_oracle: bool,
         observed_question_media: bool,
         corrupt_binding: bool,
+        conflicting_raw_binding: bool,
+        conflicting_projection_binding: bool,
         invalid_scores: bool,
         invalid_spend: bool,
         fail_after_spend: bool,
@@ -3936,6 +4978,20 @@ mod repair_tests {
             if self.corrupt_binding {
                 captured.artifacts[0].binding_id =
                     format!("cas://sha256/{}", captured.artifacts[0].blob.id.value);
+            }
+            if self.conflicting_raw_binding && captured.artifacts.len() > 1 {
+                captured.artifacts[1].binding_id = captured.artifacts[0].binding_id.clone();
+            }
+            if self.conflicting_projection_binding && captured.artifacts.len() > 1 {
+                let first = captured.artifacts[0]
+                    .projection
+                    .as_ref()
+                    .and_then(|projection| projection.output_binding_id.clone());
+                if let (Some(binding_id), Some(second)) =
+                    (first, captured.artifacts[1].projection.as_mut())
+                {
+                    second.output_binding_id = Some(binding_id);
+                }
             }
             Ok(captured)
         }
@@ -3983,6 +5039,7 @@ mod repair_tests {
         tamper_blob_retrieval: bool,
         invalid_collapse: bool,
         skip_reader: bool,
+        return_cached_reader_text_from_retrieval: bool,
     }
 
     impl MultimodalRecallAdapter for HybridAdapter {
@@ -4161,6 +5218,169 @@ mod repair_tests {
                 })
             })()
         }
+
+        fn retrieve(
+            &mut self,
+            request: &RetrievalRequest,
+            _spend: &mut SpendJournal,
+        ) -> Result<RetrievalResponse, AdapterFailure> {
+            (|| {
+                if request.lane != RecallLane::HybridCollapsed {
+                    return Err(AdapterFailure::Failed(
+                        "cell E retrieval must be hybrid".to_string(),
+                    ));
+                }
+                let artifacts: Vec<_> = request
+                    .corpus
+                    .artifacts
+                    .iter()
+                    .filter(|artifact| artifact.projection.is_some())
+                    .cloned()
+                    .collect();
+                let mut text = Vec::new();
+                let mut native = Vec::new();
+                for (index, artifact) in artifacts.iter().enumerate() {
+                    let score = 1.0 - index as f32 / 100.0;
+                    text.push(BranchCandidate {
+                        candidate_id: format!("text-{index}"),
+                        evidence_id: artifact.evidence_id.clone(),
+                        lane: RecallLane::TextProjection,
+                        profile_id: None,
+                        score,
+                        artifact: scored_artifact(
+                            artifact,
+                            RecallLane::TextProjection,
+                            None,
+                            score,
+                        ),
+                    });
+                    native.push(BranchCandidate {
+                        candidate_id: format!("native-{index}"),
+                        evidence_id: artifact.evidence_id.clone(),
+                        lane: RecallLane::Native,
+                        profile_id: Some("native-v1".to_string()),
+                        score,
+                        artifact: scored_artifact(
+                            artifact,
+                            RecallLane::Native,
+                            Some("native-v1"),
+                            score,
+                        ),
+                    });
+                }
+                let product_collapses = expected_product_collapses(&text, &native);
+                let mut clusters: Vec<_> = product_collapses
+                    .iter()
+                    .map(|collapse| CollapseCluster {
+                        representative_candidate_id: collapse.member_candidate_ids[0].clone(),
+                        member_candidate_ids: collapse.member_candidate_ids.clone(),
+                    })
+                    .collect();
+                if self.invalid_collapse {
+                    let split = clusters[0]
+                        .member_candidate_ids
+                        .pop()
+                        .ok_or_else(|| AdapterFailure::Failed("no collapse member".to_string()))?;
+                    clusters.push(CollapseCluster {
+                        representative_candidate_id: split.clone(),
+                        member_candidate_ids: vec![split],
+                    });
+                }
+                let representative_id = clusters
+                    .first()
+                    .map(|cluster| cluster.representative_candidate_id.as_str())
+                    .ok_or_else(|| AdapterFailure::Failed("no artifact".to_string()))?;
+                let representative = text
+                    .iter()
+                    .chain(&native)
+                    .find(|candidate| candidate.candidate_id == representative_id)
+                    .ok_or_else(|| AdapterFailure::Failed("no representative".to_string()))?;
+                let mut artifact = product_collapses[0].artifact.clone();
+                artifact.evidence_id = representative.evidence_id.clone();
+                Ok(RetrievalResponse {
+                    retrieved: vec![RetrievedEvidence {
+                        evidence_id: artifact.evidence_id.clone(),
+                        lane: RecallLane::TextProjection,
+                        artifact,
+                        rendered_text: self
+                            .return_cached_reader_text_from_retrieval
+                            .then(|| "cached import text".to_string()),
+                    }],
+                    execution: RetrievalExecutionProof {
+                        effective_lane: RecallLane::HybridCollapsed,
+                        text_branch_candidates: text,
+                        native_branch_candidates: native,
+                        collapse_clusters: clusters,
+                        oracle_regions_applied: Vec::new(),
+                    },
+                })
+            })()
+        }
+    }
+
+    struct BoundEchoReader {
+        mode: ReaderMode,
+        tamper_request_hash: bool,
+        calls: usize,
+        observed_input_counts: Vec<usize>,
+    }
+
+    impl BoundEchoReader {
+        fn new(mode: ReaderMode) -> Self {
+            Self {
+                mode,
+                tamper_request_hash: false,
+                calls: 0,
+                observed_input_counts: Vec::new(),
+            }
+        }
+    }
+
+    impl MultimodalReaderAdapter for BoundEchoReader {
+        fn descriptor(&self) -> ReaderDescriptor {
+            ReaderDescriptor {
+                reader_id: match self.mode {
+                    ReaderMode::TextProjection => "bound-text-reader",
+                    ReaderMode::SourceBlob => "bound-blob-reader",
+                }
+                .to_string(),
+                reader_version: "1".to_string(),
+                mode: self.mode,
+            }
+        }
+
+        fn read(
+            &mut self,
+            request: &BoundReaderRequest,
+            _spend: &mut SpendJournal,
+        ) -> Result<BoundReaderResponse, AdapterFailure> {
+            self.calls += 1;
+            self.observed_input_counts
+                .push(request.invocation.inputs.len());
+            let answer = match self.mode {
+                ReaderMode::TextProjection => request
+                    .invocation
+                    .inputs
+                    .first()
+                    .and_then(|input| String::from_utf8(input.bytes.clone()).ok())
+                    .unwrap_or_else(|| "no text".to_string()),
+                ReaderMode::SourceBlob => "source blob reader answer".to_string(),
+            };
+            Ok(BoundReaderResponse {
+                answer,
+                effective_request_sha256: if self.tamper_request_hash {
+                    sha256(b"wrong request")
+                } else {
+                    request.request_sha256.clone()
+                },
+                effective_input_sha256: request
+                    .invocation
+                    .inputs
+                    .iter()
+                    .map(|input| sha256(&input.bytes))
+                    .collect(),
+            })
+        }
     }
 
     #[test]
@@ -4310,7 +5530,7 @@ mod repair_tests {
         let checked = fixture();
         let error =
             verify_corpus_assets(&checked.corpora[0], root.path(), 16 * 1024 * 1024).unwrap_err();
-        assert!(error.to_string().contains("symlink"));
+        assert!(error.to_string().contains("following links"));
     }
 
     #[test]
@@ -4434,6 +5654,67 @@ mod repair_tests {
     }
 
     #[test]
+    fn corpus_rejects_conflicting_raw_binding_to_blob_mapping() {
+        let mut adapter = SpyAdapter {
+            conflicting_raw_binding: true,
+            ..SpyAdapter::default()
+        };
+        let error = run_experiment(
+            &fixture(),
+            &plan(ExperimentArm::text_control()),
+            &mut adapter,
+            &DeterministicScorer,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("conflicting blob metadata"));
+    }
+
+    #[test]
+    fn corpus_rejects_conflicting_projection_binding_to_blob_mapping() {
+        let mut adapter = SpyAdapter {
+            conflicting_projection_binding: true,
+            ..SpyAdapter::default()
+        };
+        let error = run_experiment(
+            &fixture(),
+            &plan(ExperimentArm::text_control()),
+            &mut adapter,
+            &DeterministicScorer,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("conflicting blob metadata"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fixture_import_rejects_hard_linked_source_descriptor() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("assets")).unwrap();
+        for name in [
+            "incident.svg",
+            "invoice.pdf",
+            "forecast.csv",
+            "distractor.txt",
+        ] {
+            fs::copy(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("fixtures/multimodal/v1/assets")
+                    .join(name),
+                root.path().join("assets").join(name),
+            )
+            .unwrap();
+        }
+        fs::hard_link(
+            root.path().join("assets/incident.svg"),
+            root.path().join("assets/incident-alias.svg"),
+        )
+        .unwrap();
+        let error =
+            verify_corpus_assets(&fixture().corpora[0], root.path(), 16 * 1024 * 1024).unwrap_err();
+        assert!(error.to_string().contains("hard-linked"));
+    }
+
+    #[test]
     fn provider_dispatch_cannot_reserve_beyond_budget() {
         let root = tempfile::tempdir().unwrap();
         let mut run_plan = plan(ExperimentArm::text_control());
@@ -4495,6 +5776,137 @@ mod repair_tests {
     }
 
     #[test]
+    fn spend_ledger_rejects_a_second_run_owner() {
+        let root = tempfile::tempdir().unwrap();
+        let ledger = root.path().join("spend.json");
+        let config = sha256(b"shared-ledger-config");
+        let budget = RemainingBudget {
+            provider_calls: 1,
+            cost_micro_usd: 10,
+        };
+        let mut first = SpendJournal::new(
+            "ledger-owner-one",
+            &config,
+            "case",
+            Some(&ledger),
+            budget.clone(),
+            true,
+        );
+        first
+            .reserve("call", "provider", "model", 10, "test")
+            .unwrap();
+        let mut second = SpendJournal::new(
+            "ledger-owner-two",
+            &config,
+            "case",
+            Some(&ledger),
+            budget,
+            true,
+        );
+        let error = second
+            .reserve("call", "provider", "model", 10, "test")
+            .unwrap_err();
+        assert!(error.to_string().contains("owned by another run"));
+    }
+
+    #[test]
+    fn spend_ledger_lock_prevents_interleaved_transition() {
+        let root = tempfile::tempdir().unwrap();
+        let ledger = root.path().join("spend.json");
+        let mut journal = SpendJournal::new(
+            "locked-ledger",
+            &sha256(b"locked-ledger-config"),
+            "case",
+            Some(&ledger),
+            RemainingBudget {
+                provider_calls: 1,
+                cost_micro_usd: 10,
+            },
+            true,
+        );
+        let reservation = journal
+            .reserve("call", "provider", "model", 10, "test")
+            .unwrap();
+        let lock = spend_sibling_path(&ledger, ".lock");
+        fs::write(&lock, b"other process\n").unwrap();
+        let error = journal.finish(reservation, true, 1, 1, 1).unwrap_err();
+        assert!(error.to_string().contains("locked by another process"));
+        assert!(journal.open.contains_key("call"));
+        fs::remove_file(lock).unwrap();
+        assert!(journal.close_unfinished_as_failed().unwrap());
+    }
+
+    #[test]
+    fn spend_operation_replay_is_idempotent_and_rejects_contradictory_terminal() {
+        let root = tempfile::tempdir().unwrap();
+        let ledger = root.path().join("spend.json");
+        let config = sha256(b"replay-ledger-config");
+        let budget = RemainingBudget {
+            provider_calls: 1,
+            cost_micro_usd: 10,
+        };
+        let mut crashed = SpendJournal::new(
+            "replay-ledger",
+            &config,
+            "case",
+            Some(&ledger),
+            budget.clone(),
+            true,
+        );
+        crashed
+            .reserve("call", "provider", "model", 10, "test")
+            .unwrap();
+        drop(crashed);
+
+        let mut replay = SpendJournal::new(
+            "replay-ledger",
+            &config,
+            "case",
+            Some(&ledger),
+            budget.clone(),
+            true,
+        );
+        let reservation = replay
+            .reserve("call", "provider", "model", 10, "test")
+            .unwrap();
+        replay.finish(reservation, true, 2, 1, 3).unwrap();
+
+        let mut contradiction = SpendJournal::new(
+            "replay-ledger",
+            &config,
+            "case",
+            Some(&ledger),
+            budget,
+            true,
+        );
+        let reservation = contradiction
+            .reserve("call", "provider", "model", 10, "test")
+            .unwrap();
+        let error = contradiction
+            .finish(reservation, false, 0, 0, 10)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("different authoritative terminal")
+        );
+        assert!(contradiction.close_unfinished_as_failed().unwrap());
+
+        let payload = read_spend_ledger(&ledger).unwrap().unwrap();
+        assert_eq!(payload.operations.len(), 1);
+        let terminal = payload
+            .operations
+            .values()
+            .next()
+            .unwrap()
+            .terminal
+            .as_ref()
+            .unwrap();
+        assert_eq!(terminal.status, SpendStatus::Succeeded);
+        assert_eq!(terminal.cost_micro_usd, 3);
+    }
+
+    #[test]
     fn branch_score_must_map_to_product_retrieval_scores() {
         let mut adapter = SpyAdapter {
             invalid_scores: true,
@@ -4533,18 +5945,25 @@ mod repair_tests {
             run_experiment(&fixture(), &run_plan, &mut adapter, &DeterministicScorer).unwrap_err();
         assert!(error.to_string().contains("provider failed"));
         assert!(adapter.ledger_visible_before_failed_dispatch);
-        let lines = fs::read_to_string(ledger).unwrap();
-        assert_eq!(lines.lines().count(), 2);
-        assert!(lines.contains("failed"));
-        assert!(lines.contains(&run_plan.run_instance_id));
-        assert!(lines.contains(&run_plan.effective_config_sha256));
+        let payload = read_spend_ledger(&ledger).unwrap().unwrap();
+        assert_eq!(payload.operations.len(), 1);
+        assert_eq!(payload.run_instance_id, run_plan.run_instance_id);
+        assert_eq!(
+            payload.effective_config_sha256,
+            run_plan.effective_config_sha256
+        );
+        let operation = payload.operations.values().next().unwrap();
+        assert_eq!(
+            operation.terminal.as_ref().unwrap().status,
+            SpendStatus::Failed
+        );
     }
 
     #[test]
-    fn injected_append_and_fsync_failures_keep_reservation_open_and_close_at_ceiling() {
+    fn atomic_ledger_reconciles_pre_and_post_rename_failures_without_two_terminals() {
         for (index, failure) in [
-            SpendPersistFailurePoint::Append,
-            SpendPersistFailurePoint::Fsync,
+            SpendPersistFailurePoint::BeforeRename,
+            SpendPersistFailurePoint::AfterRenameBeforeDirectoryFsync,
         ]
         .into_iter()
         .enumerate()
@@ -4573,12 +5992,21 @@ mod repair_tests {
 
             assert!(journal.close_unfinished_as_failed().unwrap());
             assert!(journal.open.is_empty());
-            let lines = fs::read_to_string(&ledger).unwrap();
-            assert!(lines.lines().count() >= 2);
-            let last: serde_json::Value =
-                serde_json::from_str(lines.lines().last().unwrap()).unwrap();
-            assert_eq!(last["trace"]["status"], "failed");
-            assert_eq!(last["trace"]["cost_micro_usd"], 100);
+            let payload = read_spend_ledger(&ledger).unwrap().unwrap();
+            assert_eq!(payload.operations.len(), 1);
+            let operation = payload.operations.values().next().unwrap();
+            let terminal = operation.terminal.as_ref().unwrap();
+            match failure {
+                SpendPersistFailurePoint::BeforeRename => {
+                    assert_eq!(terminal.status, SpendStatus::Failed);
+                    assert_eq!(terminal.cost_micro_usd, 100);
+                }
+                SpendPersistFailurePoint::AfterRenameBeforeDirectoryFsync => {
+                    assert_eq!(terminal.status, SpendStatus::Succeeded);
+                    assert_eq!(terminal.cost_micro_usd, 7);
+                }
+            }
+            assert_eq!(journal.traces.len(), 2);
         }
     }
 
@@ -4599,10 +6027,14 @@ mod repair_tests {
     #[test]
     fn cell_e_reuses_byte_identical_retrieval_for_both_readers() {
         let mut adapter = HybridAdapter::default();
+        let mut text_reader = BoundEchoReader::new(ReaderMode::TextProjection);
+        let mut blob_reader = BoundEchoReader::new(ReaderMode::SourceBlob);
         let pair = run_reader_modality_pair(
             &fixture(),
             &plan(ExperimentArm::reader_modality(ReaderMode::TextProjection)),
             &mut adapter,
+            &mut text_reader,
+            &mut blob_reader,
             &DeterministicScorer,
         )
         .unwrap();
@@ -4622,6 +6054,20 @@ mod repair_tests {
                     .all(|read| read.mode == ReaderMode::SourceBlob)
             );
         }
+        assert_eq!(text_reader.calls, fixture().cases.len());
+        assert_eq!(blob_reader.calls, fixture().cases.len());
+        assert!(
+            text_reader
+                .observed_input_counts
+                .iter()
+                .all(|count| *count == 1)
+        );
+        assert!(
+            blob_reader
+                .observed_input_counts
+                .iter()
+                .all(|count| *count == 1)
+        );
     }
 
     #[test]
@@ -4661,19 +6107,47 @@ mod repair_tests {
     }
 
     #[test]
-    fn cell_e_rejects_reader_dependent_retrieval() {
-        let mut adapter = HybridAdapter {
-            tamper_blob_retrieval: true,
-            ..HybridAdapter::default()
-        };
+    fn cell_e_rejects_reader_effective_request_hash_mismatch() {
+        let mut adapter = HybridAdapter::default();
+        let mut text_reader = BoundEchoReader::new(ReaderMode::TextProjection);
+        let mut blob_reader = BoundEchoReader::new(ReaderMode::SourceBlob);
+        blob_reader.tamper_request_hash = true;
         let error = run_reader_modality_pair(
             &fixture(),
             &plan(ExperimentArm::reader_modality(ReaderMode::TextProjection)),
             &mut adapter,
+            &mut text_reader,
+            &mut blob_reader,
             &DeterministicScorer,
         )
         .unwrap_err();
-        assert!(error.to_string().contains("frozen retrieval"));
+        assert!(error.to_string().contains("effective request hash"));
+    }
+
+    #[test]
+    fn cell_e_retrieval_cannot_smuggle_cached_projection_text_to_reader() {
+        let mut adapter = HybridAdapter {
+            return_cached_reader_text_from_retrieval: true,
+            ..HybridAdapter::default()
+        };
+        let mut text_reader = BoundEchoReader::new(ReaderMode::TextProjection);
+        let mut blob_reader = BoundEchoReader::new(ReaderMode::SourceBlob);
+        let error = run_reader_modality_pair(
+            &fixture(),
+            &plan(ExperimentArm::reader_modality(ReaderMode::TextProjection)),
+            &mut adapter,
+            &mut text_reader,
+            &mut blob_reader,
+            &DeterministicScorer,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("attempted to return reader material")
+        );
+        assert_eq!(text_reader.calls, 0);
+        assert_eq!(blob_reader.calls, 0);
     }
 
     #[test]

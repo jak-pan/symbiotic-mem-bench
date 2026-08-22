@@ -34,9 +34,11 @@ is also non-official and non-rankable.
 ## Fixture contract
 
 `membench.multimodal_fixture.v1` stores import-only, dataset-relative media paths plus SHA-256,
-byte length, and media type. Before the adapter runs, the harness rejects missing, linked,
-out-of-root, over-limit, size-mismatched, or digest-mismatched bytes. `max_import_asset_bytes` is a
-required positive per-asset ceiling. The adapter imports those bytes once and
+byte length, and media type. Before the adapter runs, the harness opens every path component with
+descriptor-relative `O_NOFOLLOW`, rejects hard links, checks metadata on the final descriptor,
+then streams at most `max_import_asset_bytes + 1` bytes and hashes those same bytes. Missing,
+linked, out-of-root, over-limit, size-mismatched, or digest-mismatched bytes fail closed.
+`max_import_asset_bytes` is a required positive per-asset ceiling. The adapter imports those bytes once and
 returns product-compatible binding, blob, region, projection, truth-tier, and retrieval metadata.
 Captured source artifacts retain the raw source binding/blob and raw truth tier. Text branch hits
 carry the registered projection output binding/blob and deterministic-projection truth tier; native
@@ -94,10 +96,13 @@ The released dataset does not supply gold evidence labels, so the reviewed annot
 `ExecutionBudget::offline()` allows zero provider calls and zero micro-USD. Every non-provider
 cost-ladder step categorically rejects nonzero provider maxima before descriptor, import, or recall,
 and its `SpendJournal` rejects reservation even if constructed with numeric capacity. Every provider
-call must first obtain a reservation from the harness-owned journal. The journal appends and fsyncs
-the reservation before returning control to the adapter, then requires a terminal spend event.
-Terminal events append and fsync before the open reservation is removed; a persistence failure
-leaves it open so finalization can record a failed event at the reserved ceiling.
+call must first obtain a reservation from the harness-owned journal. The journal uses stable
+operation IDs in a checksummed state file, a cross-process create-new lock, and fsynced atomic
+replacement. Each reservation has at most one authoritative terminal. A failure before rename
+leaves the durable reservation pending so finalization records failure at the reserved ceiling; an
+ambiguous failure after rename is reconciled from the authoritative state and never followed by a
+contradictory terminal. Replaying the same operation is idempotent; changed identity or terminal
+facts fail closed.
 When recall returns with an unfinished reservation, the harness durably closes it as failed at the
 reserved ceiling before propagating the error; missing usage is never interpreted as zero. No
 provider-backed phase was run while building this apparatus. Every ledger event includes the unique
@@ -105,10 +110,14 @@ run-instance ID and effective-config digest so concurrent or repeated runs canno
 Before any adapter work, the runner claims that identity in a harness-owned registry using
 create-new semantics; a duplicate run instance fails closed.
 
-Cell E uses `run_reader_modality_pair`: C's retrieval and collapse output is frozen once and its
-serialized artifact must remain byte-identical for the text-projection and source-blob readers.
-The text arm must resolve the registered projection bytes and the blob arm must resolve the raw
-source bytes through the journaled resolver.
+Cell E uses `run_reader_modality_pair` with three distinct objects: a retrieval/import adapter, an
+isolated text reader, and an isolated blob reader. Retrieval runs once through a no-answer API and
+may return pointers only; cached/rendered text is rejected before either reader runs. The harness
+freezes that retrieval, resolves only the selected registered bytes, and invokes each reader with a
+request hash covering the question, frozen retrieval fingerprint, binding, media type, byte digest,
+exact bytes, and budget. The response must echo the effective request hash and ordered effective
+input hashes. The text reader therefore receives only selected projection bytes and the blob reader
+only selected raw source bytes; neither participates in corpus import or retrieval.
 
 ## Symbiotic Memory adapter seam
 
