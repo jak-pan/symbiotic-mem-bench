@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 pub const FIXTURE_SCHEMA: &str = "membench.multimodal_fixture.v1";
 pub const ANNOTATION_SCHEMA: &str = "membench.longmemeval_v2_image_annotations.v1";
 pub const RESULT_SCHEMA: &str = "membench.multimodal_result.v1";
-pub const PINNED_PRODUCT_GIT_SHA: &str = "fabfd310045bb6d0e47f957ee951e3dd8d6c809c";
+pub const PINNED_PRODUCT_GIT_SHA: &str = "022c22af37d9ba166e347dcd54f4db85142f8cea";
 pub const PINNED_PRODUCT_CONTRACT_SHA256: &str =
     "d44178f863361aecc5c2208399ba2a9b7cc5cb37d0bd09cd75e0419ebb96c529";
 const PRODUCT_CONTRACT_PATH: &str = "contracts/multimodal-recall-contract.v1.json";
