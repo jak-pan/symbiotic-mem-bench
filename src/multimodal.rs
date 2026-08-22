@@ -5,7 +5,7 @@
 //! benchmark code from copying a product's parser, blob store, index, or recall implementation.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -22,7 +22,16 @@ pub struct MultimodalFixtureSet {
     pub fixture_set_id: String,
     pub split: FixtureSplit,
     pub source: DatasetProvenance,
+    /// Full retrieval corpora, including distractors. Oracle annotations never construct this list.
+    pub corpora: Vec<MultimodalCorpus>,
     pub cases: Vec<MultimodalCase>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MultimodalCorpus {
+    pub corpus_id: String,
+    pub evidence: Vec<EvidenceItem>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -43,8 +52,6 @@ pub struct DatasetProvenance {
     pub source_uri: Option<String>,
     /// Whether this fixture is identical to an official benchmark release and scoring protocol.
     pub official_equivalent: bool,
-    /// Subset, oracle, synthetic, and apparatus-only fixtures must set this false.
-    pub leaderboard_eligible: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -61,7 +68,6 @@ pub struct MultimodalCase {
     pub media_dependence_review: Option<MediaDependenceReview>,
     pub oracle_lane: RecallLane,
     pub oracle_evidence: Vec<EvidenceRegion>,
-    pub evidence: Vec<EvidenceItem>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -95,6 +101,154 @@ pub struct MediaRef {
     pub locator: String,
     pub sha256: String,
     pub media_type: String,
+    pub size_bytes: u64,
+}
+
+/// Product-wire-compatible blob identity returned after fixture import.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapturedContentDigest {
+    pub algorithm: String,
+    pub value: String,
+}
+
+/// Mirrors the product `BlobRef` JSON shape. The product's `BlobId` newtype serializes as its
+/// inner `ContentDigest`, so `id` is deliberately nested here.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapturedBlobRef {
+    pub id: CapturedContentDigest,
+    pub size_bytes: u64,
+    pub detected_media_type: String,
+}
+
+/// Mirrors the product `RegionLocator` JSON shape.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapturedRegionLocator {
+    Whole,
+    Page {
+        index: u32,
+    },
+    Sheet {
+        name: String,
+    },
+    CellRange {
+        sheet: String,
+        a1: String,
+    },
+    Rectangle {
+        anchor_region_id: String,
+        coordinate_space: CapturedCoordinateSpace,
+        x: i64,
+        y: i64,
+        width: u64,
+        height: u64,
+        rotation_millidegrees: i32,
+    },
+    TimeRange {
+        start_ms: u64,
+        end_ms: u64,
+    },
+    ByteRange {
+        start: u64,
+        end_exclusive: u64,
+    },
+    Named {
+        scheme: String,
+        value: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapturedCoordinateSpace {
+    PdfPoints,
+    Pixels,
+    NormalizedMillionths,
+    OfficeEmu,
+}
+
+/// Mirrors the product `RegionRef` JSON shape.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Hash, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapturedRegionRef {
+    pub region_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_region_id: Option<String>,
+    pub locator: CapturedRegionLocator,
+}
+
+/// Mirrors the product `RetrievalScores` JSON shape.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapturedRetrievalScores {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_projection: Option<f32>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub native_profiles: BTreeMap<String, f32>,
+    pub fused: f32,
+}
+
+/// Product-wire-compatible captured pointer. The fixture locator is import input only; this binding
+/// is the sole authority presented to recall and reader stages.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapturedArtifact {
+    /// Benchmark envelope identity; not part of product `ArtifactEvidence`.
+    pub evidence_id: String,
+    /// Bench-only integrity witness for deterministic reader bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection_output_sha256: Option<String>,
+    pub product: CapturedArtifactEvidence,
+}
+
+/// Exact public wire mirror of the product `ArtifactEvidence` shape. A checked drift fixture pins
+/// this independent copy until the product publishes a stable crate dependency.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapturedArtifactEvidence {
+    pub binding_id: String,
+    pub blob: CapturedBlobRef,
+    pub region: CapturedRegionRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection: Option<CapturedProjectionRef>,
+    pub truth_tier: TruthTier,
+    pub retrieval: CapturedRetrievalScores,
+}
+
+impl std::ops::Deref for CapturedArtifact {
+    type Target = CapturedArtifactEvidence;
+
+    fn deref(&self) -> &Self::Target {
+        &self.product
+    }
+}
+
+impl std::ops::DerefMut for CapturedArtifact {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.product
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapturedProjectionRef {
+    pub execution_id: String,
+    pub source_binding_id: String,
+    pub source_region_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_binding_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transformed_at: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TruthTier {
+    Raw,
+    DeterministicProjection,
+    ModelProjection,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -309,9 +463,41 @@ pub struct AdapterDescriptor {
 pub trait MultimodalRecallAdapter {
     fn descriptor(&self) -> AdapterDescriptor;
 
+    /// Import the complete verified corpus and return product-compatible captured pointers. The
+    /// adapter may use fixture locators only during this import step.
+    fn import_corpus(
+        &mut self,
+        request: &CorpusImportRequest,
+        spend: &mut SpendJournal,
+    ) -> Result<CapturedCorpus, AdapterFailure>;
+
     /// The request contains no gold answer. Cell D contains gold *evidence regions* and is stamped
     /// as oracle-only in provenance; it can never be mistaken for a normal system score.
-    fn recall(&mut self, request: &RecallRequest) -> Result<RecallResponse, AdapterFailure>;
+    fn recall(
+        &mut self,
+        request: &RecallRequest,
+        spend: &mut SpendJournal,
+    ) -> Result<RecallResponse, AdapterFailure>;
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CorpusImportRequest {
+    pub corpus_id: String,
+    /// Exact verified bytes plus their fixture metadata. Paths never cross the adapter boundary.
+    pub items: Vec<VerifiedEvidenceImport>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct VerifiedEvidenceImport {
+    pub evidence: EvidenceItem,
+    pub source_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapturedCorpus {
+    pub corpus_id: String,
+    pub artifacts: Vec<CapturedArtifact>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -320,11 +506,38 @@ pub struct RecallRequest {
     pub case_id: String,
     pub corpus_id: String,
     pub question: ContentSpec,
-    pub evidence: Vec<EvidenceItem>,
+    pub corpus: CapturedCorpus,
     pub lane: RecallLane,
     pub reader_mode: ReaderMode,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub oracle_regions: Vec<EvidenceRegion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frozen_retrieval: Option<FrozenRetrieval>,
+    pub budget: RemainingBudget,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemainingBudget {
+    pub provider_calls: u64,
+    pub cost_micro_usd: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrozenRetrieval {
+    pub fingerprint: String,
+    pub retrieved: Vec<FrozenRetrievedEvidence>,
+}
+
+/// Reader-neutral retrieval selection. Reader materialization is deliberately absent so the
+/// frozen artifact cannot leak a prior reader's projection text.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrozenRetrievedEvidence {
+    pub evidence_id: String,
+    pub lane: RecallLane,
+    pub artifact: CapturedArtifact,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -333,8 +546,196 @@ pub struct RecallResponse {
     pub answer: String,
     pub retrieved: Vec<RetrievedEvidence>,
     pub execution: AdapterExecutionProof,
-    pub provider_calls: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpendTrace {
+    pub call_id: String,
+    pub provider: String,
+    pub model: String,
+    pub status: SpendStatus,
+    pub input_units: u64,
+    pub output_units: u64,
     pub cost_micro_usd: u64,
+    pub pricing_table_version: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpendStatus {
+    Reserved,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpendReservation {
+    call_id: String,
+}
+
+/// Harness-owned provider budget and durable journal. `reserve` appends and fsyncs before it
+/// returns, so an adapter cannot begin a provider dispatch with only an after-the-fact claim.
+#[derive(Debug)]
+pub struct SpendJournal {
+    run_instance_id: String,
+    effective_config_sha256: String,
+    case_id: String,
+    ledger_path: Option<PathBuf>,
+    remaining: RemainingBudget,
+    traces: Vec<SpendTrace>,
+    open: BTreeMap<String, SpendTrace>,
+    reserved_calls: u64,
+    reserved_cost_micro_usd: u64,
+}
+
+impl SpendJournal {
+    fn new(
+        run_instance_id: &str,
+        effective_config_sha256: &str,
+        case_id: &str,
+        ledger_path: Option<&Path>,
+        remaining: RemainingBudget,
+    ) -> Self {
+        Self {
+            run_instance_id: run_instance_id.to_string(),
+            effective_config_sha256: effective_config_sha256.to_string(),
+            case_id: case_id.to_string(),
+            ledger_path: ledger_path.map(Path::to_path_buf),
+            remaining,
+            traces: Vec::new(),
+            open: BTreeMap::new(),
+            reserved_calls: 0,
+            reserved_cost_micro_usd: 0,
+        }
+    }
+
+    pub fn reserve(
+        &mut self,
+        call_id: impl Into<String>,
+        provider: impl Into<String>,
+        model: impl Into<String>,
+        max_cost_micro_usd: u64,
+        pricing_table_version: impl Into<String>,
+    ) -> Result<SpendReservation, AdapterFailure> {
+        let call_id = call_id.into();
+        let provider = provider.into();
+        let model = model.into();
+        let pricing_table_version = pricing_table_version.into();
+        validate_id("call_id", &call_id).map_err(adapter_budget_error)?;
+        non_empty("provider", &provider).map_err(adapter_budget_error)?;
+        non_empty("model", &model).map_err(adapter_budget_error)?;
+        non_empty("pricing table version", &pricing_table_version).map_err(adapter_budget_error)?;
+        if self.open.contains_key(&call_id)
+            || self.traces.iter().any(|trace| trace.call_id == call_id)
+        {
+            return Err(AdapterFailure::Failed(format!(
+                "duplicate provider call id '{call_id}'"
+            )));
+        }
+        let next_calls = self.reserved_calls.saturating_add(1);
+        let next_cost = self
+            .reserved_cost_micro_usd
+            .saturating_add(max_cost_micro_usd);
+        if next_calls > self.remaining.provider_calls || next_cost > self.remaining.cost_micro_usd {
+            return Err(AdapterFailure::Failed(
+                "provider reservation exceeds remaining budget".to_string(),
+            ));
+        }
+        let trace = SpendTrace {
+            call_id: call_id.clone(),
+            provider,
+            model,
+            status: SpendStatus::Reserved,
+            input_units: 0,
+            output_units: 0,
+            cost_micro_usd: max_cost_micro_usd,
+            pricing_table_version,
+        };
+        persist_spend(
+            self.ledger_path.as_deref(),
+            &self.run_instance_id,
+            &self.effective_config_sha256,
+            &self.case_id,
+            std::slice::from_ref(&trace),
+        )
+        .map_err(adapter_budget_error)?;
+        self.reserved_calls = next_calls;
+        self.reserved_cost_micro_usd = next_cost;
+        self.open.insert(call_id.clone(), trace.clone());
+        self.traces.push(trace);
+        Ok(SpendReservation { call_id })
+    }
+
+    pub fn finish(
+        &mut self,
+        reservation: SpendReservation,
+        succeeded: bool,
+        input_units: u64,
+        output_units: u64,
+        actual_cost_micro_usd: u64,
+    ) -> Result<(), AdapterFailure> {
+        let reserved = self.open.remove(&reservation.call_id).ok_or_else(|| {
+            AdapterFailure::Failed(
+                "provider reservation is unknown or already finished".to_string(),
+            )
+        })?;
+        if actual_cost_micro_usd > reserved.cost_micro_usd {
+            self.open.insert(reservation.call_id, reserved);
+            return Err(AdapterFailure::Failed(
+                "provider terminal cost exceeded its pre-dispatch reservation".to_string(),
+            ));
+        }
+        let terminal = SpendTrace {
+            status: if succeeded {
+                SpendStatus::Succeeded
+            } else {
+                SpendStatus::Failed
+            },
+            input_units,
+            output_units,
+            cost_micro_usd: actual_cost_micro_usd,
+            ..reserved
+        };
+        persist_spend(
+            self.ledger_path.as_deref(),
+            &self.run_instance_id,
+            &self.effective_config_sha256,
+            &self.case_id,
+            std::slice::from_ref(&terminal),
+        )
+        .map_err(adapter_budget_error)?;
+        self.traces.push(terminal);
+        Ok(())
+    }
+
+    fn close_unfinished_as_failed(&mut self) -> anyhow::Result<bool> {
+        let had_unfinished = !self.open.is_empty();
+        let unfinished: Vec<_> = std::mem::take(&mut self.open).into_values().collect();
+        for reserved in unfinished {
+            let terminal = SpendTrace {
+                status: SpendStatus::Failed,
+                input_units: 0,
+                output_units: 0,
+                // Unknown usage is charged at the reserved ceiling; it is never treated as zero.
+                cost_micro_usd: reserved.cost_micro_usd,
+                ..reserved
+            };
+            persist_spend(
+                self.ledger_path.as_deref(),
+                &self.run_instance_id,
+                &self.effective_config_sha256,
+                &self.case_id,
+                std::slice::from_ref(&terminal),
+            )?;
+            self.traces.push(terminal);
+        }
+        Ok(had_unfinished)
+    }
+}
+
+fn adapter_budget_error(error: anyhow::Error) -> AdapterFailure {
+    AdapterFailure::Failed(error.to_string())
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -342,11 +743,9 @@ pub struct RecallResponse {
 pub struct RetrievedEvidence {
     pub evidence_id: String,
     pub lane: RecallLane,
-    pub region: EvidenceRegion,
+    pub artifact: CapturedArtifact,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rendered_text: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_media: Option<MediaRef>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -354,11 +753,39 @@ pub struct RetrievedEvidence {
 pub struct AdapterExecutionProof {
     pub effective_lane: RecallLane,
     pub effective_reader_mode: ReaderMode,
-    pub text_branch_candidates: usize,
-    pub native_branch_candidates: usize,
-    pub collapsed_duplicates: usize,
+    pub text_branch_candidates: Vec<BranchCandidate>,
+    pub native_branch_candidates: Vec<BranchCandidate>,
+    pub collapse_clusters: Vec<CollapseCluster>,
     pub oracle_regions_applied: Vec<EvidenceRegion>,
-    pub reader_media_parts: usize,
+    pub reader_inputs: Vec<ReaderInputProof>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BranchCandidate {
+    pub candidate_id: String,
+    pub evidence_id: String,
+    pub lane: RecallLane,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
+    pub score: f32,
+    pub artifact: CapturedArtifact,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CollapseCluster {
+    pub representative_candidate_id: String,
+    pub member_candidate_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReaderInputProof {
+    pub evidence_id: String,
+    pub mode: ReaderMode,
+    pub binding_id: String,
+    pub verified_sha256: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -471,13 +898,27 @@ pub struct MultimodalRunPlan {
     pub hypothesis: PreregisteredHypothesis,
     /// Caller-controlled timestamp. Excluded from the deterministic run id.
     pub started_at: String,
+    /// Unique caller-minted execution identity. Replicates must never collide.
+    pub run_instance_id: String,
+    /// Exact source revision; `unknown` is rejected.
+    pub git_sha: String,
+    /// Hash of effective model/provider/concurrency/judge configuration.
+    pub effective_config_sha256: String,
+    /// Local root used only for verified fixture import.
+    pub asset_root: PathBuf,
+    /// Durable JSONL ledger required before any provider-backed dispatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spend_ledger_path: Option<PathBuf>,
+    /// Maximum verified source bytes accepted for one imported asset.
+    pub max_import_asset_bytes: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MultimodalRunResult {
     pub schema: String,
     pub run_id: String,
+    pub experiment_id: String,
     pub fixture_set_id: String,
     pub fixture_digest: String,
     pub arm: ExperimentArm,
@@ -499,6 +940,8 @@ pub struct RunProvenance {
     pub oracle_gold: bool,
     pub leaderboard_eligible: bool,
     pub budget: ExecutionBudget,
+    pub effective_config_sha256: String,
+    pub spend: Vec<SpendTrace>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -510,7 +953,7 @@ pub struct MultimodalMetrics {
     pub media_dependent_total: usize,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CaseResult {
     pub case_id: String,
@@ -518,6 +961,7 @@ pub struct CaseResult {
     pub answer: String,
     pub requested_lane: RecallLane,
     pub fired_proof: FiredProof,
+    pub retrieved: Vec<RetrievedEvidence>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -527,11 +971,11 @@ pub struct FiredProof {
     pub response_sha256: String,
     pub effective_lane: RecallLane,
     pub effective_reader_mode: ReaderMode,
-    pub text_branch_candidates: usize,
-    pub native_branch_candidates: usize,
-    pub collapsed_duplicates: usize,
+    pub text_branch_fingerprint: String,
+    pub native_branch_fingerprint: String,
+    pub collapse_fingerprint: String,
     pub oracle_region_count: usize,
-    pub reader_media_parts: usize,
+    pub reader_input_fingerprint: String,
     pub retrieved_region_fingerprint: String,
 }
 
@@ -541,10 +985,73 @@ pub fn run_experiment<A: MultimodalRecallAdapter, S: MultimodalScorer>(
     adapter: &mut A,
     scorer: &S,
 ) -> anyhow::Result<MultimodalRunResult> {
+    anyhow::ensure!(
+        plan.arm.cell != ExperimentCell::EReaderModality,
+        "cell E must run through run_reader_modality_pair"
+    );
+    run_experiment_internal(fixture, plan, adapter, scorer, None)
+}
+
+/// Run cell E with one frozen hybrid retrieval artifact shared byte-identically by both readers.
+pub fn run_reader_modality_pair<A: MultimodalRecallAdapter, S: MultimodalScorer>(
+    fixture: &MultimodalFixtureSet,
+    plan: &MultimodalRunPlan,
+    adapter: &mut A,
+    scorer: &S,
+) -> anyhow::Result<(MultimodalRunResult, MultimodalRunResult)> {
+    anyhow::ensure!(
+        plan.arm.cell == ExperimentCell::EReaderModality,
+        "paired runner requires cell E"
+    );
+    let mut text_plan = plan.clone();
+    text_plan.arm.reader_mode = ReaderMode::TextProjection;
+    text_plan.run_instance_id = format!("{}-text", plan.run_instance_id);
+    let text = run_experiment_internal(fixture, &text_plan, adapter, scorer, None)?;
+    let frozen: BTreeMap<_, _> = text
+        .cases
+        .iter()
+        .map(|case| {
+            let retrieved = frozen_retrieval_identity(&case.retrieved);
+            Ok((
+                case.case_id.clone(),
+                FrozenRetrieval {
+                    fingerprint: stable_json_hash(&retrieved)?,
+                    retrieved,
+                },
+            ))
+        })
+        .collect::<anyhow::Result<_>>()?;
+    let mut blob_plan = plan.clone();
+    blob_plan.arm.reader_mode = ReaderMode::SourceBlob;
+    blob_plan.run_instance_id = format!("{}-blob", plan.run_instance_id);
+    let blob = run_experiment_internal(fixture, &blob_plan, adapter, scorer, Some(&frozen))?;
+    Ok((text, blob))
+}
+
+fn run_experiment_internal<A: MultimodalRecallAdapter, S: MultimodalScorer>(
+    fixture: &MultimodalFixtureSet,
+    plan: &MultimodalRunPlan,
+    adapter: &mut A,
+    scorer: &S,
+    frozen: Option<&BTreeMap<String, FrozenRetrieval>>,
+) -> anyhow::Result<MultimodalRunResult> {
     validate_fixture(fixture)?;
     plan.arm.validate()?;
     chrono::DateTime::parse_from_rfc3339(&plan.started_at)
         .with_context(|| "started_at must be an RFC3339 timestamp")?;
+    validate_id("run_instance_id", &plan.run_instance_id)?;
+    anyhow::ensure!(plan.git_sha != "unknown", "git_sha must be exact");
+    validate_sha256("effective config digest", &plan.effective_config_sha256)?;
+    anyhow::ensure!(
+        plan.max_import_asset_bytes > 0,
+        "max_import_asset_bytes must be positive"
+    );
+    if plan.budget.max_provider_calls > 0 || plan.budget.max_cost_micro_usd > 0 {
+        anyhow::ensure!(
+            plan.spend_ledger_path.is_some(),
+            "provider-backed runs require a durable spend_ledger_path"
+        );
+    }
     for (name, value) in [
         ("hypothesis statement", &plan.hypothesis.statement),
         ("hypothesis mechanism", &plan.hypothesis.mechanism),
@@ -557,6 +1064,54 @@ pub fn run_experiment<A: MultimodalRecallAdapter, S: MultimodalScorer>(
     validate_descriptor(&descriptor)?;
     preflight_capabilities(fixture, &plan.arm, &descriptor.capabilities)?;
 
+    let mut provider_calls = 0u64;
+    let mut cost_micro_usd = 0u64;
+    let mut spend = Vec::new();
+    let mut captured_by_corpus = BTreeMap::new();
+    for corpus in &fixture.corpora {
+        let verified_items =
+            verify_corpus_assets(corpus, &plan.asset_root, plan.max_import_asset_bytes)?;
+        let remaining = RemainingBudget {
+            provider_calls: plan
+                .budget
+                .max_provider_calls
+                .saturating_sub(provider_calls),
+            cost_micro_usd: plan
+                .budget
+                .max_cost_micro_usd
+                .saturating_sub(cost_micro_usd),
+        };
+        let mut journal = SpendJournal::new(
+            &plan.run_instance_id,
+            &plan.effective_config_sha256,
+            &format!("import: {}", corpus.corpus_id),
+            plan.spend_ledger_path.as_deref(),
+            remaining.clone(),
+        );
+        let captured = adapter.import_corpus(
+            &CorpusImportRequest {
+                corpus_id: corpus.corpus_id.clone(),
+                items: verified_items,
+            },
+            &mut journal,
+        );
+        let had_unfinished = journal.close_unfinished_as_failed()?;
+        let import_cost = validate_spend(&journal.traces, &remaining)?;
+        provider_calls = provider_calls.saturating_add(import_cost.0);
+        cost_micro_usd = cost_micro_usd.saturating_add(import_cost.1);
+        spend.extend(journal.traces);
+        enforce_budget(&plan.budget, provider_calls, cost_micro_usd)?;
+        let captured = captured
+            .map_err(|error| anyhow::anyhow!("import corpus '{}': {error}", corpus.corpus_id))?;
+        anyhow::ensure!(
+            !had_unfinished,
+            "import corpus '{}' returned with an unfinished provider reservation",
+            corpus.corpus_id
+        );
+        validate_captured_corpus(corpus, &captured)?;
+        captured_by_corpus.insert(corpus.corpus_id.as_str(), captured);
+    }
+
     let fixture_digest = stable_json_hash(fixture)?;
     let run_identity = serde_json::json!({
         "fixture_digest": fixture_digest,
@@ -565,10 +1120,11 @@ pub fn run_experiment<A: MultimodalRecallAdapter, S: MultimodalScorer>(
         "scorer": scorer.scorer_id(),
         "hypothesis": plan.hypothesis,
         "budget": plan.budget,
+        "effective_config_sha256": plan.effective_config_sha256,
+        "git_sha": plan.git_sha,
     });
-    let run_id = format!("mm-{}", &stable_json_hash(&run_identity)?[..16]);
-    let mut provider_calls = 0u64;
-    let mut cost_micro_usd = 0u64;
+    let experiment_id = format!("mmx-{}", &stable_json_hash(&run_identity)?[..16]);
+    let run_id = plan.run_instance_id.clone();
     let mut results = Vec::with_capacity(fixture.cases.len());
 
     for case in &fixture.cases {
@@ -581,19 +1137,55 @@ pub fn run_experiment<A: MultimodalRecallAdapter, S: MultimodalScorer>(
         let request = RecallRequest {
             case_id: case.case_id.clone(),
             corpus_id: case.corpus_id.clone(),
-            question: case.question.clone(),
-            evidence: case.evidence.clone(),
+            // The recall-lane experiment treats question media as a separate future variable. A
+            // text reader must never gain pixel access through the query side-channel.
+            question: ContentSpec {
+                text: case.question.text.clone(),
+                media: Vec::new(),
+            },
+            corpus: captured_by_corpus
+                .get(case.corpus_id.as_str())
+                .cloned()
+                .ok_or_else(|| {
+                    anyhow::anyhow!("case '{}' references absent corpus", case.case_id)
+                })?,
             lane,
             reader_mode: plan.arm.reader_mode,
             oracle_regions,
+            frozen_retrieval: frozen.and_then(|items| items.get(&case.case_id)).cloned(),
+            budget: RemainingBudget {
+                provider_calls: plan
+                    .budget
+                    .max_provider_calls
+                    .saturating_sub(provider_calls),
+                cost_micro_usd: plan
+                    .budget
+                    .max_cost_micro_usd
+                    .saturating_sub(cost_micro_usd),
+            },
         };
-        let response = adapter
-            .recall(&request)
-            .map_err(|error| anyhow::anyhow!("case '{}': {error}", case.case_id))?;
-        validate_response(case, &request, &response)?;
-        provider_calls = provider_calls.saturating_add(response.provider_calls);
-        cost_micro_usd = cost_micro_usd.saturating_add(response.cost_micro_usd);
+        let mut journal = SpendJournal::new(
+            &plan.run_instance_id,
+            &plan.effective_config_sha256,
+            &case.case_id,
+            plan.spend_ledger_path.as_deref(),
+            request.budget.clone(),
+        );
+        let response = adapter.recall(&request, &mut journal);
+        let had_unfinished = journal.close_unfinished_as_failed()?;
+        let response_cost = validate_spend(&journal.traces, &request.budget)?;
+        provider_calls = provider_calls.saturating_add(response_cost.0);
+        cost_micro_usd = cost_micro_usd.saturating_add(response_cost.1);
+        spend.extend(journal.traces);
         enforce_budget(&plan.budget, provider_calls, cost_micro_usd)?;
+        let response =
+            response.map_err(|error| anyhow::anyhow!("case '{}': {error}", case.case_id))?;
+        anyhow::ensure!(
+            !had_unfinished,
+            "case '{}' returned with an unfinished provider reservation",
+            case.case_id
+        );
+        validate_response(case, &request, &response)?;
         let correct = scorer
             .score(&case.gold.scoring, &case.gold.value, &response.answer)
             .with_context(|| format!("score case '{}'", case.case_id))?;
@@ -603,6 +1195,7 @@ pub fn run_experiment<A: MultimodalRecallAdapter, S: MultimodalScorer>(
             answer: response.answer.clone(),
             requested_lane: lane,
             fired_proof: fired_proof(&request, &response)?,
+            retrieved: response.retrieved.clone(),
         });
     }
 
@@ -625,6 +1218,7 @@ pub fn run_experiment<A: MultimodalRecallAdapter, S: MultimodalScorer>(
     Ok(MultimodalRunResult {
         schema: RESULT_SCHEMA.to_string(),
         run_id,
+        experiment_id,
         fixture_set_id: fixture.fixture_set_id.clone(),
         fixture_digest,
         arm: plan.arm.clone(),
@@ -632,13 +1226,17 @@ pub fn run_experiment<A: MultimodalRecallAdapter, S: MultimodalScorer>(
         scorer_id: scorer.scorer_id().to_string(),
         hypothesis: plan.hypothesis.clone(),
         provenance: RunProvenance {
-            git_sha: option_env!("GIT_SHA").unwrap_or("unknown").to_string(),
+            git_sha: plan.git_sha.clone(),
             started_at: plan.started_at.clone(),
             provider_calls,
             cost_micro_usd,
             oracle_gold,
-            leaderboard_eligible: !oracle_gold && fixture.source.leaderboard_eligible,
+            // This pre-release apparatus is categorically non-rankable until it emits canonical
+            // records that pass the repository's normal eligibility evaluator.
+            leaderboard_eligible: false,
             budget: plan.budget.clone(),
+            effective_config_sha256: plan.effective_config_sha256.clone(),
+            spend,
         },
         metrics,
         cases: results,
@@ -653,6 +1251,532 @@ pub fn load_fixture_file(path: &Path) -> anyhow::Result<MultimodalFixtureSet> {
     validate_fixture(&fixture)
         .with_context(|| format!("validate multimodal fixture {}", path.display()))?;
     Ok(fixture)
+}
+
+fn verify_corpus_assets(
+    corpus: &MultimodalCorpus,
+    asset_root: &Path,
+    max_asset_bytes: u64,
+) -> anyhow::Result<Vec<VerifiedEvidenceImport>> {
+    let root_metadata = std::fs::symlink_metadata(asset_root)
+        .with_context(|| format!("stat asset root {}", asset_root.display()))?;
+    anyhow::ensure!(
+        root_metadata.file_type().is_dir() && !root_metadata.file_type().is_symlink(),
+        "asset root must be a real directory, not a symlink"
+    );
+    let canonical_root = std::fs::canonicalize(asset_root)
+        .with_context(|| format!("canonicalize asset root {}", asset_root.display()))?;
+    let mut verified = Vec::with_capacity(corpus.evidence.len());
+    for item in &corpus.evidence {
+        let relative = Path::new(&item.source_media.locator);
+        ensure_safe_relative(relative, "media locator")?;
+        let mut cursor = asset_root.to_path_buf();
+        for component in relative.components() {
+            let Component::Normal(component) = component else {
+                anyhow::bail!("media locator contains an unsafe path component");
+            };
+            cursor.push(component);
+            let metadata = std::fs::symlink_metadata(&cursor)
+                .with_context(|| format!("stat fixture path {}", cursor.display()))?;
+            anyhow::ensure!(
+                !metadata.file_type().is_symlink(),
+                "fixture path must not traverse symlinks"
+            );
+        }
+        let unresolved = asset_root.join(relative);
+        let link_metadata = std::fs::symlink_metadata(&unresolved)
+            .with_context(|| format!("stat fixture media {}", unresolved.display()))?;
+        anyhow::ensure!(
+            link_metadata.file_type().is_file() && !link_metadata.file_type().is_symlink(),
+            "fixture media must be a regular non-symlink file"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            anyhow::ensure!(
+                link_metadata.nlink() == 1,
+                "fixture media must not be hard-linked"
+            );
+        }
+        let canonical = std::fs::canonicalize(&unresolved)
+            .with_context(|| format!("canonicalize fixture media {}", unresolved.display()))?;
+        anyhow::ensure!(
+            canonical.starts_with(&canonical_root),
+            "fixture media resolves outside the asset root"
+        );
+        anyhow::ensure!(
+            link_metadata.len() == item.source_media.size_bytes,
+            "fixture media size mismatch for '{}'",
+            item.source_media.asset_id
+        );
+        anyhow::ensure!(
+            link_metadata.len() <= max_asset_bytes,
+            "fixture media exceeds max_import_asset_bytes"
+        );
+        let source_bytes = std::fs::read(&canonical)
+            .with_context(|| format!("read fixture media {}", canonical.display()))?;
+        anyhow::ensure!(
+            source_bytes.len() as u64 == link_metadata.len(),
+            "fixture media changed while being read"
+        );
+        anyhow::ensure!(
+            sha256(&source_bytes) == item.source_media.sha256,
+            "fixture media digest mismatch for '{}'",
+            item.source_media.asset_id
+        );
+        validate_importable_media(&item.source_media.media_type, &source_bytes)?;
+        verified.push(VerifiedEvidenceImport {
+            evidence: item.clone(),
+            source_bytes,
+        });
+    }
+    Ok(verified)
+}
+
+fn validate_importable_media(media_type: &str, bytes: &[u8]) -> anyhow::Result<()> {
+    let valid = match media_type {
+        "application/pdf" => {
+            bytes.starts_with(b"%PDF-")
+                && bytes
+                    .windows(b"%%EOF".len())
+                    .any(|window| window == b"%%EOF")
+        }
+        "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => bytes.starts_with(b"\xff\xd8\xff") && bytes.ends_with(b"\xff\xd9"),
+        "image/gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+        "image/webp" => bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP",
+        "image/svg+xml" => std::str::from_utf8(bytes)
+            .is_ok_and(|text| text.contains("<svg") && text.contains("</svg>")),
+        "text/plain" | "text/csv" => std::str::from_utf8(bytes).is_ok(),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => {
+            bytes.starts_with(b"PK\x03\x04")
+        }
+        _ => false,
+    };
+    anyhow::ensure!(
+        valid,
+        "fixture media bytes are not an importable '{media_type}' asset"
+    );
+    Ok(())
+}
+
+fn validate_captured_corpus(
+    fixture: &MultimodalCorpus,
+    captured: &CapturedCorpus,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        captured.corpus_id == fixture.corpus_id,
+        "captured corpus id mismatch"
+    );
+    anyhow::ensure!(
+        captured.artifacts.len() == fixture.evidence.len(),
+        "captured corpus must map every fixture evidence item exactly once"
+    );
+    let fixture_by_id: BTreeMap<_, _> = fixture
+        .evidence
+        .iter()
+        .map(|item| (item.evidence_id.as_str(), item))
+        .collect();
+    let mut seen = HashSet::new();
+    for artifact in &captured.artifacts {
+        anyhow::ensure!(
+            seen.insert(artifact.evidence_id.as_str()),
+            "duplicate captured evidence"
+        );
+        let source = fixture_by_id
+            .get(artifact.evidence_id.as_str())
+            .ok_or_else(|| anyhow::anyhow!("captured corpus invented evidence"))?;
+        validate_binding_id(&artifact.binding_id)?;
+        anyhow::ensure!(
+            artifact.blob.id.algorithm == "sha256",
+            "blob algorithm must be sha256"
+        );
+        validate_sha256("captured blob", &artifact.blob.id.value)?;
+        anyhow::ensure!(
+            artifact.blob.id.value == source.source_media.sha256
+                && artifact.blob.size_bytes == source.source_media.size_bytes
+                && artifact.blob.detected_media_type == source.source_media.media_type,
+            "captured blob metadata does not match verified fixture bytes"
+        );
+        validate_id("region_id", &artifact.region.region_id)?;
+        anyhow::ensure!(
+            artifact.region == captured_region_ref(&artifact.binding_id, &source.region)?,
+            "captured region does not match the deterministic product mapping"
+        );
+        if let Some(parent) = &artifact.region.parent_region_id {
+            validate_id("parent_region_id", parent)?;
+            anyhow::ensure!(
+                parent != &artifact.region.region_id,
+                "region cannot parent itself"
+            );
+        }
+        validate_retrieval_scores(&artifact.retrieval)?;
+        anyhow::ensure!(
+            artifact.retrieval == CapturedRetrievalScores::default(),
+            "captured corpus must not contain query-time retrieval scores"
+        );
+        match (&source.text_projection, &artifact.projection) {
+            (Some(text), Some(projection)) => {
+                validate_sha256("projection execution", &projection.execution_id)?;
+                validate_binding_id(&projection.source_binding_id)?;
+                let output_binding_id =
+                    projection.output_binding_id.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!("ready projection must bind its output bytes")
+                    })?;
+                validate_binding_id(output_binding_id)?;
+                if let Some(transformed_at) = &projection.transformed_at {
+                    chrono::DateTime::parse_from_rfc3339(transformed_at)
+                        .with_context(|| "projection transformed_at must be RFC3339")?;
+                }
+                let projection_output_sha256 = artifact
+                    .projection_output_sha256
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("ready projection lacks output digest proof"))?;
+                validate_sha256("projection output", projection_output_sha256)?;
+                anyhow::ensure!(
+                    projection.source_binding_id == artifact.binding_id
+                        && projection.source_region_id == artifact.region.region_id
+                        && projection_output_sha256 == sha256(text.as_bytes()),
+                    "projection provenance does not bind to verified source text"
+                );
+                anyhow::ensure!(
+                    artifact.truth_tier != TruthTier::Raw,
+                    "projection cannot claim raw truth tier"
+                );
+            }
+            (None, None) => anyhow::ensure!(
+                artifact.truth_tier == TruthTier::Raw,
+                "raw-only artifact must use raw truth tier"
+            ),
+            _ => anyhow::bail!("captured projection presence does not match fixture"),
+        }
+    }
+    Ok(())
+}
+
+fn validate_binding_id(value: &str) -> anyhow::Result<()> {
+    let digest = value
+        .strip_prefix("binding-")
+        .ok_or_else(|| anyhow::anyhow!("binding id must use product binding-<sha256> form"))?;
+    validate_sha256("binding id", digest)
+}
+
+fn validate_retrieval_scores(scores: &CapturedRetrievalScores) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        scores.fused.is_finite(),
+        "fused retrieval score must be finite"
+    );
+    if let Some(score) = scores.text_projection {
+        anyhow::ensure!(score.is_finite(), "text retrieval score must be finite");
+    }
+    for (profile, score) in &scores.native_profiles {
+        non_empty("native retrieval profile", profile)?;
+        anyhow::ensure!(score.is_finite(), "native retrieval score must be finite");
+    }
+    Ok(())
+}
+
+fn merge_retrieval_scores(target: &mut CapturedRetrievalScores, source: &CapturedRetrievalScores) {
+    target.text_projection = match (target.text_projection, source.text_projection) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (left @ Some(_), None) => left,
+        (None, right) => right,
+    };
+    for (profile, score) in &source.native_profiles {
+        target
+            .native_profiles
+            .entry(profile.clone())
+            .and_modify(|current| *current = current.max(*score))
+            .or_insert(*score);
+    }
+    target.fused = target.fused.max(source.fused);
+}
+
+fn captured_region_ref(
+    binding_id: &str,
+    source: &EvidenceRegion,
+) -> anyhow::Result<CapturedRegionRef> {
+    let stable_region_id = |suffix: &str| {
+        format!(
+            "region-{}",
+            sha256(format!("{binding_id}\0{suffix}").as_bytes())
+        )
+    };
+    let (region_id, parent_region_id, locator) = match source {
+        EvidenceRegion::Screenshot {
+            trajectory_id,
+            state_index,
+            locator,
+            bounds: None,
+        } => {
+            let value = format!("{trajectory_id}/{state_index}/{locator}");
+            (
+                stable_region_id(&format!("screenshot\0{value}")),
+                None,
+                CapturedRegionLocator::Named {
+                    scheme: "longmemeval_screenshot".to_string(),
+                    value,
+                },
+            )
+        }
+        EvidenceRegion::Screenshot {
+            trajectory_id,
+            state_index,
+            locator,
+            bounds: Some(bounds),
+        } => {
+            let anchor = stable_region_id(&format!(
+                "screenshot\0{trajectory_id}/{state_index}/{locator}"
+            ));
+            (
+                stable_region_id(&format!(
+                    "screenshot-rectangle\0{trajectory_id}/{state_index}/{locator}\0{}",
+                    stable_json_hash(bounds)?
+                )),
+                Some(anchor.clone()),
+                captured_rectangle(&anchor, bounds)?,
+            )
+        }
+        EvidenceRegion::Page {
+            document_id,
+            page_number,
+            bounds: None,
+        } => {
+            anyhow::ensure!(*page_number > 0, "fixture page numbers are one-based");
+            (
+                stable_region_id(&format!("page\0{document_id}\0{page_number}")),
+                None,
+                CapturedRegionLocator::Page {
+                    index: page_number - 1,
+                },
+            )
+        }
+        EvidenceRegion::Page {
+            document_id,
+            page_number,
+            bounds: Some(bounds),
+        } => {
+            anyhow::ensure!(*page_number > 0, "fixture page numbers are one-based");
+            let anchor = stable_region_id(&format!("page\0{document_id}\0{page_number}"));
+            (
+                stable_region_id(&format!(
+                    "page-rectangle\0{document_id}\0{page_number}\0{}",
+                    stable_json_hash(bounds)?
+                )),
+                Some(anchor.clone()),
+                captured_rectangle(&anchor, bounds)?,
+            )
+        }
+        EvidenceRegion::Sheet {
+            workbook_id,
+            sheet_name,
+            range,
+        } => (
+            stable_region_id(&format!("cell-range\0{workbook_id}\0{sheet_name}\0{range}")),
+            None,
+            CapturedRegionLocator::CellRange {
+                sheet: sheet_name.clone(),
+                a1: range.clone(),
+            },
+        ),
+        EvidenceRegion::Cell {
+            workbook_id,
+            sheet_name,
+            cell,
+        } => (
+            stable_region_id(&format!("cell-range\0{workbook_id}\0{sheet_name}\0{cell}")),
+            None,
+            CapturedRegionLocator::CellRange {
+                sheet: sheet_name.clone(),
+                a1: cell.clone(),
+            },
+        ),
+    };
+    Ok(CapturedRegionRef {
+        region_id,
+        parent_region_id,
+        locator,
+    })
+}
+
+fn captured_rectangle(
+    anchor_region_id: &str,
+    bounds: &NormalizedBounds,
+) -> anyhow::Result<CapturedRegionLocator> {
+    for value in [bounds.x, bounds.y, bounds.width, bounds.height] {
+        anyhow::ensure!(value.is_finite(), "region bounds must be finite");
+    }
+    anyhow::ensure!(
+        bounds.x >= 0.0
+            && bounds.y >= 0.0
+            && bounds.width >= 0.0
+            && bounds.height >= 0.0
+            && bounds.x + bounds.width <= 1.0
+            && bounds.y + bounds.height <= 1.0,
+        "normalized region bounds must remain inside the source"
+    );
+    Ok(CapturedRegionLocator::Rectangle {
+        anchor_region_id: anchor_region_id.to_string(),
+        coordinate_space: CapturedCoordinateSpace::NormalizedMillionths,
+        x: (bounds.x as f64 * 1_000_000.0).round() as i64,
+        y: (bounds.y as f64 * 1_000_000.0).round() as i64,
+        width: (bounds.width as f64 * 1_000_000.0).round() as u64,
+        height: (bounds.height as f64 * 1_000_000.0).round() as u64,
+        rotation_millidegrees: 0,
+    })
+}
+
+fn captured_regions_related(left: &CapturedRegionRef, right: &CapturedRegionRef) -> bool {
+    if left.region_id == right.region_id
+        || left.parent_region_id.as_deref() == Some(right.region_id.as_str())
+        || right.parent_region_id.as_deref() == Some(left.region_id.as_str())
+    {
+        return true;
+    }
+    match (&left.locator, &right.locator) {
+        (
+            CapturedRegionLocator::Rectangle {
+                anchor_region_id: left_anchor,
+                coordinate_space: left_space,
+                x: left_x,
+                y: left_y,
+                width: left_width,
+                height: left_height,
+                ..
+            },
+            CapturedRegionLocator::Rectangle {
+                anchor_region_id: right_anchor,
+                coordinate_space: right_space,
+                x: right_x,
+                y: right_y,
+                width: right_width,
+                height: right_height,
+                ..
+            },
+        ) if left_anchor == right_anchor && left_space == right_space => {
+            rectangle_overlap_ratio(
+                (*left_x, *left_y, *left_width, *left_height),
+                (*right_x, *right_y, *right_width, *right_height),
+            ) >= 0.5
+        }
+        _ => left.locator == right.locator,
+    }
+}
+
+fn rectangle_overlap_ratio(left: (i64, i64, u64, u64), right: (i64, i64, u64, u64)) -> f64 {
+    let (left_x, left_y, left_width, left_height) = left;
+    let (right_x, right_y, right_width, right_height) = right;
+    let intersection_width = (left_x.saturating_add(left_width as i64))
+        .min(right_x.saturating_add(right_width as i64))
+        .saturating_sub(left_x.max(right_x))
+        .max(0) as u64;
+    let intersection_height = (left_y.saturating_add(left_height as i64))
+        .min(right_y.saturating_add(right_height as i64))
+        .saturating_sub(left_y.max(right_y))
+        .max(0) as u64;
+    let intersection = intersection_width.saturating_mul(intersection_height) as f64;
+    let smaller = left_width
+        .saturating_mul(left_height)
+        .min(right_width.saturating_mul(right_height)) as f64;
+    if smaller == 0.0 {
+        0.0
+    } else {
+        intersection / smaller
+    }
+}
+
+fn validate_spend(
+    traces: &[SpendTrace],
+    remaining: &RemainingBudget,
+) -> anyhow::Result<(u64, u64)> {
+    let mut by_call: BTreeMap<&str, Vec<&SpendTrace>> = BTreeMap::new();
+    for trace in traces {
+        validate_id("call_id", &trace.call_id)?;
+        non_empty("provider", &trace.provider)?;
+        non_empty("model", &trace.model)?;
+        non_empty("pricing table version", &trace.pricing_table_version)?;
+        by_call.entry(&trace.call_id).or_default().push(trace);
+    }
+    let mut cost = 0u64;
+    let mut reserved_cost = 0u64;
+    for (call_id, events) in &by_call {
+        anyhow::ensure!(
+            events.len() == 2,
+            "provider call '{call_id}' needs reserve and terminal events"
+        );
+        anyhow::ensure!(
+            events[0].status == SpendStatus::Reserved,
+            "provider reservation must precede dispatch"
+        );
+        anyhow::ensure!(
+            matches!(
+                events[1].status,
+                SpendStatus::Succeeded | SpendStatus::Failed
+            ),
+            "provider call needs terminal spend event"
+        );
+        anyhow::ensure!(
+            events[0].provider == events[1].provider && events[0].model == events[1].model,
+            "provider spend identity changed after reservation"
+        );
+        anyhow::ensure!(
+            events[1].cost_micro_usd <= events[0].cost_micro_usd,
+            "provider terminal cost exceeded its pre-dispatch reservation"
+        );
+        reserved_cost = reserved_cost.saturating_add(events[0].cost_micro_usd);
+        cost = cost.saturating_add(events[1].cost_micro_usd);
+    }
+    let calls = by_call.len() as u64;
+    anyhow::ensure!(
+        calls <= remaining.provider_calls,
+        "adapter dispatched beyond reserved call budget"
+    );
+    anyhow::ensure!(
+        reserved_cost <= remaining.cost_micro_usd,
+        "adapter reserved beyond remaining cost budget"
+    );
+    anyhow::ensure!(
+        cost <= remaining.cost_micro_usd,
+        "adapter dispatched beyond reserved cost budget"
+    );
+    Ok((calls, cost))
+}
+
+fn persist_spend(
+    path: Option<&Path>,
+    run_instance_id: &str,
+    effective_config_sha256: &str,
+    case_id: &str,
+    traces: &[SpendTrace],
+) -> anyhow::Result<()> {
+    if traces.is_empty() {
+        return Ok(());
+    }
+    let path = path.ok_or_else(|| anyhow::anyhow!("provider spend has no durable ledger"))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create spend ledger directory {}", parent.display()))?;
+    }
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("open spend ledger {}", path.display()))?;
+    for trace in traces {
+        serde_json::to_writer(
+            &mut file,
+            &serde_json::json!({
+                "run_instance_id": run_instance_id,
+                "effective_config_sha256": effective_config_sha256,
+                "case_id": case_id,
+                "trace": trace,
+            }),
+        )?;
+        file.write_all(b"\n")?;
+    }
+    file.sync_all()?;
+    Ok(())
 }
 
 /// Builds a media-dependent LongMemEval-v2 subset from explicit human-reviewed annotations.
@@ -698,6 +1822,7 @@ pub fn load_longmemeval_v2_image_subset(
 
     let mut seen = HashSet::new();
     let mut cases = Vec::with_capacity(annotations.annotations.len());
+    let mut corpora_by_id: BTreeMap<String, MultimodalCorpus> = BTreeMap::new();
     for annotation in &annotations.annotations {
         validate_id("question_id", &annotation.question_id)?;
         anyhow::ensure!(
@@ -734,12 +1859,11 @@ pub fn load_longmemeval_v2_image_subset(
         non_empty("question text", &question.question)?;
         non_empty("question answer", &question.answer)?;
         non_empty("question evaluator", &question.eval_function)?;
-        let allowed_trajectories: HashSet<_> = haystacks
+        let haystack_trajectory_ids = haystacks
             .get(&question.id)
-            .ok_or_else(|| anyhow::anyhow!("haystack has no question '{}'", question.id))?
-            .iter()
-            .map(String::as_str)
-            .collect();
+            .ok_or_else(|| anyhow::anyhow!("haystack has no question '{}'", question.id))?;
+        let allowed_trajectories: HashSet<_> =
+            haystack_trajectory_ids.iter().map(String::as_str).collect();
         let mut question_media = Vec::new();
         if let Some(locator) = question.image.as_deref() {
             question_media.push(media_ref_from_dataset(
@@ -748,9 +1872,53 @@ pub fn load_longmemeval_v2_image_subset(
                 locator,
             )?);
         }
-        let mut evidence = Vec::with_capacity(annotation.evidence.len());
+        let mut corpus_evidence = Vec::new();
+        for trajectory_id in haystack_trajectory_ids {
+            let trajectory = trajectories.get(trajectory_id).ok_or_else(|| {
+                anyhow::anyhow!("haystack references missing trajectory '{trajectory_id}'")
+            })?;
+            anyhow::ensure!(
+                trajectory.domain == question.domain,
+                "question '{}' domain '{}' does not match trajectory '{}' domain '{}'",
+                question.id,
+                question.domain,
+                trajectory.id,
+                trajectory.domain
+            );
+            for state in &trajectory.states {
+                let index = state_index(state).ok_or_else(|| {
+                    anyhow::anyhow!("trajectory '{}' has invalid state_index", trajectory.id)
+                })?;
+                corpus_evidence.push(EvidenceItem {
+                    evidence_id: format!("trajectory:{}:state:{index}", trajectory.id),
+                    source_media: media_ref_from_dataset(
+                        dataset_root,
+                        &format!("trajectory:{}:{index}", trajectory.id),
+                        &state.screenshot,
+                    )?,
+                    region: EvidenceRegion::Screenshot {
+                        trajectory_id: trajectory.id.clone(),
+                        state_index: index,
+                        locator: state.screenshot.clone(),
+                        bounds: None,
+                    },
+                    text_projection: state_text_projection(state),
+                });
+            }
+        }
+        corpus_evidence.sort_by(|left, right| left.evidence_id.cmp(&right.evidence_id));
+        let corpus_id = format!("question:{}", question.id);
+        let corpus = MultimodalCorpus {
+            corpus_id: corpus_id.clone(),
+            evidence: corpus_evidence,
+        };
+        anyhow::ensure!(
+            corpora_by_id.insert(corpus_id.clone(), corpus).is_none(),
+            "duplicate corpus for question '{}'",
+            question.id
+        );
         let mut oracle_evidence = Vec::with_capacity(annotation.evidence.len());
-        for (index, labeled) in annotation.evidence.iter().enumerate() {
+        for labeled in &annotation.evidence {
             validate_id("trajectory_id", &labeled.trajectory_id)?;
             anyhow::ensure!(
                 allowed_trajectories.contains(labeled.trajectory_id.as_str()),
@@ -789,23 +1957,12 @@ pub fn load_longmemeval_v2_image_subset(
                 locator: state.screenshot.clone(),
                 bounds: labeled.bounds.clone(),
             };
-            let source_media = media_ref_from_dataset(
-                dataset_root,
-                &format!("trajectory:{}:{}", trajectory.id, labeled.state_index),
-                &state.screenshot,
-            )?;
             oracle_evidence.push(region.clone());
-            evidence.push(EvidenceItem {
-                evidence_id: format!("{}:screenshot:{index}", question.id),
-                source_media,
-                region,
-                text_projection: state_text_projection(state),
-            });
         }
         cases.push(MultimodalCase {
             case_id: question.id.clone(),
             origin: FixtureOrigin::LongMemEvalV2,
-            corpus_id: question.domain.clone(),
+            corpus_id,
             question: ContentSpec {
                 text: question.question.clone(),
                 media: question_media,
@@ -823,7 +1980,6 @@ pub fn load_longmemeval_v2_image_subset(
             }),
             oracle_lane: annotation.oracle_lane,
             oracle_evidence,
-            evidence,
         });
     }
 
@@ -845,8 +2001,8 @@ pub fn load_longmemeval_v2_image_subset(
                 "https://huggingface.co/datasets/xiaowu0162/LongMemEval-v2".to_string(),
             ),
             official_equivalent: false,
-            leaderboard_eligible: false,
         },
+        corpora: corpora_by_id.into_values().collect(),
         cases,
     };
     validate_fixture(&fixture)?;
@@ -966,6 +2122,9 @@ fn media_ref_from_dataset(
         locator: locator.to_string(),
         sha256: sha256_file(&canonical_media)?,
         media_type: media_type.to_string(),
+        size_bytes: std::fs::metadata(&canonical_media)
+            .with_context(|| format!("stat media {}", canonical_media.display()))?
+            .len(),
     })
 }
 
@@ -1045,27 +2204,56 @@ pub fn validate_fixture(fixture: &MultimodalFixtureSet) -> anyhow::Result<()> {
     validate_id("dataset_id", &fixture.source.dataset_id)?;
     non_empty("dataset version", &fixture.source.version)?;
     validate_sha256("source digest", &fixture.source.source_digest)?;
-    anyhow::ensure!(
-        !fixture.source.leaderboard_eligible
-            || (fixture.source.official_equivalent && fixture.split == FixtureSplit::HeldOut),
-        "leaderboard eligibility requires an official-equivalent held-out fixture"
-    );
+    anyhow::ensure!(!fixture.corpora.is_empty(), "fixture set has no corpora");
     anyhow::ensure!(!fixture.cases.is_empty(), "fixture set has no cases");
     let mut case_ids = HashSet::new();
+    let mut corpus_ids = HashSet::new();
     let mut fixture_media = BTreeMap::new();
+    for corpus in &fixture.corpora {
+        validate_id("corpus_id", &corpus.corpus_id)?;
+        anyhow::ensure!(
+            corpus_ids.insert(corpus.corpus_id.as_str()),
+            "duplicate corpus id '{}'",
+            corpus.corpus_id
+        );
+        anyhow::ensure!(
+            !corpus.evidence.is_empty(),
+            "corpus '{}' has no evidence",
+            corpus.corpus_id
+        );
+        let mut evidence_ids = HashSet::new();
+        for item in &corpus.evidence {
+            validate_evidence_item(item)?;
+            anyhow::ensure!(
+                evidence_ids.insert(item.evidence_id.as_str()),
+                "duplicate evidence id '{}' in corpus '{}'",
+                item.evidence_id,
+                corpus.corpus_id
+            );
+            if let Some(previous) =
+                fixture_media.insert(item.source_media.asset_id.as_str(), &item.source_media)
+            {
+                anyhow::ensure!(
+                    previous == &item.source_media,
+                    "asset id '{}' is ambiguous",
+                    item.source_media.asset_id
+                );
+            }
+        }
+    }
     for case in &fixture.cases {
-        validate_case(case)?;
+        let corpus = fixture
+            .corpora
+            .iter()
+            .find(|corpus| corpus.corpus_id == case.corpus_id)
+            .ok_or_else(|| anyhow::anyhow!("case '{}' references missing corpus", case.case_id))?;
+        validate_case(case, corpus)?;
         anyhow::ensure!(
             case_ids.insert(case.case_id.as_str()),
             "duplicate case id '{}'",
             case.case_id
         );
-        for media in case
-            .question
-            .media
-            .iter()
-            .chain(case.evidence.iter().map(|item| &item.source_media))
-        {
+        for media in case.question.media.iter() {
             if let Some(previous) = fixture_media.insert(media.asset_id.as_str(), media) {
                 anyhow::ensure!(
                     previous == media,
@@ -1078,7 +2266,7 @@ pub fn validate_fixture(fixture: &MultimodalFixtureSet) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn validate_case(case: &MultimodalCase) -> anyhow::Result<()> {
+fn validate_case(case: &MultimodalCase, corpus: &MultimodalCorpus) -> anyhow::Result<()> {
     validate_id("case_id", &case.case_id)?;
     validate_id("corpus_id", &case.corpus_id)?;
     non_empty("question text", &case.question.text)?;
@@ -1099,56 +2287,33 @@ fn validate_case(case: &MultimodalCase) -> anyhow::Result<()> {
         (None, false) => {}
     }
     anyhow::ensure!(
-        !case.evidence.is_empty(),
-        "case '{}' has no evidence",
-        case.case_id
-    );
-    anyhow::ensure!(
         !case.oracle_evidence.is_empty(),
         "case '{}' has no oracle evidence",
         case.case_id
     );
-    let mut media_by_id = BTreeMap::new();
-    for media in case
-        .question
-        .media
-        .iter()
-        .chain(case.evidence.iter().map(|item| &item.source_media))
-    {
+    for media in &case.question.media {
         validate_media(media)?;
-        if let Some(previous) = media_by_id.insert(media.asset_id.as_str(), media) {
-            anyhow::ensure!(
-                previous == media,
-                "asset id '{}' resolves to different media refs",
-                media.asset_id
-            );
-        }
-    }
-    let mut evidence_ids = HashSet::new();
-    let evidence_regions: Vec<_> = case
-        .evidence
-        .iter()
-        .map(|item| item.region.clone())
-        .collect();
-    for item in &case.evidence {
-        validate_id("evidence_id", &item.evidence_id)?;
-        anyhow::ensure!(
-            evidence_ids.insert(item.evidence_id.as_str()),
-            "duplicate evidence id '{}'",
-            item.evidence_id
-        );
-        validate_region(&item.region)?;
-        if let Some(text) = &item.text_projection {
-            non_empty("text projection", text)?;
-        }
     }
     for region in &case.oracle_evidence {
         validate_region(region)?;
         anyhow::ensure!(
-            evidence_regions.contains(region),
+            corpus
+                .evidence
+                .iter()
+                .any(|item| region_is_within_source(region, &item.region)),
             "case '{}' oracle region is absent from evidence",
             case.case_id
         );
+    }
+    Ok(())
+}
+
+fn validate_evidence_item(item: &EvidenceItem) -> anyhow::Result<()> {
+    validate_id("evidence_id", &item.evidence_id)?;
+    validate_media(&item.source_media)?;
+    validate_region(&item.region)?;
+    if let Some(text) = &item.text_projection {
+        non_empty("text projection", text)?;
     }
     Ok(())
 }
@@ -1158,26 +2323,12 @@ fn validate_media(media: &MediaRef) -> anyhow::Result<()> {
     non_empty("media locator", &media.locator)?;
     non_empty("media type", &media.media_type)?;
     validate_sha256("media sha256", &media.sha256)?;
-    if media.locator.contains("://") {
-        let expected = format!("cas://sha256/{}", media.sha256);
-        anyhow::ensure!(
-            media.locator == expected,
-            "adapter-addressed media locator must be its exact content-addressed '{expected}'"
-        );
-    } else {
-        let path = Path::new(&media.locator);
-        anyhow::ensure!(
-            !path.is_absolute(),
-            "media locator must be dataset-relative or adapter-addressed"
-        );
-        anyhow::ensure!(
-            path.components().all(|component| !matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )),
-            "media locator contains an unsafe path component"
-        );
-    }
+    anyhow::ensure!(media.size_bytes > 0, "media size must be positive");
+    anyhow::ensure!(
+        !media.locator.contains("://"),
+        "media locator is import-only and must not be adapter-addressed"
+    );
+    ensure_safe_relative(Path::new(&media.locator), "media locator")?;
     Ok(())
 }
 
@@ -1226,6 +2377,58 @@ fn validate_region(region: &EvidenceRegion) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+fn region_is_within_source(region: &EvidenceRegion, source: &EvidenceRegion) -> bool {
+    match (region, source) {
+        (
+            EvidenceRegion::Screenshot {
+                trajectory_id: left,
+                state_index: left_index,
+                ..
+            },
+            EvidenceRegion::Screenshot {
+                trajectory_id: right,
+                state_index: right_index,
+                ..
+            },
+        ) => left == right && left_index == right_index,
+        (
+            EvidenceRegion::Page {
+                document_id: left,
+                page_number: left_page,
+                ..
+            },
+            EvidenceRegion::Page {
+                document_id: right,
+                page_number: right_page,
+                ..
+            },
+        ) => left == right && left_page == right_page,
+        (
+            EvidenceRegion::Cell {
+                workbook_id: left,
+                sheet_name: left_sheet,
+                ..
+            }
+            | EvidenceRegion::Sheet {
+                workbook_id: left,
+                sheet_name: left_sheet,
+                ..
+            },
+            EvidenceRegion::Sheet {
+                workbook_id: right,
+                sheet_name: right_sheet,
+                ..
+            }
+            | EvidenceRegion::Cell {
+                workbook_id: right,
+                sheet_name: right_sheet,
+                ..
+            },
+        ) => left == right && left_sheet == right_sheet,
+        _ => false,
+    }
 }
 
 fn validate_bounds(bounds: &NormalizedBounds) -> anyhow::Result<()> {
@@ -1296,12 +2499,17 @@ fn preflight_capabilities(
         missing.insert("oracle_region_filter");
     }
     for case in &fixture.cases {
+        let corpus = fixture
+            .corpora
+            .iter()
+            .find(|corpus| corpus.corpus_id == case.corpus_id)
+            .ok_or_else(|| anyhow::anyhow!("case '{}' references missing corpus", case.case_id))?;
         match arm.requested_lane(case) {
             RecallLane::TextProjection if !capabilities.text_projection_recall => {
                 missing.insert("text_projection_recall");
             }
             RecallLane::Native => {
-                if case
+                if corpus
                     .evidence
                     .iter()
                     .any(|item| matches!(item.region, EvidenceRegion::Screenshot { .. }))
@@ -1309,7 +2517,7 @@ fn preflight_capabilities(
                 {
                     missing.insert("native_image_recall");
                 }
-                if case.evidence.iter().any(|item| {
+                if corpus.evidence.iter().any(|item| {
                     matches!(
                         item.region,
                         EvidenceRegion::Page { .. }
@@ -1328,7 +2536,7 @@ fn preflight_capabilities(
                 if !capabilities.hybrid_collapse {
                     missing.insert("hybrid_collapse");
                 }
-                if case
+                if corpus
                     .evidence
                     .iter()
                     .any(|item| matches!(item.region, EvidenceRegion::Screenshot { .. }))
@@ -1336,7 +2544,7 @@ fn preflight_capabilities(
                 {
                     missing.insert("native_image_recall");
                 }
-                if case.evidence.iter().any(|item| {
+                if corpus.evidence.iter().any(|item| {
                     matches!(
                         item.region,
                         EvidenceRegion::Page { .. }
@@ -1387,36 +2595,24 @@ fn validate_response(
         "case '{}' adapter reader mode did not match request",
         case.case_id
     );
+    let text = &response.execution.text_branch_candidates;
+    let native = &response.execution.native_branch_candidates;
     match request.lane {
         RecallLane::TextProjection => anyhow::ensure!(
-            response.execution.text_branch_candidates > 0
-                && response.execution.native_branch_candidates == 0,
-            "case '{}' text control did not prove the text-only branch fired",
+            !text.is_empty() && native.is_empty(),
+            "case '{}' text control must expose text candidates and no native candidates",
             case.case_id
         ),
         RecallLane::Native => anyhow::ensure!(
-            response.execution.native_branch_candidates > 0,
-            "case '{}' native branch did not fire",
+            text.is_empty() && !native.is_empty(),
+            "case '{}' native arm must expose native candidates and no text candidates",
             case.case_id
         ),
         RecallLane::HybridCollapsed => anyhow::ensure!(
-            response.execution.text_branch_candidates > 0
-                && response.execution.native_branch_candidates > 0,
-            "case '{}' hybrid arm did not prove both branches fired",
+            !text.is_empty() && !native.is_empty(),
+            "case '{}' hybrid arm must expose both candidate branches",
             case.case_id
         ),
-    }
-    if request.lane == RecallLane::HybridCollapsed
-        && case
-            .evidence
-            .iter()
-            .any(|item| item.text_projection.is_some())
-    {
-        anyhow::ensure!(
-            response.execution.collapsed_duplicates > 0,
-            "case '{}' hybrid arm did not prove source-region collapse fired",
-            case.case_id
-        );
     }
     if request.oracle_regions.is_empty() {
         anyhow::ensure!(
@@ -1431,94 +2627,283 @@ fn validate_response(
             case.case_id
         );
     }
-    match request.reader_mode {
-        ReaderMode::TextProjection => anyhow::ensure!(
-            response.execution.reader_media_parts == 0,
-            "case '{}' text reader unexpectedly received media",
-            case.case_id
-        ),
-        ReaderMode::SourceBlob => anyhow::ensure!(
-            response.execution.reader_media_parts > 0,
-            "case '{}' blob reader did not receive media",
-            case.case_id
-        ),
-    }
-    let evidence_by_id: BTreeMap<_, _> = case
-        .evidence
+    let evidence_by_id: BTreeMap<_, _> = request
+        .corpus
+        .artifacts
         .iter()
         .map(|item| (item.evidence_id.as_str(), item))
         .collect();
-    for retrieved in &response.retrieved {
-        let source = evidence_by_id
-            .get(retrieved.evidence_id.as_str())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "case '{}' adapter returned unknown evidence '{}'",
-                    case.case_id,
-                    retrieved.evidence_id
-                )
-            })?;
+    let mut candidates = BTreeMap::new();
+    for candidate in text.iter().chain(native) {
+        validate_id("candidate_id", &candidate.candidate_id)?;
         anyhow::ensure!(
-            retrieved.region == source.region,
-            "case '{}' adapter changed evidence region '{}'",
-            case.case_id,
-            retrieved.evidence_id
+            candidate.score.is_finite(),
+            "candidate score must be finite"
         );
-        if let Some(media) = &retrieved.source_media {
+        let expected = evidence_by_id
+            .get(candidate.evidence_id.as_str())
+            .ok_or_else(|| anyhow::anyhow!("candidate invented evidence"))?;
+        let mut pointer_only = candidate.artifact.clone();
+        pointer_only.retrieval = CapturedRetrievalScores::default();
+        anyhow::ensure!(
+            &pointer_only == *expected,
+            "candidate changed captured pointer or provenance"
+        );
+        validate_retrieval_scores(&candidate.artifact.retrieval)?;
+        match candidate.lane {
+            RecallLane::TextProjection => {
+                anyhow::ensure!(
+                    text.contains(candidate) && candidate.profile_id.is_none(),
+                    "text candidate is in the wrong branch or has a native profile"
+                );
+                anyhow::ensure!(
+                    candidate.artifact.projection.is_some(),
+                    "text candidate lacks projection provenance"
+                );
+                anyhow::ensure!(
+                    candidate.artifact.retrieval.text_projection == Some(candidate.score)
+                        && candidate.artifact.retrieval.native_profiles.is_empty()
+                        && candidate.artifact.retrieval.fused == candidate.score,
+                    "text candidate score is not mapped to product retrieval scores"
+                );
+            }
+            RecallLane::Native => {
+                anyhow::ensure!(
+                    native.contains(candidate)
+                        && candidate
+                            .profile_id
+                            .as_deref()
+                            .is_some_and(|id| !id.trim().is_empty()),
+                    "native candidate is in the wrong branch or lacks profile identity"
+                );
+                let profile = candidate.profile_id.as_deref().unwrap_or_default();
+                anyhow::ensure!(
+                    candidate.artifact.retrieval.text_projection.is_none()
+                        && candidate.artifact.retrieval.native_profiles.len() == 1
+                        && candidate.artifact.retrieval.native_profiles.get(profile)
+                            == Some(&candidate.score)
+                        && candidate.artifact.retrieval.fused == candidate.score,
+                    "native candidate score is not mapped to product retrieval scores"
+                );
+            }
+            RecallLane::HybridCollapsed => {
+                anyhow::bail!("candidate lane must name its source branch")
+            }
+        }
+        anyhow::ensure!(
+            candidates
+                .insert(candidate.candidate_id.as_str(), candidate)
+                .is_none(),
+            "duplicate candidate id"
+        );
+    }
+    let mut clustered = HashSet::new();
+    let mut representatives = BTreeMap::new();
+    for cluster in &response.execution.collapse_clusters {
+        anyhow::ensure!(
+            !cluster.member_candidate_ids.is_empty(),
+            "empty collapse cluster"
+        );
+        anyhow::ensure!(
+            cluster
+                .member_candidate_ids
+                .iter()
+                .any(|id| id == &cluster.representative_candidate_id),
+            "collapse representative is not a member"
+        );
+        let representative = candidates
+            .get(cluster.representative_candidate_id.as_str())
+            .ok_or_else(|| anyhow::anyhow!("collapse representative is unknown"))?;
+        for member_id in &cluster.member_candidate_ids {
             anyhow::ensure!(
-                media == &source.source_media,
-                "case '{}' adapter changed source media '{}'",
-                case.case_id,
-                retrieved.evidence_id
+                clustered.insert(member_id.as_str()),
+                "candidate appears in multiple collapse clusters"
+            );
+            let member = candidates
+                .get(member_id.as_str())
+                .ok_or_else(|| anyhow::anyhow!("collapse member is unknown"))?;
+            anyhow::ensure!(
+                member.artifact.binding_id == representative.artifact.binding_id
+                    && captured_regions_related(
+                        &member.artifact.region,
+                        &representative.artifact.region,
+                    ),
+                "collapse joined unrelated source regions"
             );
         }
-        match request.lane {
-            RecallLane::TextProjection => anyhow::ensure!(
-                retrieved.lane == RecallLane::TextProjection,
-                "case '{}' text arm returned non-text evidence",
-                case.case_id
-            ),
-            RecallLane::Native => anyhow::ensure!(
-                retrieved.lane == RecallLane::Native && retrieved.source_media.is_some(),
-                "case '{}' native arm returned evidence without a native media reference",
-                case.case_id
-            ),
-            RecallLane::HybridCollapsed => {}
+        let mut collapsed = representative.artifact.clone();
+        collapsed.retrieval = CapturedRetrievalScores::default();
+        for member_id in &cluster.member_candidate_ids {
+            merge_retrieval_scores(
+                &mut collapsed.retrieval,
+                &candidates[member_id.as_str()].artifact.retrieval,
+            );
         }
+        anyhow::ensure!(
+            representatives
+                .insert(representative.evidence_id.as_str(), collapsed)
+                .is_none(),
+            "multiple collapse representatives reuse one evidence id"
+        );
+    }
+    anyhow::ensure!(
+        clustered.len() == candidates.len(),
+        "every branch candidate must enter exactly one collapse cluster"
+    );
+    let actual_components: BTreeSet<Vec<String>> = response
+        .execution
+        .collapse_clusters
+        .iter()
+        .map(|cluster| {
+            let mut members = cluster.member_candidate_ids.clone();
+            members.sort();
+            members
+        })
+        .collect();
+    anyhow::ensure!(
+        actual_components == expected_collapse_components(&candidates),
+        "collapse clusters do not match harness-recomputed source-region components"
+    );
+    if request.lane == RecallLane::HybridCollapsed {
+        anyhow::ensure!(
+            response
+                .execution
+                .collapse_clusters
+                .iter()
+                .any(|cluster| cluster.member_candidate_ids.len() > 1),
+            "hybrid arm did not prove an actual collapse"
+        );
+    }
+    let mut retrieved_ids = HashSet::new();
+    for retrieved in &response.retrieved {
+        let representative = representatives
+            .get(retrieved.evidence_id.as_str())
+            .ok_or_else(|| {
+                anyhow::anyhow!("retrieved evidence is not a collapse representative")
+            })?;
+        anyhow::ensure!(
+            retrieved_ids.insert(retrieved.evidence_id.as_str()),
+            "duplicate retrieved evidence"
+        );
+        anyhow::ensure!(
+            retrieved.artifact == *representative,
+            "retrieved evidence does not match the harness-recomputed collapsed artifact"
+        );
         if !request.oracle_regions.is_empty() {
             anyhow::ensure!(
-                request.oracle_regions.contains(&retrieved.region),
+                request.oracle_regions.iter().any(|region| {
+                    captured_region_ref(&retrieved.artifact.binding_id, region).is_ok_and(
+                        |expected| captured_regions_related(&expected, &retrieved.artifact.region),
+                    )
+                }),
                 "case '{}' oracle arm returned evidence outside the oracle regions",
                 case.case_id
             );
         }
     }
-    match request.reader_mode {
-        ReaderMode::TextProjection => anyhow::ensure!(
-            response.retrieved.iter().any(|item| item
-                .rendered_text
-                .as_deref()
-                .is_some_and(|text| !text.trim().is_empty())),
-            "case '{}' text reader received no rendered text",
-            case.case_id
-        ),
-        ReaderMode::SourceBlob => anyhow::ensure!(
-            response
-                .retrieved
-                .iter()
-                .any(|item| item.source_media.is_some()),
-            "case '{}' blob reader received no source media reference",
-            case.case_id
-        ),
+    anyhow::ensure!(
+        response.execution.reader_inputs.len() == response.retrieved.len(),
+        "reader proof must cover every retrieved representative"
+    );
+    for (retrieved, reader) in response
+        .retrieved
+        .iter()
+        .zip(&response.execution.reader_inputs)
+    {
+        anyhow::ensure!(
+            reader.evidence_id == retrieved.evidence_id && reader.mode == request.reader_mode,
+            "reader proof identity mismatch"
+        );
+        match request.reader_mode {
+            ReaderMode::TextProjection => {
+                let projection = retrieved.artifact.projection.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("text reader representative lacks projection")
+                })?;
+                let text = retrieved.rendered_text.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("text reader received no rendered projection")
+                })?;
+                anyhow::ensure!(
+                    projection.output_binding_id.as_deref() == Some(reader.binding_id.as_str())
+                        && retrieved.artifact.projection_output_sha256.as_deref()
+                            == Some(reader.verified_sha256.as_str())
+                        && sha256(text.as_bytes()) == reader.verified_sha256,
+                    "text reader input is not the registered projection output"
+                );
+            }
+            ReaderMode::SourceBlob => anyhow::ensure!(
+                reader.binding_id == retrieved.artifact.binding_id
+                    && reader.verified_sha256 == retrieved.artifact.blob.id.value
+                    && retrieved.rendered_text.is_none(),
+                "blob reader input is not the verified source binding"
+            ),
+        }
+    }
+    if let Some(frozen) = &request.frozen_retrieval {
+        let actual = frozen_retrieval_identity(&response.retrieved);
+        anyhow::ensure!(
+            frozen.fingerprint == stable_json_hash(&frozen.retrieved)?
+                && frozen.fingerprint == stable_json_hash(&actual)?
+                && frozen.retrieved == actual,
+            "reader-modality arm changed frozen retrieval"
+        );
     }
     Ok(())
+}
+
+fn expected_collapse_components(
+    candidates: &BTreeMap<&str, &BranchCandidate>,
+) -> BTreeSet<Vec<String>> {
+    let mut remaining: BTreeSet<&str> = candidates.keys().copied().collect();
+    let mut components = BTreeSet::new();
+    while let Some(seed) = remaining.pop_first() {
+        let mut component = BTreeSet::from([seed]);
+        let mut frontier = vec![seed];
+        while let Some(current_id) = frontier.pop() {
+            let current = candidates[current_id];
+            let related: Vec<_> = remaining
+                .iter()
+                .copied()
+                .filter(|candidate_id| {
+                    let candidate = candidates[candidate_id];
+                    current.artifact.binding_id == candidate.artifact.binding_id
+                        && captured_regions_related(
+                            &current.artifact.region,
+                            &candidate.artifact.region,
+                        )
+                })
+                .collect();
+            for candidate_id in related {
+                remaining.remove(candidate_id);
+                component.insert(candidate_id);
+                frontier.push(candidate_id);
+            }
+        }
+        components.insert(component.into_iter().map(str::to_string).collect());
+    }
+    components
+}
+
+#[cfg(test)]
+fn retrieval_fingerprint(retrieved: &[RetrievedEvidence]) -> anyhow::Result<String> {
+    stable_json_hash(&frozen_retrieval_identity(retrieved))
+}
+
+fn frozen_retrieval_identity(retrieved: &[RetrievedEvidence]) -> Vec<FrozenRetrievedEvidence> {
+    retrieved
+        .iter()
+        .map(|item| FrozenRetrievedEvidence {
+            evidence_id: item.evidence_id.clone(),
+            lane: item.lane,
+            artifact: item.artifact.clone(),
+        })
+        .collect()
 }
 
 fn fired_proof(request: &RecallRequest, response: &RecallResponse) -> anyhow::Result<FiredProof> {
     let mut regions: Vec<_> = response
         .retrieved
         .iter()
-        .map(|item| stable_json_hash(&item.region))
+        .map(|item| stable_json_hash(&item.artifact.region))
         .collect::<anyhow::Result<_>>()?;
     regions.sort();
     Ok(FiredProof {
@@ -1526,11 +2911,11 @@ fn fired_proof(request: &RecallRequest, response: &RecallResponse) -> anyhow::Re
         response_sha256: stable_json_hash(response)?,
         effective_lane: response.execution.effective_lane,
         effective_reader_mode: response.execution.effective_reader_mode,
-        text_branch_candidates: response.execution.text_branch_candidates,
-        native_branch_candidates: response.execution.native_branch_candidates,
-        collapsed_duplicates: response.execution.collapsed_duplicates,
+        text_branch_fingerprint: stable_json_hash(&response.execution.text_branch_candidates)?,
+        native_branch_fingerprint: stable_json_hash(&response.execution.native_branch_candidates)?,
+        collapse_fingerprint: stable_json_hash(&response.execution.collapse_clusters)?,
         oracle_region_count: response.execution.oracle_regions_applied.len(),
-        reader_media_parts: response.execution.reader_media_parts,
+        reader_input_fingerprint: stable_json_hash(&response.execution.reader_inputs)?,
         retrieved_region_fingerprint: stable_json_hash(&regions)?,
     })
 }
@@ -1611,12 +2996,38 @@ fn non_empty(name: &str, value: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn scored_artifact(
+    artifact: &CapturedArtifact,
+    lane: RecallLane,
+    profile_id: Option<&str>,
+    score: f32,
+) -> CapturedArtifact {
+    let mut artifact = artifact.clone();
+    artifact.retrieval = match lane {
+        RecallLane::TextProjection => CapturedRetrievalScores {
+            text_projection: Some(score),
+            native_profiles: BTreeMap::new(),
+            fused: score,
+        },
+        RecallLane::Native => CapturedRetrievalScores {
+            text_projection: None,
+            native_profiles: profile_id
+                .map(|profile| BTreeMap::from([(profile.to_string(), score)]))
+                .unwrap_or_default(),
+            fused: score,
+        },
+        RecallLane::HybridCollapsed => CapturedRetrievalScores::default(),
+    };
+    artifact
+}
+
 /// No-network cell-A control. It performs deterministic lexical retrieval over the supplied text
 /// projections and returns the top projection verbatim. It never inspects gold answers or oracle
 /// evidence and deliberately advertises no native capability.
 #[derive(Clone, Debug)]
 pub struct TextProjectionBaseline {
     descriptor: AdapterDescriptor,
+    projections: BTreeMap<String, String>,
 }
 
 impl Default for TextProjectionBaseline {
@@ -1631,6 +3042,7 @@ impl Default for TextProjectionBaseline {
                     ..MultimodalCapabilities::default()
                 },
             },
+            projections: BTreeMap::new(),
         }
     }
 }
@@ -1640,65 +3052,198 @@ impl MultimodalRecallAdapter for TextProjectionBaseline {
         self.descriptor.clone()
     }
 
-    fn recall(&mut self, request: &RecallRequest) -> Result<RecallResponse, AdapterFailure> {
-        if request.lane != RecallLane::TextProjection {
-            return Err(AdapterFailure::CapabilityUnavailable(format!(
-                "lane {:?}",
-                request.lane
-            )));
+    fn import_corpus(
+        &mut self,
+        request: &CorpusImportRequest,
+        _spend: &mut SpendJournal,
+    ) -> Result<CapturedCorpus, AdapterFailure> {
+        let mut artifacts = Vec::with_capacity(request.items.len());
+        for item in &request.items {
+            let evidence = &item.evidence;
+            let source_binding_id = format!(
+                "binding-{}",
+                sha256(
+                    format!("{}\0{}\0source", request.corpus_id, evidence.evidence_id).as_bytes()
+                )
+            );
+            let region = captured_region_ref(&source_binding_id, &evidence.region)
+                .map_err(|error| AdapterFailure::Failed(error.to_string()))?;
+            let projection = evidence.text_projection.as_ref().map(|text| {
+                self.projections
+                    .insert(evidence.evidence_id.clone(), text.clone());
+                CapturedProjectionRef {
+                    execution_id: sha256(
+                        format!("{}\0projection-execution", evidence.evidence_id).as_bytes(),
+                    ),
+                    source_binding_id: source_binding_id.clone(),
+                    source_region_id: region.region_id.clone(),
+                    output_binding_id: Some(format!(
+                        "binding-{}",
+                        sha256(format!("{}\0projection-output", evidence.evidence_id).as_bytes())
+                    )),
+                    transformed_at: None,
+                }
+            });
+            let projection_output_sha256 = evidence
+                .text_projection
+                .as_ref()
+                .map(|text| sha256(text.as_bytes()));
+            artifacts.push(CapturedArtifact {
+                evidence_id: evidence.evidence_id.clone(),
+                projection_output_sha256,
+                product: CapturedArtifactEvidence {
+                    binding_id: source_binding_id,
+                    blob: CapturedBlobRef {
+                        id: CapturedContentDigest {
+                            algorithm: "sha256".to_string(),
+                            value: evidence.source_media.sha256.clone(),
+                        },
+                        size_bytes: evidence.source_media.size_bytes,
+                        detected_media_type: evidence.source_media.media_type.clone(),
+                    },
+                    region,
+                    truth_tier: if projection.is_some() {
+                        TruthTier::DeterministicProjection
+                    } else {
+                        TruthTier::Raw
+                    },
+                    projection,
+                    retrieval: CapturedRetrievalScores::default(),
+                },
+            });
         }
-        if request.reader_mode != ReaderMode::TextProjection {
-            return Err(AdapterFailure::CapabilityUnavailable(
-                "source-blob reader".to_string(),
-            ));
-        }
-        if !request.oracle_regions.is_empty() {
-            return Err(AdapterFailure::CapabilityUnavailable(
-                "oracle region filter".to_string(),
-            ));
-        }
-        let query = lexical_terms(&request.question.text);
-        let best = request
-            .evidence
-            .iter()
-            .filter_map(|item| item.text_projection.as_ref().map(|text| (item, text)))
-            .map(|(item, text)| {
-                let terms = lexical_terms(text);
-                let overlap = query.intersection(&terms).count();
-                let union = query.union(&terms).count().max(1);
-                (overlap, union, item.evidence_id.as_str(), item, text)
-            })
-            .max_by(|left, right| {
-                ((left.0 as u128) * (right.1 as u128))
-                    .cmp(&((right.0 as u128) * (left.1 as u128)))
-                    .then_with(|| right.2.cmp(left.2))
-            })
-            .ok_or_else(|| AdapterFailure::Failed("no text projections available".to_string()))?;
-        Ok(RecallResponse {
-            answer: best.4.clone(),
-            retrieved: vec![RetrievedEvidence {
-                evidence_id: best.3.evidence_id.clone(),
-                lane: RecallLane::TextProjection,
-                region: best.3.region.clone(),
-                rendered_text: Some(best.4.clone()),
-                source_media: Some(best.3.source_media.clone()),
-            }],
-            execution: AdapterExecutionProof {
-                effective_lane: RecallLane::TextProjection,
-                effective_reader_mode: ReaderMode::TextProjection,
-                text_branch_candidates: request
-                    .evidence
-                    .iter()
-                    .filter(|item| item.text_projection.is_some())
-                    .count(),
-                native_branch_candidates: 0,
-                collapsed_duplicates: 0,
-                oracle_regions_applied: Vec::new(),
-                reader_media_parts: 0,
-            },
-            provider_calls: 0,
-            cost_micro_usd: 0,
+        Ok(CapturedCorpus {
+            corpus_id: request.corpus_id.clone(),
+            artifacts,
         })
+    }
+
+    fn recall(
+        &mut self,
+        request: &RecallRequest,
+        _spend: &mut SpendJournal,
+    ) -> Result<RecallResponse, AdapterFailure> {
+        (|| {
+            if request.lane != RecallLane::TextProjection {
+                return Err(AdapterFailure::CapabilityUnavailable(format!(
+                    "lane {:?}",
+                    request.lane
+                )));
+            }
+            if request.reader_mode != ReaderMode::TextProjection {
+                return Err(AdapterFailure::CapabilityUnavailable(
+                    "source-blob reader".to_string(),
+                ));
+            }
+            if !request.oracle_regions.is_empty() {
+                return Err(AdapterFailure::CapabilityUnavailable(
+                    "oracle region filter".to_string(),
+                ));
+            }
+            let query = lexical_terms(&request.question.text);
+            let best = request
+                .corpus
+                .artifacts
+                .iter()
+                .filter_map(|item| {
+                    self.projections
+                        .get(&item.evidence_id)
+                        .map(|text| (item, text))
+                })
+                .map(|(item, text)| {
+                    let terms = lexical_terms(text);
+                    let overlap = query.intersection(&terms).count();
+                    let union = query.union(&terms).count().max(1);
+                    (overlap, union, item.evidence_id.as_str(), item, text)
+                })
+                .max_by(|left, right| {
+                    ((left.0 as u128) * (right.1 as u128))
+                        .cmp(&((right.0 as u128) * (left.1 as u128)))
+                        .then_with(|| right.2.cmp(left.2))
+                })
+                .ok_or_else(|| {
+                    AdapterFailure::Failed("no text projections available".to_string())
+                })?;
+            let best_id = best.3.evidence_id.clone();
+            let best_text = best.4.clone();
+            let text_branch_candidates: Vec<_> = request
+                .corpus
+                .artifacts
+                .iter()
+                .filter(|item| item.projection.is_some())
+                .enumerate()
+                .map(|(index, artifact)| {
+                    let score = if artifact.evidence_id == best_id {
+                        1.0
+                    } else {
+                        0.0
+                    };
+                    BranchCandidate {
+                        candidate_id: format!("text-{index}"),
+                        evidence_id: artifact.evidence_id.clone(),
+                        lane: RecallLane::TextProjection,
+                        profile_id: None,
+                        score,
+                        artifact: scored_artifact(
+                            artifact,
+                            RecallLane::TextProjection,
+                            None,
+                            score,
+                        ),
+                    }
+                })
+                .collect();
+            let selected = text_branch_candidates
+                .iter()
+                .find(|candidate| candidate.evidence_id == best_id)
+                .ok_or_else(|| AdapterFailure::Failed("best candidate missing".to_string()))?;
+            let selected_artifact = selected.artifact.clone();
+            let projection = selected_artifact
+                .projection
+                .as_ref()
+                .ok_or_else(|| AdapterFailure::Failed("projection missing".to_string()))?;
+            let projection_binding = projection
+                .output_binding_id
+                .clone()
+                .ok_or_else(|| AdapterFailure::Failed("projection missing".to_string()))?;
+            let projection_sha256 = selected_artifact
+                .projection_output_sha256
+                .clone()
+                .ok_or_else(|| AdapterFailure::Failed("projection digest missing".to_string()))?;
+            Ok(RecallResponse {
+                answer: best_text.clone(),
+                retrieved: vec![RetrievedEvidence {
+                    evidence_id: best_id.clone(),
+                    lane: RecallLane::TextProjection,
+                    artifact: selected_artifact,
+                    rendered_text: Some(best_text),
+                }],
+                execution: AdapterExecutionProof {
+                    effective_lane: RecallLane::TextProjection,
+                    effective_reader_mode: ReaderMode::TextProjection,
+                    text_branch_candidates,
+                    native_branch_candidates: Vec::new(),
+                    collapse_clusters: request
+                        .corpus
+                        .artifacts
+                        .iter()
+                        .filter(|item| item.projection.is_some())
+                        .enumerate()
+                        .map(|(index, _)| CollapseCluster {
+                            representative_candidate_id: format!("text-{index}"),
+                            member_candidate_ids: vec![format!("text-{index}")],
+                        })
+                        .collect(),
+                    oracle_regions_applied: Vec::new(),
+                    reader_inputs: vec![ReaderInputProof {
+                        evidence_id: best_id,
+                        mode: ReaderMode::TextProjection,
+                        binding_id: projection_binding,
+                        verified_sha256: projection_sha256,
+                    }],
+                },
+            })
+        })()
     }
 }
 
@@ -1719,159 +3264,16 @@ fn contains_word_bounded(haystack: &str, needle: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+mod repair_tests {
     use super::*;
     use std::fs;
 
-    fn media(id: &str, media_type: &str) -> MediaRef {
-        MediaRef {
-            asset_id: id.to_string(),
-            locator: format!("assets/{id}"),
-            sha256: sha256(id.as_bytes()),
-            media_type: media_type.to_string(),
-        }
-    }
-
     fn fixture() -> MultimodalFixtureSet {
-        let screenshot = EvidenceRegion::Screenshot {
-            trajectory_id: "trajectory-1".to_string(),
-            state_index: 3,
-            locator: "screenshots/trajectory-1/3.png".to_string(),
-            bounds: Some(NormalizedBounds {
-                x: 0.5,
-                y: 0.1,
-                width: 0.4,
-                height: 0.2,
-            }),
-        };
-        let page = EvidenceRegion::Page {
-            document_id: "invoice-1".to_string(),
-            page_number: 2,
-            bounds: None,
-        };
-        let sheet = EvidenceRegion::Sheet {
-            workbook_id: "forecast-1".to_string(),
-            sheet_name: "Q2".to_string(),
-            range: "B2:C4".to_string(),
-        };
-        let cell = EvidenceRegion::Cell {
-            workbook_id: "forecast-1".to_string(),
-            sheet_name: "Q2".to_string(),
-            cell: "C4".to_string(),
-        };
-        MultimodalFixtureSet {
-            schema: FIXTURE_SCHEMA.to_string(),
-            fixture_set_id: "heldout-multimodal-v1".to_string(),
-            split: FixtureSplit::HeldOut,
-            source: DatasetProvenance {
-                dataset_id: "synthetic-heldout".to_string(),
-                version: "1".to_string(),
-                source_digest: sha256(b"synthetic-heldout-v1"),
-                source_uri: None,
-                official_equivalent: false,
-                leaderboard_eligible: false,
-            },
-            cases: vec![
-                MultimodalCase {
-                    case_id: "lmev2-image-1".to_string(),
-                    origin: FixtureOrigin::LongMemEvalV2,
-                    corpus_id: "web".to_string(),
-                    question: ContentSpec {
-                        text: "Which severity appears in the dashboard?".to_string(),
-                        media: Vec::new(),
-                    },
-                    gold: GoldAnswer {
-                        value: "critical".to_string(),
-                        scoring: ScoringRule::ContainsAll {
-                            case_sensitive: false,
-                        },
-                    },
-                    media_dependent: true,
-                    media_dependence_review: Some(MediaDependenceReview {
-                        reviewed_by: "fixture-author".to_string(),
-                        rationale: "The severity is rendered in the screenshot.".to_string(),
-                    }),
-                    oracle_lane: RecallLane::Native,
-                    oracle_evidence: vec![screenshot.clone()],
-                    evidence: vec![EvidenceItem {
-                        evidence_id: "screenshot-evidence".to_string(),
-                        source_media: media("incident.png", "image/png"),
-                        region: screenshot,
-                        text_projection: Some("dashboard incident severity critical".to_string()),
-                    }],
-                },
-                MultimodalCase {
-                    case_id: "pdf-page-1".to_string(),
-                    origin: FixtureOrigin::HeldOutPdf,
-                    corpus_id: "documents".to_string(),
-                    question: ContentSpec {
-                        text: "What is the invoice total?".to_string(),
-                        media: Vec::new(),
-                    },
-                    gold: GoldAnswer {
-                        value: "$1,284.50".to_string(),
-                        scoring: ScoringRule::ContainsAll {
-                            case_sensitive: false,
-                        },
-                    },
-                    media_dependent: true,
-                    media_dependence_review: Some(MediaDependenceReview {
-                        reviewed_by: "fixture-author".to_string(),
-                        rationale: "The answer is in a PDF page region.".to_string(),
-                    }),
-                    oracle_lane: RecallLane::HybridCollapsed,
-                    oracle_evidence: vec![page.clone()],
-                    evidence: vec![EvidenceItem {
-                        evidence_id: "pdf-evidence".to_string(),
-                        source_media: media("invoice.pdf", "application/pdf"),
-                        region: page,
-                        text_projection: Some("invoice total $1,284.50".to_string()),
-                    }],
-                },
-                MultimodalCase {
-                    case_id: "spreadsheet-cell-1".to_string(),
-                    origin: FixtureOrigin::HeldOutSpreadsheet,
-                    corpus_id: "workbooks".to_string(),
-                    question: ContentSpec {
-                        text: "What is Q2 net revenue?".to_string(),
-                        media: Vec::new(),
-                    },
-                    gold: GoldAnswer {
-                        value: "91300".to_string(),
-                        scoring: ScoringRule::ContainsAll {
-                            case_sensitive: false,
-                        },
-                    },
-                    media_dependent: true,
-                    media_dependence_review: Some(MediaDependenceReview {
-                        reviewed_by: "fixture-author".to_string(),
-                        rationale: "The answer is in a workbook cell.".to_string(),
-                    }),
-                    oracle_lane: RecallLane::HybridCollapsed,
-                    oracle_evidence: vec![sheet.clone(), cell.clone()],
-                    evidence: vec![
-                        EvidenceItem {
-                            evidence_id: "sheet-evidence".to_string(),
-                            source_media: media(
-                                "forecast.xlsx",
-                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            ),
-                            region: sheet,
-                            text_projection: Some("Q2 net revenue 91300 USD".to_string()),
-                        },
-                        EvidenceItem {
-                            evidence_id: "cell-evidence".to_string(),
-                            source_media: media(
-                                "forecast.xlsx",
-                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            ),
-                            region: cell,
-                            text_projection: Some("91300".to_string()),
-                        },
-                    ],
-                },
-            ],
-        }
+        load_fixture_file(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("fixtures/multimodal/v1/heldout-recall.json"),
+        )
+        .unwrap()
     }
 
     fn plan(arm: ExperimentArm) -> MultimodalRunPlan {
@@ -1879,26 +3281,102 @@ mod tests {
             arm,
             budget: ExecutionBudget::offline(),
             hypothesis: PreregisteredHypothesis {
-                statement:
-                    "The requested lane changes retrieved evidence on media-dependent cases."
-                        .to_string(),
-                mechanism: "Native media preserves structure omitted by text projection."
-                    .to_string(),
-                decision_gate:
-                    "Only continue above the projection control when fired proofs differ."
-                        .to_string(),
+                statement: "Native evidence changes media-dependent recall.".to_string(),
+                mechanism: "The native lane preserves source structure.".to_string(),
+                decision_gate: "Promote only after separated replicated ranges.".to_string(),
             },
             started_at: "2026-08-22T00:00:00Z".to_string(),
+            run_instance_id: "repair-test-run".to_string(),
+            git_sha: "5b7c198b3880992a31140022c99b7514034acd53".to_string(),
+            effective_config_sha256: sha256(b"repair-test-config"),
+            asset_root: Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/multimodal/v1"),
+            spend_ledger_path: None,
+            max_import_asset_bytes: 16 * 1024 * 1024,
         }
     }
 
     #[derive(Default)]
-    struct ProofAdapter;
+    struct SpyAdapter {
+        inner: TextProjectionBaseline,
+        imported_distractor: bool,
+        observed_oracle: bool,
+        observed_question_media: bool,
+        corrupt_binding: bool,
+        invalid_scores: bool,
+        invalid_spend: bool,
+        fail_after_spend: bool,
+        ledger_visible_before_failed_dispatch: bool,
+    }
 
-    impl MultimodalRecallAdapter for ProofAdapter {
+    impl MultimodalRecallAdapter for SpyAdapter {
+        fn descriptor(&self) -> AdapterDescriptor {
+            self.inner.descriptor()
+        }
+
+        fn import_corpus(
+            &mut self,
+            request: &CorpusImportRequest,
+            spend: &mut SpendJournal,
+        ) -> Result<CapturedCorpus, AdapterFailure> {
+            self.imported_distractor |= request
+                .items
+                .iter()
+                .any(|item| item.evidence.evidence_id.contains("distractor"));
+            let mut captured = self.inner.import_corpus(request, spend)?;
+            if self.corrupt_binding {
+                captured.artifacts[0].binding_id =
+                    format!("cas://sha256/{}", captured.artifacts[0].blob.id.value);
+            }
+            Ok(captured)
+        }
+
+        fn recall(
+            &mut self,
+            request: &RecallRequest,
+            spend: &mut SpendJournal,
+        ) -> Result<RecallResponse, AdapterFailure> {
+            self.observed_oracle |= !request.oracle_regions.is_empty();
+            self.observed_question_media |= !request.question.media.is_empty();
+            if self.invalid_spend {
+                spend.reserve(
+                    "over-budget-call",
+                    "provider",
+                    "model",
+                    request.budget.cost_micro_usd.saturating_add(1),
+                    "test",
+                )?;
+            }
+            if self.fail_after_spend {
+                let _reservation = spend.reserve("failed-call", "provider", "model", 1, "test")?;
+                self.ledger_visible_before_failed_dispatch = spend
+                    .ledger_path
+                    .as_ref()
+                    .and_then(|path| fs::read_to_string(path).ok())
+                    .is_some_and(|ledger| ledger.contains("reserved"));
+                return Err(AdapterFailure::Failed("provider failed".to_string()));
+            }
+            let mut response = self.inner.recall(request, spend)?;
+            if self.invalid_scores {
+                response.execution.text_branch_candidates[0]
+                    .artifact
+                    .retrieval
+                    .text_projection = None;
+            }
+            Ok(response)
+        }
+    }
+
+    #[derive(Default)]
+    struct HybridAdapter {
+        inner: TextProjectionBaseline,
+        tamper_blob_retrieval: bool,
+        invalid_collapse: bool,
+    }
+
+    impl MultimodalRecallAdapter for HybridAdapter {
         fn descriptor(&self) -> AdapterDescriptor {
             AdapterDescriptor {
-                adapter_id: "proof-adapter".to_string(),
+                adapter_id: "hybrid-proof-adapter".to_string(),
                 adapter_version: "1".to_string(),
                 capabilities: MultimodalCapabilities {
                     text_projection_recall: true,
@@ -1912,343 +3390,486 @@ mod tests {
             }
         }
 
-        fn recall(&mut self, request: &RecallRequest) -> Result<RecallResponse, AdapterFailure> {
-            let selected: Vec<_> = if request.oracle_regions.is_empty() {
-                request.evidence.iter().collect()
-            } else {
-                request
-                    .evidence
+        fn import_corpus(
+            &mut self,
+            request: &CorpusImportRequest,
+            spend: &mut SpendJournal,
+        ) -> Result<CapturedCorpus, AdapterFailure> {
+            self.inner.import_corpus(request, spend)
+        }
+
+        fn recall(
+            &mut self,
+            request: &RecallRequest,
+            _spend: &mut SpendJournal,
+        ) -> Result<RecallResponse, AdapterFailure> {
+            (|| {
+                let artifacts: Vec<_> = request
+                    .corpus
+                    .artifacts
                     .iter()
-                    .filter(|item| request.oracle_regions.contains(&item.region))
-                    .collect()
-            };
-            let answer = selected
-                .first()
-                .and_then(|item| item.text_projection.clone())
-                .ok_or_else(|| {
-                    AdapterFailure::Failed("proof fixture lacks projection".to_string())
-                })?;
-            let text_candidates = request
-                .evidence
-                .iter()
-                .filter(|item| item.text_projection.is_some())
-                .count();
-            let native_candidates = request.evidence.len();
-            Ok(RecallResponse {
-                answer,
-                retrieved: selected
-                    .into_iter()
-                    .map(|item| RetrievedEvidence {
-                        evidence_id: item.evidence_id.clone(),
-                        lane: request.lane,
-                        region: item.region.clone(),
-                        rendered_text: item.text_projection.clone(),
-                        source_media: Some(item.source_media.clone()),
+                    .filter(|artifact| artifact.projection.is_some())
+                    .cloned()
+                    .collect();
+                let mut text = Vec::new();
+                let mut native = Vec::new();
+                for (index, artifact) in artifacts.iter().enumerate() {
+                    if request.lane != RecallLane::Native {
+                        let score = 1.0 - index as f32 / 100.0;
+                        text.push(BranchCandidate {
+                            candidate_id: format!("text-{index}"),
+                            evidence_id: artifact.evidence_id.clone(),
+                            lane: RecallLane::TextProjection,
+                            profile_id: None,
+                            score,
+                            artifact: scored_artifact(
+                                artifact,
+                                RecallLane::TextProjection,
+                                None,
+                                score,
+                            ),
+                        });
+                    }
+                    if request.lane != RecallLane::TextProjection {
+                        let score = 1.0 - index as f32 / 100.0;
+                        native.push(BranchCandidate {
+                            candidate_id: format!("native-{index}"),
+                            evidence_id: artifact.evidence_id.clone(),
+                            lane: RecallLane::Native,
+                            profile_id: Some("native-v1".to_string()),
+                            score,
+                            artifact: scored_artifact(
+                                artifact,
+                                RecallLane::Native,
+                                Some("native-v1"),
+                                score,
+                            ),
+                        });
+                    }
+                }
+                let mut clusters: Vec<_> = artifacts
+                    .iter()
+                    .enumerate()
+                    .map(|(index, _)| {
+                        let mut members = Vec::new();
+                        if request.lane != RecallLane::Native {
+                            members.push(format!("text-{index}"));
+                        }
+                        if request.lane != RecallLane::TextProjection {
+                            members.push(format!("native-{index}"));
+                        }
+                        CollapseCluster {
+                            representative_candidate_id: members[0].clone(),
+                            member_candidate_ids: members,
+                        }
                     })
-                    .collect(),
-                execution: AdapterExecutionProof {
-                    effective_lane: request.lane,
-                    effective_reader_mode: request.reader_mode,
-                    text_branch_candidates: match request.lane {
-                        RecallLane::Native => 0,
-                        _ => text_candidates,
+                    .collect();
+                if self.invalid_collapse && request.lane == RecallLane::HybridCollapsed {
+                    let split = clusters[0]
+                        .member_candidate_ids
+                        .pop()
+                        .ok_or_else(|| AdapterFailure::Failed("no collapse member".to_string()))?;
+                    clusters.push(CollapseCluster {
+                        representative_candidate_id: split.clone(),
+                        member_candidate_ids: vec![split],
+                    });
+                }
+                let selected_index = usize::from(
+                    self.tamper_blob_retrieval
+                        && request.reader_mode == ReaderMode::SourceBlob
+                        && artifacts.len() > 1,
+                );
+                let representative_id = clusters
+                    .get(selected_index)
+                    .map(|cluster| cluster.representative_candidate_id.as_str())
+                    .ok_or_else(|| AdapterFailure::Failed("no artifact".to_string()))?;
+                let mut artifact = text
+                    .iter()
+                    .chain(&native)
+                    .find(|candidate| candidate.candidate_id == representative_id)
+                    .map(|candidate| candidate.artifact.clone())
+                    .ok_or_else(|| AdapterFailure::Failed("no representative".to_string()))?;
+                artifact.retrieval = CapturedRetrievalScores::default();
+                for member_id in &clusters[selected_index].member_candidate_ids {
+                    let member = text
+                        .iter()
+                        .chain(&native)
+                        .find(|candidate| candidate.candidate_id == *member_id)
+                        .ok_or_else(|| {
+                            AdapterFailure::Failed("collapse member missing".to_string())
+                        })?;
+                    merge_retrieval_scores(&mut artifact.retrieval, &member.artifact.retrieval);
+                }
+                let rendered_text = if request.reader_mode == ReaderMode::TextProjection {
+                    self.inner.projections.get(&artifact.evidence_id).cloned()
+                } else {
+                    None
+                };
+                let projection = artifact
+                    .projection
+                    .as_ref()
+                    .ok_or_else(|| AdapterFailure::Failed("no projection".to_string()))?;
+                let reader = match request.reader_mode {
+                    ReaderMode::TextProjection => ReaderInputProof {
+                        evidence_id: artifact.evidence_id.clone(),
+                        mode: request.reader_mode,
+                        binding_id: projection.output_binding_id.clone().ok_or_else(|| {
+                            AdapterFailure::Failed("projection output binding missing".to_string())
+                        })?,
+                        verified_sha256: artifact.projection_output_sha256.clone().ok_or_else(
+                            || AdapterFailure::Failed("projection digest missing".to_string()),
+                        )?,
                     },
-                    native_branch_candidates: match request.lane {
-                        RecallLane::TextProjection => 0,
-                        _ => native_candidates,
+                    ReaderMode::SourceBlob => ReaderInputProof {
+                        evidence_id: artifact.evidence_id.clone(),
+                        mode: request.reader_mode,
+                        binding_id: artifact.binding_id.clone(),
+                        verified_sha256: artifact.blob.id.value.clone(),
                     },
-                    collapsed_duplicates: usize::from(request.lane == RecallLane::HybridCollapsed)
-                        * text_candidates,
-                    oracle_regions_applied: request.oracle_regions.clone(),
-                    reader_media_parts: if request.reader_mode == ReaderMode::SourceBlob {
-                        native_candidates
-                    } else {
-                        0
+                };
+                Ok(RecallResponse {
+                    answer: rendered_text
+                        .clone()
+                        .unwrap_or_else(|| "source blob reader answer".to_string()),
+                    retrieved: vec![RetrievedEvidence {
+                        evidence_id: artifact.evidence_id.clone(),
+                        lane: if request.lane == RecallLane::Native {
+                            RecallLane::Native
+                        } else {
+                            RecallLane::TextProjection
+                        },
+                        artifact,
+                        rendered_text,
+                    }],
+                    execution: AdapterExecutionProof {
+                        effective_lane: request.lane,
+                        effective_reader_mode: request.reader_mode,
+                        text_branch_candidates: text,
+                        native_branch_candidates: native,
+                        collapse_clusters: clusters,
+                        oracle_regions_applied: request.oracle_regions.clone(),
+                        reader_inputs: vec![reader],
                     },
-                },
-                provider_calls: 0,
-                cost_micro_usd: 0,
-            })
+                })
+            })()
         }
     }
 
     #[test]
-    fn fixture_covers_screenshot_page_sheet_and_cell_regions() {
+    fn checked_fixture_has_real_assets_and_distractors() {
         let fixture = fixture();
-        validate_fixture(&fixture).unwrap();
-        let kinds: BTreeSet<_> = fixture
-            .cases
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/multimodal/v1");
+        let source_assets: Vec<_> = [
+            "assets/distractor.txt",
+            "assets/forecast.csv",
+            "assets/incident.svg",
+            "assets/invoice.pdf",
+        ]
+        .into_iter()
+        .map(|name| (name, fs::read(root.join(name)).unwrap()))
+        .collect();
+        let source_parts: Vec<_> = source_assets
             .iter()
-            .flat_map(|case| &case.oracle_evidence)
-            .map(|region| match region {
-                EvidenceRegion::Screenshot { .. } => "screenshot",
-                EvidenceRegion::Page { .. } => "page",
-                EvidenceRegion::Sheet { .. } => "sheet",
-                EvidenceRegion::Cell { .. } => "cell",
-            })
+            .map(|(name, bytes)| (*name, bytes.as_slice()))
             .collect();
-        assert_eq!(
-            kinds,
-            BTreeSet::from(["cell", "page", "screenshot", "sheet"])
-        );
-    }
-
-    #[test]
-    fn checked_in_heldout_fixture_is_schema_valid_and_non_rankable() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("fixtures/multimodal/v1/heldout-recall.json");
-        let fixture = load_fixture_file(&path).unwrap();
-        assert_eq!(fixture.split, FixtureSplit::HeldOut);
-        assert_eq!(fixture.cases.len(), 3);
-        assert!(!fixture.source.official_equivalent);
-        assert!(!fixture.source.leaderboard_eligible);
-    }
-
-    #[test]
-    fn text_projection_control_is_offline_deterministic_and_proves_it_fired() {
-        let fixture = fixture();
-        let mut first_adapter = TextProjectionBaseline::default();
-        let first = run_experiment(
-            &fixture,
-            &plan(ExperimentArm::text_control()),
-            &mut first_adapter,
-            &DeterministicScorer,
-        )
-        .unwrap();
-        let mut second_adapter = TextProjectionBaseline::default();
-        let second = run_experiment(
-            &fixture,
-            &plan(ExperimentArm::text_control()),
-            &mut second_adapter,
-            &DeterministicScorer,
-        )
-        .unwrap();
-        assert_eq!(first.run_id, second.run_id);
-        assert_eq!(
-            first.metrics,
-            MultimodalMetrics {
-                correct: 3,
-                total: 3,
-                media_dependent_correct: 3,
-                media_dependent_total: 3
-            }
-        );
-        assert_eq!(first.provenance.provider_calls, 0);
-        assert_eq!(first.provenance.cost_micro_usd, 0);
-        assert!(!first.provenance.oracle_gold);
+        assert_eq!(fixture.source.source_digest, sha256_parts(&source_parts));
         assert!(
-            first
-                .cases
+            fixture
+                .corpora
                 .iter()
-                .all(|case| case.fired_proof.text_branch_candidates > 0
-                    && case.fired_proof.native_branch_candidates == 0)
+                .all(|corpus| corpus.evidence.len() >= 2)
         );
-    }
-
-    #[test]
-    fn native_and_hybrid_arms_fail_explicitly_before_adapter_calls() {
-        for arm in [
-            ExperimentArm::native(),
-            ExperimentArm::hybrid(),
-            ExperimentArm::reader_modality(ReaderMode::SourceBlob),
-        ] {
-            let mut adapter = TextProjectionBaseline::default();
-            let error = run_experiment(&fixture(), &plan(arm), &mut adapter, &DeterministicScorer)
-                .unwrap_err()
-                .to_string();
-            assert!(error.contains("adapter capability gap"), "{error}");
+        for corpus in &fixture.corpora {
+            verify_corpus_assets(corpus, &root, 16 * 1024 * 1024).unwrap();
         }
     }
 
     #[test]
-    fn all_a_through_e_cells_emit_distinct_fired_proofs_offline() {
-        let fixture = fixture();
-        let arms = [
-            ExperimentArm::text_control(),
-            ExperimentArm::native(),
-            ExperimentArm::hybrid(),
-            ExperimentArm::oracle(),
-            ExperimentArm::reader_modality(ReaderMode::TextProjection),
-            ExperimentArm::reader_modality(ReaderMode::SourceBlob),
-        ];
-        let mut proof_fingerprints = BTreeSet::new();
-        for arm in arms {
-            let mut adapter = ProofAdapter;
-            let result = run_experiment(
-                &fixture,
-                &plan(arm.clone()),
-                &mut adapter,
-                &DeterministicScorer,
+    fn product_artifact_wire_mirror_matches_checked_drift_fixture() {
+        let bytes = fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("fixtures/multimodal/v1/product-artifact-evidence-wire.json"),
+        )
+        .unwrap();
+        let expected: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let mirrored: CapturedArtifactEvidence = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(serde_json::to_value(mirrored).unwrap(), expected);
+    }
+
+    #[test]
+    fn per_asset_import_cap_fails_closed() {
+        let checked = fixture();
+        let error = verify_corpus_assets(
+            &checked.corpora[0],
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/multimodal/v1"),
+            1,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("max_import_asset_bytes"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fixture_import_rejects_symlinked_path_components() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        symlink(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/multimodal/v1/assets"),
+            root.path().join("assets"),
+        )
+        .unwrap();
+        let checked = fixture();
+        let error =
+            verify_corpus_assets(&checked.corpora[0], root.path(), 16 * 1024 * 1024).unwrap_err();
+        assert!(error.to_string().contains("symlink"));
+    }
+
+    #[test]
+    fn official_loader_keeps_unlabelled_haystack_states_as_distractors() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("haystacks")).unwrap();
+        fs::create_dir_all(root.path().join("screenshots/t1")).unwrap();
+        fs::create_dir_all(root.path().join("screenshots/t2")).unwrap();
+        fs::write(root.path().join("screenshots/t1/0.png"), b"png-zero").unwrap();
+        fs::write(root.path().join("screenshots/t1/1.png"), b"png-one").unwrap();
+        fs::write(root.path().join("screenshots/t2/0.png"), b"png-two").unwrap();
+        fs::write(
+            root.path().join("questions.jsonl"),
+            serde_json::json!({"id":"q1","domain":"web","environment":"web","question_type":"visual","question":"which?","image":null,"answer":"one","eval_function":"norm_phrase_set_match|lower=true"}).to_string()
+                + "\n"
+                + &serde_json::json!({"id":"q2","domain":"web","environment":"web","question_type":"visual","question":"second?","image":null,"answer":"two","eval_function":"norm_phrase_set_match|lower=true"}).to_string()
+                + "\n",
+        ).unwrap();
+        fs::write(
+            root.path().join("trajectories.jsonl"),
+            serde_json::json!({"id":"t1","domain":"web","environment":"web","goal":"inspect","outcome":"success","start_url":"https://example.test","states":[
+                {"step":0,"state_index":0,"url":"https://example.test","action":null,"thought":null,"accessibility_tree":"gold state","screenshot":"screenshots/t1/0.png"},
+                {"step":1,"state_index":1,"url":"https://example.test","action":null,"thought":null,"accessibility_tree":"distractor state","screenshot":"screenshots/t1/1.png"}
+            ]}).to_string()
+                + "\n"
+                + &serde_json::json!({"id":"t2","domain":"web","environment":"web","goal":"inspect","outcome":"success","start_url":"https://second.test","states":[
+                    {"step":0,"state_index":0,"url":"https://second.test","action":null,"thought":null,"accessibility_tree":"second gold","screenshot":"screenshots/t2/0.png"}
+                ]}).to_string()
+                + "\n",
+        ).unwrap();
+        fs::write(
+            root.path().join("haystacks/small.json"),
+            b"{\"q1\":[\"t1\"],\"q2\":[\"t2\"]}",
+        )
+        .unwrap();
+        let annotations = root.path().join("annotations.json");
+        fs::write(
+            &annotations,
+            serde_json::to_vec(&serde_json::json!({"schema":ANNOTATION_SCHEMA,"fixture_set_id":"loader-regression","dataset_version":"test","haystack_file":"small.json","annotations":[
+                {"question_id":"q1","image_dependent":true,"reviewed_by":"reviewer","rationale":"pixels","oracle_lane":"native","evidence":[{"trajectory_id":"t1","state_index":0}]},
+                {"question_id":"q2","image_dependent":true,"reviewed_by":"reviewer","rationale":"pixels","oracle_lane":"native","evidence":[{"trajectory_id":"t2","state_index":0}]}
+            ]})).unwrap(),
+        ).unwrap();
+        let loaded = load_longmemeval_v2_image_subset(root.path(), &annotations).unwrap();
+        assert_eq!(loaded.corpora.len(), 2);
+        assert_eq!(loaded.corpora[0].evidence.len(), 2);
+        assert_eq!(loaded.corpora[1].evidence.len(), 1);
+        assert_eq!(loaded.cases[0].oracle_evidence.len(), 1);
+        assert_ne!(loaded.cases[0].corpus_id, loaded.cases[1].corpus_id);
+    }
+
+    #[test]
+    fn non_oracle_control_imports_full_corpus_and_strips_question_media() {
+        let mut fixture = fixture();
+        fixture.cases[0]
+            .question
+            .media
+            .push(fixture.corpora[0].evidence[0].source_media.clone());
+        let mut adapter = SpyAdapter::default();
+        let result = run_experiment(
+            &fixture,
+            &plan(ExperimentArm::text_control()),
+            &mut adapter,
+            &DeterministicScorer,
+        )
+        .unwrap();
+        assert!(adapter.imported_distractor);
+        assert!(!adapter.observed_oracle);
+        assert!(!adapter.observed_question_media);
+        assert!(!result.provenance.leaderboard_eligible);
+        let encoded = serde_json::to_vec(&result).unwrap();
+        let decoded: MultimodalRunResult = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded, result);
+    }
+
+    #[test]
+    fn fixture_bytes_are_verified_before_adapter_import() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("assets")).unwrap();
+        for name in [
+            "incident.svg",
+            "invoice.pdf",
+            "forecast.csv",
+            "distractor.txt",
+        ] {
+            fs::copy(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("fixtures/multimodal/v1/assets")
+                    .join(name),
+                root.path().join("assets").join(name),
             )
             .unwrap();
-            assert_eq!(result.provenance.provider_calls, 0);
-            assert_eq!(result.provenance.cost_micro_usd, 0);
-            if arm.cell == ExperimentCell::DOracleLane {
-                assert!(result.provenance.oracle_gold);
-                assert!(!result.provenance.leaderboard_eligible);
-                assert!(
-                    result
-                        .cases
-                        .iter()
-                        .all(|case| case.fired_proof.oracle_region_count > 0)
-                );
-            }
-            if arm.cell == ExperimentCell::EReaderModality
-                && arm.reader_mode == ReaderMode::SourceBlob
-            {
-                assert!(
-                    result
-                        .cases
-                        .iter()
-                        .all(|case| case.fired_proof.reader_media_parts > 0)
-                );
-            }
-            proof_fingerprints.insert(stable_json_hash(&result.cases).unwrap());
         }
-        assert_eq!(
-            proof_fingerprints.len(),
-            5,
-            "cell E's text-reader control must match cell C; every other arm must fire differently"
-        );
+        fs::write(root.path().join("assets/incident.svg"), b"tampered").unwrap();
+        let mut run_plan = plan(ExperimentArm::text_control());
+        run_plan.asset_root = root.path().to_path_buf();
+        let error = run_experiment(
+            &fixture(),
+            &run_plan,
+            &mut SpyAdapter::default(),
+            &DeterministicScorer,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("mismatch"));
     }
 
     #[test]
-    fn oracle_is_always_marked_non_rankable() {
-        let mut adapter = TextProjectionBaseline::default();
-        adapter.descriptor.capabilities.oracle_region_filter = true;
+    fn digest_locator_cannot_masquerade_as_product_binding() {
+        let mut adapter = SpyAdapter {
+            corrupt_binding: true,
+            ..SpyAdapter::default()
+        };
         let error = run_experiment(
+            &fixture(),
+            &plan(ExperimentArm::text_control()),
+            &mut adapter,
+            &DeterministicScorer,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("binding id"));
+    }
+
+    #[test]
+    fn provider_dispatch_cannot_reserve_beyond_budget() {
+        let root = tempfile::tempdir().unwrap();
+        let mut run_plan = plan(ExperimentArm::text_control());
+        run_plan.budget = ExecutionBudget {
+            max_step: CostLadderStep::ProviderPilot,
+            max_provider_calls: 1,
+            max_cost_micro_usd: 10,
+        };
+        run_plan.spend_ledger_path = Some(root.path().join("spend.jsonl"));
+        let mut adapter = SpyAdapter {
+            invalid_spend: true,
+            ..SpyAdapter::default()
+        };
+        let error =
+            run_experiment(&fixture(), &run_plan, &mut adapter, &DeterministicScorer).unwrap_err();
+        assert!(error.to_string().contains("exceeds remaining budget"));
+    }
+
+    #[test]
+    fn branch_score_must_map_to_product_retrieval_scores() {
+        let mut adapter = SpyAdapter {
+            invalid_scores: true,
+            ..SpyAdapter::default()
+        };
+        let error = run_experiment(
+            &fixture(),
+            &plan(ExperimentArm::text_control()),
+            &mut adapter,
+            &DeterministicScorer,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("retrieval scores"));
+    }
+
+    #[test]
+    fn failed_provider_attempt_is_fsynced_before_error_returns() {
+        let root = tempfile::tempdir().unwrap();
+        let ledger = root.path().join("spend.jsonl");
+        let mut run_plan = plan(ExperimentArm::text_control());
+        run_plan.budget = ExecutionBudget {
+            max_step: CostLadderStep::ProviderPilot,
+            max_provider_calls: 1,
+            max_cost_micro_usd: 10,
+        };
+        run_plan.spend_ledger_path = Some(ledger.clone());
+        let mut adapter = SpyAdapter {
+            fail_after_spend: true,
+            ..SpyAdapter::default()
+        };
+        let error =
+            run_experiment(&fixture(), &run_plan, &mut adapter, &DeterministicScorer).unwrap_err();
+        assert!(error.to_string().contains("provider failed"));
+        assert!(adapter.ledger_visible_before_failed_dispatch);
+        let lines = fs::read_to_string(ledger).unwrap();
+        assert_eq!(lines.lines().count(), 2);
+        assert!(lines.contains("failed"));
+        assert!(lines.contains("repair-test-run"));
+        assert!(lines.contains(&run_plan.effective_config_sha256));
+    }
+
+    #[test]
+    fn cell_e_reuses_byte_identical_retrieval_for_both_readers() {
+        let mut adapter = HybridAdapter::default();
+        let pair = run_reader_modality_pair(
+            &fixture(),
+            &plan(ExperimentArm::reader_modality(ReaderMode::TextProjection)),
+            &mut adapter,
+            &DeterministicScorer,
+        )
+        .unwrap();
+        for (text, blob) in pair.0.cases.iter().zip(&pair.1.cases) {
+            assert_eq!(
+                retrieval_fingerprint(&text.retrieved).unwrap(),
+                retrieval_fingerprint(&blob.retrieved).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn oracle_regions_map_to_typed_product_regions_without_exposing_gold_answers() {
+        let mut adapter = HybridAdapter::default();
+        let result = run_experiment(
             &fixture(),
             &plan(ExperimentArm::oracle()),
             &mut adapter,
             &DeterministicScorer,
         )
-        .unwrap_err();
-        assert!(error.to_string().contains("native_"));
+        .unwrap();
+        assert!(result.provenance.oracle_gold);
+        assert!(!result.provenance.leaderboard_eligible);
+        assert!(
+            result
+                .cases
+                .iter()
+                .all(|case| case.fired_proof.oracle_region_count > 0)
+        );
     }
 
     #[test]
-    fn invalid_region_and_unsafe_locator_fail_closed() {
-        let mut unsafe_fixture = fixture();
-        unsafe_fixture.cases[0].evidence[0].source_media.locator = "../secret.png".to_string();
-        assert!(
-            validate_fixture(&unsafe_fixture)
-                .unwrap_err()
-                .to_string()
-                .contains("unsafe path")
-        );
-        let mut bad_region_fixture = fixture();
-        bad_region_fixture.cases[2].oracle_evidence[1] = EvidenceRegion::Cell {
-            workbook_id: "forecast-1".to_string(),
-            sheet_name: "Q2".to_string(),
-            cell: "c04".to_string(),
+    fn cell_e_rejects_reader_dependent_retrieval() {
+        let mut adapter = HybridAdapter {
+            tamper_blob_retrieval: true,
+            ..HybridAdapter::default()
         };
-        assert!(validate_fixture(&bad_region_fixture).is_err());
+        let error = run_reader_modality_pair(
+            &fixture(),
+            &plan(ExperimentArm::reader_modality(ReaderMode::TextProjection)),
+            &mut adapter,
+            &DeterministicScorer,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("frozen retrieval"));
     }
 
     #[test]
-    fn external_scorers_never_silently_fall_back() {
-        let error = DeterministicScorer
-            .score(
-                &ScoringRule::External {
-                    evaluator: "official-v2".to_string(),
-                },
-                "gold",
-                "answer",
-            )
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("does not support external evaluator")
-        );
-    }
-
-    #[test]
-    fn longmemeval_v2_annotation_loader_hashes_media_and_checks_haystack_linkage() {
-        let root = tempfile::tempdir().unwrap();
-        fs::create_dir_all(root.path().join("haystacks")).unwrap();
-        fs::create_dir_all(root.path().join("screenshots/t1")).unwrap();
-        fs::create_dir_all(root.path().join("question_screenshots")).unwrap();
-        fs::write(
-            root.path().join("screenshots/t1/0.png"),
-            b"\x89PNG fixture screenshot",
-        )
-        .unwrap();
-        fs::write(
-            root.path().join("question_screenshots/q1.png"),
-            b"\x89PNG fixture question",
-        )
-        .unwrap();
-        fs::write(
-            root.path().join("questions.jsonl"),
-            serde_json::json!({
-                "id": "q1", "domain": "web", "environment": "webarena",
-                "question_type": "visual", "question": "Which badge?",
-                "image": "question_screenshots/q1.png", "answer": "critical",
-                "eval_function": "norm_phrase_set_match|lower=true"
-            })
-            .to_string()
-                + "\n",
-        )
-        .unwrap();
-        fs::write(
-            root.path().join("trajectories.jsonl"),
-            serde_json::json!({
-                "id": "t1", "domain": "web", "environment": "webarena", "goal": "inspect",
-                "outcome": "success", "start_url": "https://example.test",
-                "states": [{"step": 1, "state_index": 0, "url": "https://example.test",
-                    "action": null, "thought": null, "accessibility_tree": "incident card",
-                    "screenshot": "screenshots/t1/0.png"}]
-            })
-            .to_string()
-                + "\n",
-        )
-        .unwrap();
-        fs::write(
-            root.path().join("haystacks/lme_v2_small.json"),
-            serde_json::to_vec(&serde_json::json!({"q1": ["t1"]})).unwrap(),
-        )
-        .unwrap();
-        let annotation_path = root.path().join("annotations.json");
-        fs::write(
-            &annotation_path,
-            serde_json::to_vec(&serde_json::json!({
-                "schema": ANNOTATION_SCHEMA,
-                "fixture_set_id": "lmev2-image-subset-test",
-                "dataset_version": "test",
-                "haystack_file": "lme_v2_small.json",
-                "annotations": [{
-                    "question_id": "q1", "image_dependent": true,
-                    "reviewed_by": "fixture-reviewer",
-                    "rationale": "The badge color and label exist only in pixels.",
-                    "oracle_lane": "native",
-                    "evidence": [{"trajectory_id": "t1", "state_index": 0}]
-                }]
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-
-        let fixture = load_longmemeval_v2_image_subset(root.path(), &annotation_path).unwrap();
-        assert_eq!(fixture.cases.len(), 1);
-        assert_eq!(fixture.cases[0].question.media.len(), 1);
-        assert_eq!(
-            fixture.cases[0].evidence[0].source_media.sha256,
-            sha256(b"\x89PNG fixture screenshot")
-        );
-        assert!(matches!(
-            fixture.cases[0].gold.scoring,
-            ScoringRule::External { .. }
-        ));
-        assert!(!fixture.source.official_equivalent);
-        assert!(!fixture.source.leaderboard_eligible);
-
-        fs::write(
-            root.path().join("haystacks/lme_v2_small.json"),
-            serde_json::to_vec(&serde_json::json!({"q1": ["other"]})).unwrap(),
-        )
-        .unwrap();
-        let error = load_longmemeval_v2_image_subset(root.path(), &annotation_path).unwrap_err();
-        assert!(error.to_string().contains("outside its haystack"));
+    fn self_reported_collapse_without_members_is_rejected() {
+        let mut adapter = HybridAdapter {
+            invalid_collapse: true,
+            ..HybridAdapter::default()
+        };
+        let mut run_plan = plan(ExperimentArm::hybrid());
+        run_plan.run_instance_id = "collapse-proof".to_string();
+        let error =
+            run_experiment(&fixture(), &run_plan, &mut adapter, &DeterministicScorer).unwrap_err();
+        assert!(error.to_string().contains("collapse"));
     }
 }

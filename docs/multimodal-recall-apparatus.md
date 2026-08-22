@@ -21,9 +21,9 @@ its actual capabilities.
 
 The runner preflights the complete fixture before the first adapter call. A text-only adapter asked
 to run B, C, D, or blob-reader E returns a named capability gap; it cannot silently flatten media.
-Every completed case carries hashes of its request and response plus branch candidate counts,
-collapse count, applied oracle regions, reader media count, and retrieved-region fingerprint. A run
-is invalid if these facts do not prove the requested arm fired.
+Every completed case carries the actual per-branch candidates, product-shaped captured pointers,
+collapse clusters, reader inputs, request/response hashes, and fingerprints. The harness recomputes
+branch, collapse, projection, and source-blob invariants; adapter-owned counters are not evidence.
 
 Cell D receives gold evidence regions, never the gold answer. `oracle_gold=true` and
 `leaderboard_eligible=false` are forced in run provenance. The checked-in held-out apparatus fixture
@@ -31,8 +31,13 @@ is also non-official and non-rankable.
 
 ## Fixture contract
 
-`membench.multimodal_fixture.v1` stores media as `{locator, sha256, media_type}` pointers. It never
-inlines base64 or duplicates source blobs. Derived text is a projection beside the source pointer.
+`membench.multimodal_fixture.v1` stores import-only, dataset-relative media paths plus SHA-256,
+byte length, and media type. Before the adapter runs, the harness rejects missing, linked,
+out-of-root, over-limit, size-mismatched, or digest-mismatched bytes. `max_import_asset_bytes` is a
+required positive per-asset ceiling. The adapter imports those bytes once and
+returns product-compatible binding, blob, region, projection, truth-tier, and retrieval metadata.
+The harness passes exact verified bytes—not filesystem paths—across the import seam. Only the
+captured binding is read authority after import; paths and digests are not.
 Oracle evidence is typed:
 
 - screenshot: trajectory, state index, locator, optional normalized bounds;
@@ -41,9 +46,16 @@ Oracle evidence is typed:
 - cell: workbook, sheet name, A1 cell.
 
 [`fixtures/multimodal/v1/heldout-recall.json`](../fixtures/multimodal/v1/heldout-recall.json) covers
-all four region types across an image-dependent LongMemEval-v2-shaped case, a PDF case, and an XLSX
-case. Its source locators are content-addressed placeholders; the text projection control is fully
-offline, while native arms require an adapter that can resolve those blobs.
+all four region types across an image-dependent LongMemEval-v2-shaped case, a PDF case, and a CSV
+case. The fixture includes local SVG, PDF, and CSV source assets plus real distractors. Each case
+queries a full corpus; oracle annotations are stored separately and enter requests only for cell D.
+The checked source digest is recomputed from the sorted relative asset names and exact bytes.
+
+[`product-artifact-evidence-wire.json`](../fixtures/multimodal/v1/product-artifact-evidence-wire.json)
+pins the current public `ArtifactEvidence` JSON shape (nested content digest, `RegionRef`,
+`ProjectionRef`, truth tier, and per-branch retrieval scores). A drift test fails when the bench
+mirror changes. The benchmark envelope keeps its evidence ID and projection-output digest outside
+that product wire object.
 
 The official LongMemEval-v2 loader is annotation-driven:
 
@@ -69,8 +81,16 @@ The released dataset does not supply gold evidence labels, so the reviewed annot
 | `stratified_medium` | diverse subset | pilot improves outside the control floor |
 | `full_benchmark` | complete comparable run | only after prior gate and variance plan |
 
-`ExecutionBudget::offline()` allows zero provider calls and zero micro-USD. The runner aborts on the
-first observed call or cost. No provider-backed phase was run while building this apparatus.
+`ExecutionBudget::offline()` allows zero provider calls and zero micro-USD. Every provider call must
+first obtain a reservation from the harness-owned `SpendJournal`. The journal appends and fsyncs
+the reservation before returning control to the adapter, then requires a terminal spend event.
+When recall returns with an unfinished reservation, the harness durably closes it as failed at the
+reserved ceiling before propagating the error; missing usage is never interpreted as zero. No
+provider-backed phase was run while building this apparatus. Every ledger event includes the unique
+run-instance ID and effective-config digest so concurrent or repeated runs cannot merge provenance.
+
+Cell E uses `run_reader_modality_pair`: C's retrieval and collapse output is frozen once and its
+fingerprint must remain byte-identical for the text-projection and source-blob readers.
 
 ## Symbiotic Memory adapter seam
 
@@ -82,8 +102,13 @@ The adapter must translate `RecallRequest` into public product capabilities:
 - transcription-reader or blob-reader materialization;
 - oracle region filtering for ceiling runs only.
 
-It returns `RecallResponse` plus `AdapterExecutionProof`. The harness validates identifiers and
-regions against the fixture and rejects invented evidence. Product internals remain opaque.
+It returns `RecallResponse` plus evidence-bearing `AdapterExecutionProof`. The harness validates
+captured bindings, blob hashes, projection lineage, branch membership, region-safe collapse, and
+reader inputs against the verified fixture. Product internals remain opaque.
+
+All results from this pre-release apparatus are categorically non-rankable. Promotion requires a
+canonical record that passes the repository's normal eligibility, trace, full-scale, artifact-hash,
+and independent-review gates. The fixture schema has no ranking-eligibility claim to self-declare.
 
 Until the product exposes those public capabilities, only the bundled `TextProjectionBaseline`
 runs. Native/hybrid attempts are expected to stop at the preflight capability gap.

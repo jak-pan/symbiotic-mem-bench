@@ -1,0 +1,33 @@
+{
+  "binding_id": "binding-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "blob": {
+    "id": {
+      "algorithm": "sha256",
+      "value": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "size_bytes": 42,
+    "detected_media_type": "application/pdf"
+  },
+  "region": {
+    "region_id": "region-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "locator": {
+      "page": {
+        "index": 0
+      }
+    }
+  },
+  "projection": {
+    "execution_id": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "source_binding_id": "binding-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "source_region_id": "region-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "output_binding_id": "binding-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  },
+  "truth_tier": "deterministic_projection",
+  "retrieval": {
+    "text_projection": 0.75,
+    "native_profiles": {
+      "vision-v1": 0.5
+    },
+    "fused": 0.75
+  }
+}
