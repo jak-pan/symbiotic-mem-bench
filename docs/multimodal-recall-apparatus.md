@@ -61,8 +61,8 @@ The checked source digest is recomputed from the sorted relative asset names and
 The conformance source is product-owned
 `contracts/multimodal-recall-contract.v1.json`, generated and drift-tested inside Symbiotic Memory
 from its real public `ArtifactEvidence` type and `collapse_artifact_evidence` implementation. The
-bench pins product commit `1997e892f4005d809ce2f47ce30a21bbcc084a41` and contract SHA-256
-`1d36ca2fa8a83abed4bdd37f3b26e71fd05f9351f4ae6dc02c3fa4752f6e5cb3`; it keeps no substitute
+bench pins product commit `fabfd310045bb6d0e47f957ee951e3dd8d6c809c` and contract SHA-256
+`d44178f863361aecc5c2208399ba2a9b7cc5cb37d0bd09cd75e0419ebb96c529`; it keeps no substitute
 specimen. `membench-product-conformance --product-root <checkout>` reads
 the artifact and declared sources from the pinned product commit's git objects (never mutable
 worktree files), checks the artifact and source hashes, decodes the real wire specimen, and replays
