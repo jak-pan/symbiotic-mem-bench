@@ -1,0 +1,200 @@
+{
+  "schema": "membench.multimodal_fixture.v1",
+  "fixture_set_id": "multimodal-heldout-recall-v1",
+  "split": "held_out",
+  "source": {
+    "dataset_id": "membench-multimodal-heldout",
+    "version": "1",
+    "source_digest": "039c2175fa27cd14f6ddc371a2509ad37f6c5430470ab862e36f740743ebf126",
+    "source_uri": null,
+    "official_equivalent": false,
+    "leaderboard_eligible": false
+  },
+  "cases": [
+    {
+      "case_id": "lmev2-image-incident-severity",
+      "origin": "long_mem_eval_v2",
+      "corpus_id": "web",
+      "question": {
+        "text": "Which severity badge is visible on the incident card?"
+      },
+      "gold": {
+        "value": "critical",
+        "scoring": {
+          "kind": "contains_all",
+          "case_sensitive": false
+        }
+      },
+      "media_dependent": true,
+      "media_dependence_review": {
+        "reviewed_by": "membench-fixture-review",
+        "rationale": "The severity badge label is absent from the accessibility-tree projection and visible in the screenshot pixels."
+      },
+      "oracle_lane": "native",
+      "oracle_evidence": [
+        {
+          "kind": "screenshot",
+          "trajectory_id": "web-incident-trajectory",
+          "state_index": 3,
+          "locator": "screenshots/web-incident-trajectory/3.png",
+          "bounds": {
+            "x": 0.52,
+            "y": 0.12,
+            "width": 0.36,
+            "height": 0.18
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "evidence_id": "incident-screenshot-state-3",
+          "source_media": {
+            "asset_id": "incident-dashboard",
+            "locator": "cas://sha256/bde88759120b287ede6d69c6db3fc674275eba3f89d652b129faef6dd9545424",
+            "sha256": "bde88759120b287ede6d69c6db3fc674275eba3f89d652b129faef6dd9545424",
+            "media_type": "image/png"
+          },
+          "region": {
+            "kind": "screenshot",
+            "trajectory_id": "web-incident-trajectory",
+            "state_index": 3,
+            "locator": "screenshots/web-incident-trajectory/3.png",
+            "bounds": {
+              "x": 0.52,
+              "y": 0.12,
+              "width": 0.36,
+              "height": 0.18
+            }
+          },
+          "text_projection": "incident card 42; severity value is not exposed in the accessibility tree"
+        }
+      ]
+    },
+    {
+      "case_id": "pdf-invoice-total-page-2",
+      "origin": "held_out_pdf",
+      "corpus_id": "documents",
+      "question": {
+        "text": "What is the total on invoice 2026-041?"
+      },
+      "gold": {
+        "value": "$1,284.50",
+        "scoring": {
+          "kind": "contains_all",
+          "case_sensitive": false
+        }
+      },
+      "media_dependent": true,
+      "media_dependence_review": {
+        "reviewed_by": "membench-fixture-review",
+        "rationale": "The answer is grounded in the total region on page 2 of the source PDF."
+      },
+      "oracle_lane": "hybrid_collapsed",
+      "oracle_evidence": [
+        {
+          "kind": "page",
+          "document_id": "invoice-2026-041",
+          "page_number": 2,
+          "bounds": {
+            "x": 0.58,
+            "y": 0.74,
+            "width": 0.32,
+            "height": 0.12
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "evidence_id": "invoice-page-2-total",
+          "source_media": {
+            "asset_id": "invoice-2026-041",
+            "locator": "cas://sha256/af8f84fe31a706fdc15b8b9159f87c55ab0b522985c84c81504acf7d93617660",
+            "sha256": "af8f84fe31a706fdc15b8b9159f87c55ab0b522985c84c81504acf7d93617660",
+            "media_type": "application/pdf"
+          },
+          "region": {
+            "kind": "page",
+            "document_id": "invoice-2026-041",
+            "page_number": 2,
+            "bounds": {
+              "x": 0.58,
+              "y": 0.74,
+              "width": 0.32,
+              "height": 0.12
+            }
+          },
+          "text_projection": "invoice 2026-041 total $1,284.50"
+        }
+      ]
+    },
+    {
+      "case_id": "spreadsheet-q2-net-revenue",
+      "origin": "held_out_spreadsheet",
+      "corpus_id": "workbooks",
+      "question": {
+        "text": "What is Q2 net revenue in the regional forecast?"
+      },
+      "gold": {
+        "value": "91300",
+        "scoring": {
+          "kind": "contains_all",
+          "case_sensitive": false
+        }
+      },
+      "media_dependent": true,
+      "media_dependence_review": {
+        "reviewed_by": "membench-fixture-review",
+        "rationale": "The answer is grounded in the Q2 sheet and specifically cell C4 of the source workbook."
+      },
+      "oracle_lane": "hybrid_collapsed",
+      "oracle_evidence": [
+        {
+          "kind": "sheet",
+          "workbook_id": "regional-forecast",
+          "sheet_name": "Q2",
+          "range": "B2:C4"
+        },
+        {
+          "kind": "cell",
+          "workbook_id": "regional-forecast",
+          "sheet_name": "Q2",
+          "cell": "C4"
+        }
+      ],
+      "evidence": [
+        {
+          "evidence_id": "forecast-q2-table",
+          "source_media": {
+            "asset_id": "regional-forecast",
+            "locator": "cas://sha256/4641ff39eb69396c1d5f22186a6ffaa672cfd50c608a0282e1c1797bda16c4cd",
+            "sha256": "4641ff39eb69396c1d5f22186a6ffaa672cfd50c608a0282e1c1797bda16c4cd",
+            "media_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          },
+          "region": {
+            "kind": "sheet",
+            "workbook_id": "regional-forecast",
+            "sheet_name": "Q2",
+            "range": "B2:C4"
+          },
+          "text_projection": "Q2 regional forecast table; net revenue 91300 USD"
+        },
+        {
+          "evidence_id": "forecast-q2-cell-c4",
+          "source_media": {
+            "asset_id": "regional-forecast",
+            "locator": "cas://sha256/4641ff39eb69396c1d5f22186a6ffaa672cfd50c608a0282e1c1797bda16c4cd",
+            "sha256": "4641ff39eb69396c1d5f22186a6ffaa672cfd50c608a0282e1c1797bda16c4cd",
+            "media_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          },
+          "region": {
+            "kind": "cell",
+            "workbook_id": "regional-forecast",
+            "sheet_name": "Q2",
+            "cell": "C4"
+          },
+          "text_projection": "91300"
+        }
+      ]
+    }
+  ]
+}
