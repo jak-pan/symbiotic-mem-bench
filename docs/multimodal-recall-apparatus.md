@@ -58,16 +58,17 @@ case. The fixture includes local SVG, PDF, and CSV source assets plus real distr
 queries a full corpus; oracle annotations are stored separately and enter requests only for cell D.
 The checked source digest is recomputed from the sorted relative asset names and exact bytes.
 
-[`product-contract-snapshot.json`](../fixtures/multimodal/v1/product-contract-snapshot.json) was
-serialized by Symbiotic Memory commit `12a7a57ad00f75eb8afd29700ec5a51b55e349a6` using the real
-public `ArtifactEvidence` types and `collapse_artifact_evidence`. It records the generating product
-source hashes, an actual wire specimen, and adversarial collapse vectors. The drift test pins the
-snapshot bytes, product revision/source hashes, wire decode, and parity results, including `Whole`,
-transitive ancestry, sheet/range, `B2:C4` versus `$C$4`, disjoint A1 ranges, rectangle IoU on both
-sides of the 0.5 boundary, time/byte overlap thresholds, named-locator equality, and distinct
-bindings. This replaces a bench-authored specimen. The
-benchmark envelope keeps its evidence ID and verified projection-output blob metadata outside that
-product wire object.
+The conformance source is product-owned
+`contracts/multimodal-recall-contract.v1.json`, generated and drift-tested inside Symbiotic Memory
+from its real public `ArtifactEvidence` type and `collapse_artifact_evidence` implementation. The
+bench pins product commit `1997e892f4005d809ce2f47ce30a21bbcc084a41` and contract SHA-256
+`1d36ca2fa8a83abed4bdd37f3b26e71fd05f9351f4ae6dc02c3fa4752f6e5cb3`; it keeps no substitute
+specimen. `membench-product-conformance --product-root <checkout>` reads
+the artifact and declared sources from the pinned product commit's git objects (never mutable
+worktree files), checks the artifact and source hashes, decodes the real wire specimen, and replays
+all eight ordered collapse outputs. CI invokes this gate when the sibling product checkout is
+available and otherwise emits an explicit “not closed” notice. The benchmark envelope keeps its
+evidence ID and verified projection-output blob metadata outside the product wire object.
 
 The official LongMemEval-v2 loader is annotation-driven:
 
@@ -147,4 +148,6 @@ runs. Native/hybrid attempts are expected to stop at the preflight capability ga
 CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo fmt -- --check
 CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo test
 CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo clippy --all-targets -- -D warnings
+cargo run --locked --bin membench-product-conformance -- \
+  --product-root ../symbiotic-memory
 ```

@@ -44,3 +44,7 @@ required-features = ["server"]
 name = "membench-leaderboard"
 path = "src/bin/membench-leaderboard.rs"
 # Core-only (clap + lib): intentionally builds without any cargo features.
+
+[[bin]]
+name = "membench-product-conformance"
+path = "src/bin/membench-product-conformance.rs"

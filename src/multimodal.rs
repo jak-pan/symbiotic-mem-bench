@@ -14,6 +14,41 @@ use sha2::{Digest, Sha256};
 pub const FIXTURE_SCHEMA: &str = "membench.multimodal_fixture.v1";
 pub const ANNOTATION_SCHEMA: &str = "membench.longmemeval_v2_image_annotations.v1";
 pub const RESULT_SCHEMA: &str = "membench.multimodal_result.v1";
+pub const PINNED_PRODUCT_GIT_SHA: &str = "1997e892f4005d809ce2f47ce30a21bbcc084a41";
+pub const PINNED_PRODUCT_CONTRACT_SHA256: &str =
+    "1d36ca2fa8a83abed4bdd37f3b26e71fd05f9351f4ae6dc02c3fa4752f6e5cb3";
+const PRODUCT_CONTRACT_PATH: &str = "contracts/multimodal-recall-contract.v1.json";
+const PRODUCT_CONTRACT_ID: &str = "symbiotic-memory.multimodal-recall-collapse";
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProductMultimodalContract {
+    contract_id: String,
+    contract_version: u32,
+    schema: ProductContractSchema,
+    source_files_sha256: BTreeMap<String, String>,
+    wire_specimens: Vec<CapturedArtifactEvidence>,
+    collapse_vectors: Vec<ProductCollapseVector>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProductContractSchema {
+    envelope: String,
+    artifact_evidence_wire_type: String,
+    collapse_function: String,
+    source_hash_algorithm: String,
+    default_overlap_threshold_millionths: u32,
+    vector_output_semantics: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProductCollapseVector {
+    case_id: String,
+    input: Vec<CapturedArtifactEvidence>,
+    actual_collapsed_output: Vec<CapturedArtifactEvidence>,
+}
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -4522,6 +4557,168 @@ fn enforce_budget(
     Ok(())
 }
 
+fn git_object_bytes(product_root: &Path, revision: &str, path: &str) -> anyhow::Result<Vec<u8>> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(product_root)
+        .arg("show")
+        .arg(format!("{revision}:{path}"))
+        .output()
+        .with_context(|| format!("run git show for product object '{path}'"))?;
+    anyhow::ensure!(
+        output.status.success(),
+        "git show failed for product object '{}': {}",
+        path,
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    Ok(output.stdout)
+}
+
+/// Verify the product-owned multimodal recall contract from an exact local git checkout.
+///
+/// No worktree bytes are trusted: the gate reads the artifact and every declared source file from
+/// the pinned commit's git objects, verifies their SHA-256 values, then replays the product-emitted
+/// ordered collapse outputs through the bench implementation.
+pub fn verify_pinned_product_contract(product_root: &Path) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        PINNED_PRODUCT_GIT_SHA.len() == 40
+            && PINNED_PRODUCT_GIT_SHA
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit()),
+        "bench product contract commit pin is not finalized"
+    );
+    let metadata = std::fs::symlink_metadata(product_root)
+        .with_context(|| format!("stat product root {}", product_root.display()))?;
+    anyhow::ensure!(
+        metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
+        "product root must be a real non-symlink directory"
+    );
+    let head = std::process::Command::new("git")
+        .arg("-C")
+        .arg(product_root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .with_context(|| "resolve product HEAD")?;
+    anyhow::ensure!(
+        head.status.success(),
+        "resolve product HEAD failed: {}",
+        String::from_utf8_lossy(&head.stderr).trim()
+    );
+    anyhow::ensure!(
+        String::from_utf8_lossy(&head.stdout).trim() == PINNED_PRODUCT_GIT_SHA,
+        "product HEAD does not match pinned contract commit"
+    );
+    let artifact = git_object_bytes(product_root, PINNED_PRODUCT_GIT_SHA, PRODUCT_CONTRACT_PATH)?;
+    anyhow::ensure!(
+        sha256(&artifact) == PINNED_PRODUCT_CONTRACT_SHA256,
+        "product-owned multimodal contract artifact hash mismatch"
+    );
+    let contract: ProductMultimodalContract = serde_json::from_slice(&artifact)
+        .with_context(|| "decode product-owned multimodal contract")?;
+    anyhow::ensure!(
+        contract.contract_id == PRODUCT_CONTRACT_ID && contract.contract_version == 1,
+        "unexpected product multimodal contract identity"
+    );
+    anyhow::ensure!(
+        contract.schema.envelope == "multimodal_recall_contract.v1"
+            && contract.schema.artifact_evidence_wire_type
+                == "symbiotic_memory::recall::ArtifactEvidence"
+            && contract.schema.collapse_function
+                == "symbiotic_memory::recall::collapse_artifact_evidence(default_threshold=0.5)"
+            && contract.schema.source_hash_algorithm == "sha256"
+            && contract.schema.default_overlap_threshold_millionths == 500_000
+            && contract.schema.vector_output_semantics == "ordered_actual_product_output",
+        "unexpected product multimodal contract schema"
+    );
+    let expected_source_paths: BTreeSet<_> = [
+        "src/content/transform.rs",
+        "src/content/types.rs",
+        "src/recall/types.rs",
+    ]
+    .into_iter()
+    .collect();
+    anyhow::ensure!(
+        contract
+            .source_files_sha256
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>()
+            == expected_source_paths,
+        "product contract source file set changed"
+    );
+    for (path, expected_sha256) in &contract.source_files_sha256 {
+        validate_sha256("product source object", expected_sha256)?;
+        let bytes = git_object_bytes(product_root, PINNED_PRODUCT_GIT_SHA, path)?;
+        anyhow::ensure!(
+            sha256(&bytes) == *expected_sha256,
+            "product source object hash mismatch for '{path}'"
+        );
+    }
+    anyhow::ensure!(
+        !contract.wire_specimens.is_empty(),
+        "product contract has no real wire specimens"
+    );
+    for specimen in &contract.wire_specimens {
+        validate_retrieval_scores(&specimen.retrieval)?;
+        non_empty("product specimen binding", &specimen.binding_id)?;
+        non_empty("product specimen region", &specimen.region.region_id)?;
+    }
+    let expected_case_ids: BTreeSet<_> = [
+        "whole_contains_page",
+        "transitive_parent_ancestry",
+        "sheet_contains_cell_range",
+        "overlapping_a1_ranges",
+        "rectangle_iou_at_or_above_default_threshold",
+        "rectangle_iou_below_default_threshold",
+        "time_byte_and_named_non_overlap",
+        "text_native_score_merge",
+    ]
+    .into_iter()
+    .collect();
+    anyhow::ensure!(
+        contract
+            .collapse_vectors
+            .iter()
+            .map(|vector| vector.case_id.as_str())
+            .collect::<BTreeSet<_>>()
+            == expected_case_ids,
+        "product contract collapse vector set changed"
+    );
+    for vector in contract.collapse_vectors {
+        let candidates: Vec<_> = vector
+            .input
+            .into_iter()
+            .enumerate()
+            .map(|(index, product)| {
+                let evidence_id = format!("{}-{index}", vector.case_id);
+                BranchCandidate {
+                    candidate_id: format!("candidate-{index}"),
+                    evidence_id: evidence_id.clone(),
+                    lane: RecallLane::TextProjection,
+                    profile_id: None,
+                    score: product.retrieval.fused,
+                    artifact: CapturedArtifact {
+                        evidence_id,
+                        projection_output_sha256: None,
+                        projection_output_blob: None,
+                        product,
+                    },
+                }
+            })
+            .collect();
+        let actual: Vec<_> = expected_product_collapses(&candidates, &[])
+            .into_iter()
+            .map(|collapsed| collapsed.artifact.product)
+            .collect();
+        anyhow::ensure!(
+            actual == vector.actual_collapsed_output,
+            "bench collapse drifted from product vector '{}'",
+            vector.case_id
+        );
+    }
+    Ok(())
+}
+
 fn validate_descriptor(descriptor: &AdapterDescriptor) -> anyhow::Result<()> {
     validate_id("adapter_id", &descriptor.adapter_id)?;
     non_empty("adapter version", &descriptor.adapter_version)
@@ -4889,29 +5086,6 @@ mod repair_tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_RUN: AtomicU64 = AtomicU64::new(1);
-
-    const PRODUCT_CONTRACT_SNAPSHOT_SHA256: &str =
-        "1f3fa85d80b4ba4a3df4b1735edcaf0f872a226abba44c56564b25312c98d20e";
-    const PRODUCT_CONTRACT_GIT_SHA: &str = "12a7a57ad00f75eb8afd29700ec5a51b55e349a6";
-
-    #[derive(Debug, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct ProductContractSnapshot {
-        schema: String,
-        generated_by_product_git_sha: String,
-        product_source_sha256: BTreeMap<String, String>,
-        artifact_evidence_specimens: Vec<CapturedArtifactEvidence>,
-        collapse_vectors: Vec<ProductCollapseVector>,
-    }
-
-    #[derive(Debug, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct ProductCollapseVector {
-        id: String,
-        regions: Vec<CapturedRegionRef>,
-        bindings: Vec<String>,
-        expected_cluster_sizes: Vec<usize>,
-    }
 
     fn fixture() -> MultimodalFixtureSet {
         load_fixture_file(
@@ -5410,98 +5584,6 @@ mod repair_tests {
         for corpus in &fixture.corpora {
             verify_corpus_assets(corpus, &root, 16 * 1024 * 1024).unwrap();
         }
-    }
-
-    #[test]
-    fn product_generated_contract_snapshot_pins_wire_and_collapse_semantics() {
-        let bytes = fs::read(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("fixtures/multimodal/v1/product-contract-snapshot.json"),
-        )
-        .unwrap();
-        assert_eq!(sha256(&bytes), PRODUCT_CONTRACT_SNAPSHOT_SHA256);
-        let snapshot: ProductContractSnapshot = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(
-            snapshot.schema,
-            "symbiotic-memory.multimodal-product-contract.v1"
-        );
-        assert_eq!(
-            snapshot.generated_by_product_git_sha,
-            PRODUCT_CONTRACT_GIT_SHA
-        );
-        assert_eq!(
-            snapshot.product_source_sha256,
-            BTreeMap::from([
-                (
-                    "src/content/types.rs".to_string(),
-                    "01926339eedf195daf040447cc769b5233a3bcd20aa56657bc545acf34fe4400".to_string(),
-                ),
-                (
-                    "src/recall/types.rs".to_string(),
-                    "350297cf20d64f4670245179bb9abf66067827a009896d89918ccc52abf0e074".to_string(),
-                ),
-            ])
-        );
-        assert_eq!(snapshot.artifact_evidence_specimens.len(), 1);
-        assert_eq!(
-            snapshot.artifact_evidence_specimens[0].truth_tier,
-            TruthTier::DeterministicProjection
-        );
-
-        let mut saw_a1_overlap = false;
-        for vector in snapshot.collapse_vectors {
-            assert_eq!(vector.regions.len(), vector.bindings.len(), "{}", vector.id);
-            let native: Vec<_> = vector
-                .regions
-                .into_iter()
-                .zip(vector.bindings)
-                .enumerate()
-                .map(|(index, (region, binding_id))| {
-                    let evidence_id = format!("{}-{index}", vector.id);
-                    BranchCandidate {
-                        candidate_id: format!("candidate-{evidence_id}"),
-                        evidence_id: evidence_id.clone(),
-                        lane: RecallLane::Native,
-                        profile_id: Some("native-v1".to_string()),
-                        score: 0.5,
-                        artifact: CapturedArtifact {
-                            evidence_id,
-                            projection_output_sha256: None,
-                            projection_output_blob: None,
-                            product: CapturedArtifactEvidence {
-                                binding_id: binding_id.clone(),
-                                blob: CapturedBlobRef {
-                                    id: CapturedContentDigest {
-                                        algorithm: "sha256".to_string(),
-                                        value: sha256(binding_id.as_bytes()),
-                                    },
-                                    size_bytes: binding_id.len() as u64,
-                                    detected_media_type: "application/octet-stream".to_string(),
-                                },
-                                region,
-                                projection: None,
-                                truth_tier: TruthTier::Raw,
-                                retrieval: CapturedRetrievalScores {
-                                    text_projection: None,
-                                    native_profiles: BTreeMap::from([(
-                                        "native-v1".to_string(),
-                                        0.5,
-                                    )]),
-                                    fused: 0.5,
-                                },
-                            },
-                        },
-                    }
-                })
-                .collect();
-            let actual_sizes: Vec<_> = expected_product_collapses(&[], &native)
-                .into_iter()
-                .map(|cluster| cluster.member_candidate_ids.len())
-                .collect();
-            assert_eq!(actual_sizes, vector.expected_cluster_sizes, "{}", vector.id);
-            saw_a1_overlap |= vector.id == "b2_c4_matches_absolute_c4" && actual_sizes == vec![2];
-        }
-        assert!(saw_a1_overlap);
     }
 
     #[test]
