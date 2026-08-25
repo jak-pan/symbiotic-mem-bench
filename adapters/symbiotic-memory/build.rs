@@ -2,7 +2,7 @@ use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-const SYMBIOTIC_MEMORY_REV: &str = "ea4d4b16b5bec9b5c336aa63bb3532ffd95c2da2";
+const SYMBIOTIC_MEMORY_REV: &str = "6a8ca77294864b2968accb60145caacf433b33bc";
 
 fn main() {
     println!("cargo:rerun-if-env-changed=ZVEC_LIB_DIR");
