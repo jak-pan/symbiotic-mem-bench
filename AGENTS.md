@@ -16,6 +16,8 @@ agent to run, inspect, and publish results without reverse-engineering local scr
 - Keep benchmark records portable: repo-relative paths in reports, no local absolute source paths.
 - Do not store raw prompts or secrets in tracked records. Raw content is allowed only in explicit
   local debug artifacts under ignored scratch paths.
+- GitHub Actions must not use hosted macOS runners. Membench, its private Memory adapter, and its
+  release bundles run on Linux. Only the separate Symbiotic iOS application may require macOS CI.
 
 ## Validate
 

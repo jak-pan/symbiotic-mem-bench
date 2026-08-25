@@ -12,8 +12,9 @@ external action; the code-side work is done and gated in CI.
    records, but deliberately excludes the private adapter binary. The isolated
    `adapters/symbiotic-memory/Cargo.toml` package requires explicit repository access and is not
    part of the public install contract.
-   The pinned adapter revision's native zvec artifact is macOS arm64 only. Adapter compatibility is
-   therefore gated on macOS 14 arm64; the independent public server product remains cross-platform.
+   The pinned adapter revision has a verified Linux x86-64 zvec artifact. Adapter compatibility and
+   public product packaging are Linux-only in GitHub Actions; hosted macOS is reserved for the
+   separate Symbiotic iOS application.
    Do not vendor private source or credentials into Membench. The adapter can enter the public
    release only after its complete pinned dependency and zvec runtime are publicly reproducible.
 2. ~~**Adapter APIs not yet published upstream.**~~ **Resolved 2026-07-24.** The kit APIs the

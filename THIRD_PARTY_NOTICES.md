@@ -34,7 +34,6 @@ The complete upstream MIT notice is reproduced below as `d3c4b9aa5475`.
 | Cargo | `clap_derive` | `4.6.4` | `MIT OR Apache-2.0` | `b40930bbcf80, 6efb0476a1cc` | `registry+https://github.com/rust-lang/crates.io-index` |
 | Cargo | `clap_lex` | `1.1.0` | `MIT OR Apache-2.0` | `b40930bbcf80, 6efb0476a1cc` | `registry+https://github.com/rust-lang/crates.io-index` |
 | Cargo | `colorchoice` | `1.0.5` | `MIT OR Apache-2.0` | `b40930bbcf80, 6efb0476a1cc` | `registry+https://github.com/rust-lang/crates.io-index` |
-| Cargo | `core-foundation-sys` | `0.8.7` | `MIT OR Apache-2.0` | `a60eea817514, 62065228e42c` | `registry+https://github.com/rust-lang/crates.io-index` |
 | Cargo | `cpufeatures` | `0.2.17` | `MIT OR Apache-2.0` | `a9040321c371, ae9baa7beea9` | `registry+https://github.com/rust-lang/crates.io-index` |
 | Cargo | `crypto-common` | `0.1.7` | `MIT OR Apache-2.0` | `a9040321c371, 3521672491a3` | `registry+https://github.com/rust-lang/crates.io-index` |
 | Cargo | `digest` | `0.10.7` | `MIT OR Apache-2.0` | `a9040321c371, 9e0dfd2dd417` | `registry+https://github.com/rust-lang/crates.io-index` |
@@ -4867,40 +4866,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### `62065228e42caebca7e7d7db1204cbb867033de5982ca4009928915e4095f3a3`
-
-Applies to:
-
-- Cargo core-foundation-sys 0.8.7 (LICENSE-MIT)
-
-```text
-Copyright (c) 2012-2013 Mozilla Foundation
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-```
-
 ### `6226d0632e2e1a80c23597e964da9812ae193c535fe058154afb034e94167aa5`
 
 Applies to:
@@ -6539,7 +6504,6 @@ Applies to:
 - Cargo atomic-waker 1.1.2 (LICENSE-APACHE)
 - Cargo bitflags 2.13.1 (LICENSE-APACHE)
 - Cargo cfg-if 1.0.4 (LICENSE-APACHE)
-- Cargo core-foundation-sys 0.8.7 (LICENSE-APACHE)
 - Cargo either 1.17.0 (LICENSE-APACHE)
 - Cargo errno 0.3.14 (LICENSE-APACHE)
 - Cargo fastrand 2.5.0 (LICENSE-APACHE)

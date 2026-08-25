@@ -19,8 +19,9 @@ The native `membench` CLI uses the isolated
 `adapters/symbiotic-memory/Cargo.toml` package, which builds against an exact revision of the private
 `symbiotic-sh/symbiotic-memory` repository. A clean clone without access can build and use the
 neutral core, leaderboard exporter, server, and dashboard, but not that adapter. The exact pinned
-adapter revision currently ships a verified macOS arm64 zvec dylib only, so its release gate runs on
-macOS 14 arm64; the public server-backed product is still packaged for Linux x86-64 and macOS arm64.
+adapter consumes the verified Linux x86-64 zvec package, so its gate and the public server-backed
+product both run and package on Linux. Hosted macOS runners are reserved for the separate Symbiotic
+iOS application.
 With repository read access:
 
 ```bash
