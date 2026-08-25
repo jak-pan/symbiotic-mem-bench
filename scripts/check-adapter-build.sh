@@ -17,6 +17,38 @@ cd "$(dirname "$0")/.."
 manifest=adapters/symbiotic-memory/Cargo.toml
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/symbiotic-mem-bench-adapter-target}
 
+# The Memory git dependency deliberately keeps native package acquisition out
+# of Cargo's build script. Resolve the exact locked checkout, then ask that
+# revision's verified packager for the current host artifact. This makes the
+# credentialed adapter gate portable instead of accidentally consuming the
+# macOS package checked into a developer's Memory checkout.
+echo "== prepare verified zvec package for the host"
+memory_manifest="$({
+  cargo metadata --manifest-path "$manifest" --locked --format-version 1
+} | python3 -c '
+import json, sys
+packages = [
+    package for package in json.load(sys.stdin)["packages"]
+    if package["name"] == "symbiotic-memory"
+]
+if len(packages) != 1:
+    raise SystemExit(f"expected one locked symbiotic-memory package, found {len(packages)}")
+print(packages[0]["manifest_path"])
+')"
+memory_root="$(cd "$(dirname "$memory_manifest")" && pwd -P)"
+host_target="$(rustc -vV | sed -n 's/^host: //p')"
+test -n "$host_target"
+zvec_lib_dir="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/membench-zvec.XXXXXX")"
+trap 'rm -rf "$zvec_lib_dir"' EXIT
+"$memory_root/scripts/zvec-package.sh" prepare \
+  --mode prebuilt \
+  --target "$host_target" \
+  --output "$zvec_lib_dir"
+export ZVEC_LIB_DIR="$zvec_lib_dir"
+ZVEC_LIB_SHA256="$(sed -n 's/^library_sha256=//p' "$zvec_lib_dir/.zvec-provenance")"
+test "${#ZVEC_LIB_SHA256}" -eq 64
+export ZVEC_LIB_SHA256
+
 echo "== cargo fmt private adapter"
 cargo fmt --manifest-path "$manifest" --all -- --check
 

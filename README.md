@@ -28,9 +28,11 @@ With repository read access:
 cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- explore
 ```
 
-`scripts/check-adapter-build.sh` is the gate for that path; `scripts/check-adapter-pins.sh`
+`scripts/check-adapter-build.sh` is the gate for that path. It resolves the exact locked Memory
+checkout and stages that revision's verified prebuilt for the current host before Cargo runs;
+Cargo never guesses from a checkout's developer-platform artifact. `scripts/check-adapter-pins.sh`
 checks (offline, no credentials) that every git dependency is pinned to an exact rev that
-`Cargo.lock` resolves.
+`Cargo.lock` resolves and that the host-artifact provisioning boundary remains in the gate.
 
 Export the static leaderboard document over the reproducible sample records (the CI canary
 fixtures — synthetic, clearly labeled, never real results):
