@@ -124,7 +124,7 @@ jobs:
   adapter-build:
     needs: adapter-key
     if: needs.adapter-key.outputs.available == 'true'
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@d8dfd7155fea72af4ad34a8fe97364d210e2d020 # 1.93.0
