@@ -19,17 +19,20 @@ The native `membench` CLI uses the isolated
 `adapters/symbiotic-memory/Cargo.toml` package, which builds against an exact revision of the private
 `symbiotic-sh/symbiotic-memory` repository. A clean clone without access can build and use the
 neutral core, leaderboard exporter, server, and dashboard, but not that adapter. The exact pinned
-adapter revision currently ships a verified macOS arm64 zvec dylib only, so its release gate runs on
-macOS 14 arm64; the public server-backed product is still packaged for Linux x86-64 and macOS arm64.
+adapter consumes the verified Linux x86-64 zvec package, so its gate and the public server-backed
+product both run and package on Linux. Hosted macOS runners are reserved for the separate Symbiotic
+iOS application.
 With repository read access:
 
 ```bash
 cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- explore
 ```
 
-`scripts/check-adapter-build.sh` is the gate for that path; `scripts/check-adapter-pins.sh`
+`scripts/check-adapter-build.sh` is the gate for that path. It resolves the exact locked Memory
+checkout and stages that revision's verified prebuilt for the current host before Cargo runs;
+Cargo never guesses from a checkout's developer-platform artifact. `scripts/check-adapter-pins.sh`
 checks (offline, no credentials) that every git dependency is pinned to an exact rev that
-`Cargo.lock` resolves.
+`Cargo.lock` resolves and that the host-artifact provisioning boundary remains in the gate.
 
 Export the static leaderboard document over the reproducible sample records (the CI canary
 fixtures — synthetic, clearly labeled, never real results):

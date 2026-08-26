@@ -1898,7 +1898,7 @@ dependencies = [
 [[package]]
 name = "symbiotic-memory"
 version = "0.2.0"
-source = "git+ssh://git@github.com/symbiotic-sh/symbiotic-memory?rev=c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e#c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e"
+source = "git+ssh://git@github.com/symbiotic-sh/symbiotic-memory?rev=1c268bbe319e5286eb669f02e4e096b95aef488c#1c268bbe319e5286eb669f02e4e096b95aef488c"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1921,13 +1921,13 @@ dependencies = [
  "thiserror",
  "tokio",
  "uuid",
- "zvec",
+ "zvec-rust",
 ]
 
 [[package]]
 name = "symbiotic-memory-config"
 version = "0.2.0"
-source = "git+ssh://git@github.com/symbiotic-sh/symbiotic-memory?rev=c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e#c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e"
+source = "git+ssh://git@github.com/symbiotic-sh/symbiotic-memory?rev=1c268bbe319e5286eb669f02e4e096b95aef488c#1c268bbe319e5286eb669f02e4e096b95aef488c"
 dependencies = [
  "hex",
  "serde",
@@ -2726,14 +2726,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
-name = "zvec"
-version = "0.5.0"
-source = "git+ssh://git@github.com/symbiotic-sh/symbiotic-memory?rev=c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e#c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e"
+name = "zvec-rust"
+version = "0.7.0"
+source = "git+ssh://git@github.com/symbiotic-sh/symbiotic-memory?rev=1c268bbe319e5286eb669f02e4e096b95aef488c#1c268bbe319e5286eb669f02e4e096b95aef488c"
 dependencies = [
- "zvec-sys",
+ "zvec-rust-sys",
 ]
 
 [[package]]
-name = "zvec-sys"
-version = "0.5.0"
-source = "git+ssh://git@github.com/symbiotic-sh/symbiotic-memory?rev=c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e#c22cfe30c9ccc7abcee28bf6f5abe6a7a659d74e"
+name = "zvec-rust-sys"
+version = "0.7.0"
+source = "git+ssh://git@github.com/symbiotic-sh/symbiotic-memory?rev=1c268bbe319e5286eb669f02e4e096b95aef488c#1c268bbe319e5286eb669f02e4e096b95aef488c"
+dependencies = [
+ "sha2",
+]

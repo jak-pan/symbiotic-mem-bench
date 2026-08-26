@@ -32,9 +32,10 @@ Run from an exact clean checkout of the intended release commit:
    - deterministic canary export matches `canary/expected-leaderboard.json`
    - `./scripts/check-leaderboard-snapshot.sh`
    - tracked-tree secret scan and release-bundle forbidden-path scan
-3. Maintainers with read access must run `./scripts/check-adapter-build.sh`. This proves the private
-   integration remains compatible with the exact pins; it does **not** put that adapter in the
-   public asset.
+3. Maintainers with read access must run `./scripts/check-adapter-build.sh`. The gate resolves the
+   exact locked Memory checkout and stages its verified prebuilt for the host target before Cargo;
+   it proves the private integration remains compatible with the exact pins but does **not** put
+   that adapter in the public asset.
 4. Build a local platform bundle with `scripts/package-release.py`, build it a second time with the
    same inputs/epoch, and require identical SHA-256 hashes. Extract it away from the checkout, start
    `./membench-server`, and verify `/api/health`, `/api/runs`, `/api/leaderboard`, the v2 shell,

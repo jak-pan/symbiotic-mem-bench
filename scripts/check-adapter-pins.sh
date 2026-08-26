@@ -21,6 +21,7 @@ root_manifest = open("Cargo.toml").read()
 manifest = open("adapters/symbiotic-memory/Cargo.toml").read()
 lock = open("adapters/symbiotic-memory/Cargo.lock").read()
 build_script = open("adapters/symbiotic-memory/build.rs").read()
+adapter_gate = open("scripts/check-adapter-build.sh").read()
 
 # `name = { git = "URL", rev = "SHA", ... }` — one line per dependency.
 pattern = re.compile(r'^(?P<name>[A-Za-z0-9_-]+)\s*=\s*\{[^}]*git\s*=\s*"(?P<url>[^"]+)"[^}]*\}', re.M)
@@ -55,6 +56,18 @@ build_rev = re.search(
 )
 if not memory_rev or not build_rev or memory_rev.group(1) != build_rev.group(1):
     failures.append("adapter build.rs zvec provenance revision does not match the locked symbiotic-memory dependency")
+
+for required in [
+    "cargo metadata --manifest-path \"$manifest\" --locked --format-version 1",
+    "scripts/zvec-package.sh\" prepare",
+    "--target \"$host_target\"",
+    "export ZVEC_LIB_DIR",
+    "export ZVEC_LIB_SHA256",
+]:
+    if required not in adapter_gate:
+        failures.append(
+            f"credentialed adapter gate does not provision the locked host zvec package: missing {required!r}"
+        )
 
 if not checked:
     failures.append("no pinned git dependencies found — did the manifest change shape?")

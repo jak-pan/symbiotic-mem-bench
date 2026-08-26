@@ -12,7 +12,7 @@ import sys
 from collections import defaultdict
 
 
-SUPPORTED_TARGETS = ("x86_64-unknown-linux-gnu", "aarch64-apple-darwin")
+SUPPORTED_TARGETS = ("x86_64-unknown-linux-gnu",)
 NOTICE_NAMES = ("license", "licence", "copying", "copyright", "notice", "authors")
 LONGMEMEVAL_LICENSE = """MIT License
 

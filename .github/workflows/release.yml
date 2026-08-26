@@ -71,7 +71,7 @@ jobs:
           command: check advisories licenses sources
 
   private-adapter:
-    runs-on: macos-14
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -103,8 +103,6 @@ jobs:
         include:
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-          - runner: macos-14
-            target: aarch64-apple-darwin
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
