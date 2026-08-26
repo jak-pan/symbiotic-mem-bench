@@ -800,8 +800,8 @@ fn raw_embedding_text_groups(
     // Effective shape now comes from the kit's config crate defaults (the
     // legacy env layer is gone); when the bench grows config-file plumbing
     // these become the resolved config snapshot.
-    let distill = symbiotic_memory_config::DistillSection::default();
-    let max_input_tokens = symbiotic_memory_config::EmbedSection::default().max_input_tokens;
+    let distill = symbiotic_memory::profile::DistillSection::default();
+    let max_input_tokens = symbiotic_memory::profile::EmbedSection::default().max_input_tokens;
     let raw_window = symbiotic_memory::ingest::RawWindowConfig::from_values(
         distill.raw_window_size,
         distill.raw_window_stride,
@@ -7325,7 +7325,7 @@ fn run_env_value(run: &SymbioticMemoryCliRun, key: &str) -> Option<String> {
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn resolve_kit_config(
     run: &SymbioticMemoryCliRun,
-) -> anyhow::Result<symbiotic_memory_config::Resolved> {
+) -> anyhow::Result<symbiotic_memory::profile::Resolved> {
     let mut env: Vec<(String, String)> = Vec::new();
     if let Some(env_file) = run.env_file.clone().or_else(|| default_env_file(run)) {
         if let Ok(pairs) = load_env_file(&env_file) {
@@ -7338,8 +7338,8 @@ fn resolve_kit_config(
     }
     // Process env after the file so equal keys resolve to the process value
     // (later pairs win inside the resolver's env layer).
-    env.extend(symbiotic_memory_config::ConfigLayers::env_from_process());
-    symbiotic_memory_config::resolve(&symbiotic_memory_config::ConfigLayers {
+    env.extend(symbiotic_memory::profile::ConfigLayers::env_from_process());
+    symbiotic_memory::profile::resolve(&symbiotic_memory::profile::ConfigLayers {
         file: None,
         env,
         flags: Vec::new(),

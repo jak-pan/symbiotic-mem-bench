@@ -409,10 +409,10 @@ fn redo_stage() -> Option<&'static str> {
 /// adapter installs its sections on every engine it constructs — recall
 /// tuning, experimental gates, distill and embed knobs — so bench arms are
 /// plain config overrides instead of ad-hoc plumbing. Defaults when unset.
-static KIT_CONFIG: std::sync::OnceLock<symbiotic_memory_config::MemoryConfig> =
+static KIT_CONFIG: std::sync::OnceLock<symbiotic_memory::profile::MemoryConfig> =
     std::sync::OnceLock::new();
 
-pub fn set_kit_config(config: symbiotic_memory_config::MemoryConfig) {
+pub fn set_kit_config(config: symbiotic_memory::profile::MemoryConfig) {
     let _ = KIT_CONFIG.set(config);
 }
 
@@ -440,12 +440,12 @@ pub fn active_manifest_tag() -> &'static str {
         .unwrap_or("longmemeval-v1")
 }
 
-pub fn kit_config() -> &'static symbiotic_memory_config::MemoryConfig {
-    static DEFAULT: std::sync::OnceLock<symbiotic_memory_config::MemoryConfig> =
+pub fn kit_config() -> &'static symbiotic_memory::profile::MemoryConfig {
+    static DEFAULT: std::sync::OnceLock<symbiotic_memory::profile::MemoryConfig> =
         std::sync::OnceLock::new();
     KIT_CONFIG
         .get()
-        .unwrap_or_else(|| DEFAULT.get_or_init(symbiotic_memory_config::MemoryConfig::default))
+        .unwrap_or_else(|| DEFAULT.get_or_init(symbiotic_memory::profile::MemoryConfig::default))
 }
 
 /// A lightweight query against a corpus shared by several benchmark questions.
@@ -2788,8 +2788,8 @@ fn effective_shape() -> (
     usize,
     usize,
 ) {
-    let distill = symbiotic_memory_config::DistillSection::default();
-    let embed = symbiotic_memory_config::EmbedSection::default();
+    let distill = symbiotic_memory::profile::DistillSection::default();
+    let embed = symbiotic_memory::profile::EmbedSection::default();
     let window = symbiotic_memory::ingest::RawWindowConfig::from_values(
         distill.raw_window_size,
         distill.raw_window_stride,

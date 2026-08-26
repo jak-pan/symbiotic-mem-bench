@@ -50,7 +50,7 @@ if manifest["package"].get("autobins") is not False or manifest["package"].get("
 if adapter_manifest["package"].get("publish") is not False:
     failures.append("private adapter package must remain publish=false")
 
-for dependency in ("symbiotic-memory", "symbiotic-memory-config"):
+for dependency in ("symbiotic-memory",):
     spec = adapter_manifest["dependencies"][dependency]
     if spec.get("git") != "ssh://git@github.com/symbiotic-sh/symbiotic-memory":
         failures.append(f"{dependency}: must use the consented symbiotic-sh repository")
