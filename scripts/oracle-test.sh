@@ -40,7 +40,7 @@ MEMBENCH_ANSWER_OPERATOR="$ANSWER_OPERATOR" MEMBENCH_ANSWER_MODEL="$MODEL" \
 ./target/release/membench --symbiotic-memory --long-mem-eval --dataset "$DS" --limit 500 \
   --sample stratified --memory-config config/symbiotic-memory/longmemeval-raw-light.yaml \
   --memory-manifest ../symbiotic-memory/Cargo.toml --embedder openrouter --distiller llm \
-  --store sqlite --prompt-dir "$PROMPT_DIR" --distill-prompt distill --query-planner flash \
+  --prompt-dir "$PROMPT_DIR" --distill-prompt distill --query-planner flash \
   --answerer --answer-only --oracle-gold --source-vault-root "$VAULT" --score --judge-workers 100 \
   --run-name "$RUN_NAME" > "$log" 2>&1
 rc=$?

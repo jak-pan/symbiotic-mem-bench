@@ -1897,7 +1897,7 @@ dependencies = [
 [[package]]
 name = "symbiotic-memory"
 version = "0.2.0"
-source = "git+ssh://git@github.com/symbiotic-sh/symbiotic-memory?rev=b361e403334ff050b55ac4722a156d3e9f2977d4#b361e403334ff050b55ac4722a156d3e9f2977d4"
+source = "git+ssh://git@github.com/symbiotic-sh/symbiotic-memory?rev=2a615ce487103b70ea3a0b487d88b881ba185b99#2a615ce487103b70ea3a0b487d88b881ba185b99"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1926,7 +1926,7 @@ dependencies = [
 [[package]]
 name = "symbiotic-memory-config"
 version = "0.2.0"
-source = "git+ssh://git@github.com/symbiotic-sh/symbiotic-memory?rev=b361e403334ff050b55ac4722a156d3e9f2977d4#b361e403334ff050b55ac4722a156d3e9f2977d4"
+source = "git+ssh://git@github.com/symbiotic-sh/symbiotic-memory?rev=2a615ce487103b70ea3a0b487d88b881ba185b99#2a615ce487103b70ea3a0b487d88b881ba185b99"
 dependencies = [
  "hex",
  "serde",
@@ -2727,7 +2727,7 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 [[package]]
 name = "zvec-rust"
 version = "0.7.0"
-source = "git+ssh://git@github.com/symbiotic-sh/symbiotic-memory?rev=b361e403334ff050b55ac4722a156d3e9f2977d4#b361e403334ff050b55ac4722a156d3e9f2977d4"
+source = "git+ssh://git@github.com/symbiotic-sh/symbiotic-memory?rev=2a615ce487103b70ea3a0b487d88b881ba185b99#2a615ce487103b70ea3a0b487d88b881ba185b99"
 dependencies = [
  "zvec-rust-sys",
 ]
@@ -2735,7 +2735,7 @@ dependencies = [
 [[package]]
 name = "zvec-rust-sys"
 version = "0.7.0"
-source = "git+ssh://git@github.com/symbiotic-sh/symbiotic-memory?rev=b361e403334ff050b55ac4722a156d3e9f2977d4#b361e403334ff050b55ac4722a156d3e9f2977d4"
+source = "git+ssh://git@github.com/symbiotic-sh/symbiotic-memory?rev=2a615ce487103b70ea3a0b487d88b881ba185b99#2a615ce487103b70ea3a0b487d88b881ba185b99"
 dependencies = [
  "sha2",
 ]

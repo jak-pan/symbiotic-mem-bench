@@ -110,15 +110,13 @@ in Live and Traces:
 
 | Rendered stage | Trace source | Meaning |
 |---|---|---|
-| `setup` | `operation=adapter_call`, `stage=pre_capture_setup` | Vault directory creation, source hashing, manifest read/write, embedder dimension lookup, zvec cache validation, store open, and existing-state load before `capture` starts. |
 | `capture` | `operation=capture` | First memory-pipeline stage emitted by the native ingest pipeline. |
 | `briefs` | `operation=embed_facts`, `metrics.kind=brief` normalized to `consolidate` | Source-backed extractive brief pass. |
 | `recall setup` | `operation=adapter_call`, `stage=pre_recall_setup` | Post-ingest count loading and recall-index readiness before query planning, search, support, and answer stages. |
 | `prompt plan` | `operation=query_plan` | Query planner trace emitted by the memory engine recall debug path. |
 
-Setup stages are intentionally separate from ingest timing. If loading 50 vaults is slow before any
-capture bar moves, inspect `setup` p80/p98 and its numeric metrics such as `store_open_ms`,
-`zvec_cache_ms`, `load_existing_ms`, and `manifest_ms`.
+Backend setup is Memory-owned and opaque to Membench. Inspect the public Memory trace events around
+engine open, ingest, and recall; the benchmark does not derive storage-layout timing metrics.
 
 Legacy `adapter_call` rows without one of the typed setup stage names are ignored by dashboard
 summaries and unified trace logs. Raw trace artifacts keep those rows for archeology, but old runs
@@ -376,18 +374,17 @@ For native Symbiotic Memory runs, `model_traces` may use the provider queue even
 `model/usage/timing/outcome` trace shape and the queue-native
 `queue_id/item_id/operation/status/attempt/usage` shape.
 
-Native answer-only reruns may include `run_params.source_vault_root`. When present, the run's
-`vaults/` tree is an isolated view over an existing ingested substrate: heavy immutable files such
-as `memory.sqlite` and `archive/` may be filesystem links, while mutable files such as
-`manifest.json`, `answer.json`, and `debug/` belong to the rerun.
+Native answer-only reruns may include `run_params.source_vault_root`. When present, Memory opens the
+existing per-question state directories directly through its normal application facade. Membench
+does not know or manipulate the backend layout.
 
 Per-question debug bundles under
-`vaults/{question_id}/debug/hypotheses/{run_id}/question-debug.json` may include raw prompts and
+`vaults/{question_id}/debug/facade/question-debug.json` may include raw prompts and
 model responses for local diagnosis. For the query planner, inspect
-`recall.query_planner_call.system_prompt`, `recall.query_planner_call.user_prompt`, and
-`recall.query_planner_call.response_text`. For the search response, inspect
-`recall.retrieval_queries`, `recall.query_plan`, `recall.initial_profile`, and optional
-`recall.fallback_profile`; the profile entries carry scores plus fact/raw-turn evidence. Portable
+`recall.planner.system_prompt`, `recall.planner.user_prompt`, and
+`recall.planner.response_text`. For the search response, inspect
+`recall.retrieval_queries`, `recall.query_plan`, `recall.evidence`, and optional
+`recall.fallback_evidence`; evidence entries retain public truth-tier provenance. Portable
 memory traces should point to that bundle and record prompt/response hashes instead of duplicating
 raw prompt text.
 

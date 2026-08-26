@@ -69,7 +69,6 @@ case "$profile" in
   deepseek-flash-qwen3-8b-1024)
     cohort="ingest-stage/deepseek-flash-qwen3-8b-1024"
     embedder="${MEMBENCH_EMBEDDER:-openrouter}"
-    store="${MEMBENCH_STORE:-zvec-hybrid}"
     operator="${MEMBENCH_EMBED_OPERATOR:-openrouter}"
     model="${MEMBENCH_EMBED_MODEL:-qwen/qwen3-embedding-8b}"
     dims="${MEMBENCH_EMBED_DIMS:-1024}"
@@ -147,7 +146,6 @@ SYMBIOTIC_MEMORY__TRANSPORT__HTTP1_ONLY="$http1_bool" \
   --limit "$limit" \
   --sample "$sample" \
   --embedder "$embedder" \
-  --store "$store" \
   --fresh \
   --ingest-diagnostic "$mode" \
   --no-answerer \

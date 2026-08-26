@@ -1,0 +1,21 @@
+[
+  {
+    "question_id": "smoke-1",
+    "question_type": "single-session-user",
+    "question": "Where did the user leave the blue notebook?",
+    "question_date": "2024/01/03 09:00 (Wed)",
+    "answer": "On the kitchen table",
+    "answer_session_ids": ["session-1"],
+    "haystack_dates": ["2024/01/02 18:30 (Tue)"],
+    "haystack_session_ids": ["session-1"],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "I left the blue notebook on the kitchen table.",
+          "has_answer": true
+        }
+      ]
+    ]
+  }
+]

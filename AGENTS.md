@@ -83,17 +83,16 @@ Provider/model trace facts:
   emphasizing current active counts, which should naturally be zero after completion.
 - The live activity stream should show memory-stage events and provider events interleaved. If stages
   appear wave-like in the bars, inspect activity before concluding the executor is sequential.
-- The stage label `setup` maps to adapter `pre_capture_setup`: vault directory/manifest/hash,
-  zvec cache validation, store open, and existing-state load before the memory pipeline emits
-  `capture`.
+- Memory setup, ingest, and recall stages come from the public Memory trace sink. The benchmark
+  does not inspect backend files, manifests, indexes, or storage-open metrics.
 - The stage label `recall setup` maps to adapter `pre_recall_setup`: post-ingest count loading and
   recall-index readiness before the answer/recall path starts.
 - The stage label `briefs` maps to the trace operation `consolidate`, which is the source-backed
   extractive brief pass.
 - The stage label `prompt plan` maps to the trace operation `query_plan`. It is emitted from the
   memory engine's recall debug result; the benchmark must not run an extra planner call for display.
-  Inspect `recall.query_planner_call` in the per-question debug bundle for the raw planner prompt
-  and response; memory traces keep hashes/pointers.
+  Inspect `recall.planner` in the per-question facade debug bundle for the raw planner prompt and
+  response; memory traces keep hashes/pointers.
 
 Imported runs can be artifact-only. Their `artifact_manifest.native_state_available` must be `false`,
 and their `artifact_manifest.missing` list must make absent traces or state folders explicit.
@@ -354,9 +353,9 @@ reranker moved the needle.** ALWAYS verify a lever FIRED (changed the prompt/evi
 - Source vault: `runs/symbiotic-memory/long-mem-eval/500/factconsol-thinkon-500-20260624/vaults`
 - Rebuild after symem code change: `CARGO_TARGET_DIR=target cargo build --release --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench`
 - Run (repo root; `.env.test.local` auto-loads keys; var names post-SYMEM-removal — see docs/environment.md):
-  `env MEMBENCH_DISTILL_THINKING=off MEMBENCH_ANSWER_THINKING=on MEMBENCH_EMBED_MODEL=qwen/qwen3-embedding-8b MEMBENCH_EMBED_DIMS=1024 MEMBENCH_EMBED_REQUEST_DIMS=1024 SYMBIOTIC_MEMORY__TRANSPORT__HTTP1_ONLY=true MEMBENCH_RERANK=on MEMBENCH_RERANK_MODEL=cohere/rerank-4-fast SYMBIOTIC_MEMORY__RECALL__RERANK_CANDIDATES=100 <LEVER_ENV> ./target/release/membench --system symbiotic-memory --benchmark long-mem-eval --limit 500 --sample stratified --embedder openrouter --store zvec-hybrid --memory-config config/symbiotic-memory/longmemeval-raw-light.yaml --prompt-dir /tmp/prompts-v3 --answer-only --source-vault-root <SRC> --score --run-name <name>`
+  `env MEMBENCH_DISTILL_THINKING=off MEMBENCH_ANSWER_THINKING=on MEMBENCH_EMBED_MODEL=qwen/qwen3-embedding-8b MEMBENCH_EMBED_DIMS=1024 MEMBENCH_EMBED_REQUEST_DIMS=1024 SYMBIOTIC_MEMORY__TRANSPORT__HTTP1_ONLY=true MEMBENCH_RERANK=on MEMBENCH_RERANK_MODEL=cohere/rerank-4-fast SYMBIOTIC_MEMORY__RECALL__RERANK_CANDIDATES=100 <LEVER_ENV> ./target/release/membench --system symbiotic-memory --benchmark long-mem-eval --limit 500 --sample stratified --embedder openrouter --memory-config config/symbiotic-memory/longmemeval-raw-light.yaml --prompt-dir /tmp/prompts-v3 --answer-only --source-vault-root <SRC> --score --run-name <name>`
   (rerank is ON by default; the harness default model is `nvidia/llama-nemotron-rerank-vl-1b-v2:free` — pin `MEMBENCH_RERANK_MODEL` explicitly for A/B comparability)
-- Score: `is_correct` in `runs/.../<name>/artifacts/verdicts.jsonl`. Prompt+reasoning: `runs/.../<name>/vaults/<qid>/debug/question-debug.json` → `recall.answerer_calls[0].{system_prompt,prompt,reasoning,response_text}`. Planner: `recall.query_plan` / `recall.query_planner_call`.
+- Score: `is_correct` in `runs/.../<name>/artifacts/verdicts.jsonl`. Prompt+reasoning: `runs/.../<name>/vaults/<qid>/debug/facade/question-debug.json` → `recall.answer_calls[0].{system_prompt,prompt,reasoning,response_text}`. Planner: `recall.query_plan` / `recall.planner`.
 - Fast single-question probe (no harness, ~10s): `/tmp/ask_one.py` replays a question's exact prompt to flash.
 - Paid runs serialize on `runs/.locks/paid-provider-run.lock` (one at a time). Sweep via a background script.
 
