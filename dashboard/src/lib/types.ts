@@ -191,6 +191,13 @@ export interface QueryPlannerCallDebug {
     expected_answer_type?: string | null;
     needs_raw_turns?: boolean | null;
   } | null;
+  plan?: {
+    canonical_query?: string | null;
+    dense_queries?: string[] | null;
+    sparse_terms?: string[] | null;
+    expected_answer_type?: string | null;
+    needs_raw_turns?: boolean | null;
+  } | null;
   usage?: Record<string, unknown> | null;
   finish_reason?: string | null;
   error?: string | null;
@@ -199,16 +206,45 @@ export interface QueryPlannerCallDebug {
 export interface QuestionDebug {
   recall?: {
     query_planner_call?: QueryPlannerCallDebug | null;
+    planner?: QueryPlannerCallDebug | null;
     retrieval_queries?: string[] | null;
     query_plan?: Record<string, unknown> | null;
     initial_profile?: RetrievalProfileDebug | null;
     fallback_profile?: RetrievalProfileDebug | null;
+    evidence?: MemoryEvidenceDebug[] | null;
+    fallback_evidence?: MemoryEvidenceDebug[] | null;
+    answer_calls?: AnswererCallDebug[] | null;
+    answerer_calls?: AnswererCallDebug[] | null;
     /** Reranker scoring trace (present when the run used a reranker). One entry
      *  per search profile (initial, then fallback). */
     rerank_trace?: RerankProfile[] | null;
+    rerank?: MemoryRerankDebug[] | null;
     [key: string]: unknown;
   } | null;
   [key: string]: unknown;
+}
+
+export interface MemoryEvidenceDebug {
+  evidence_id?: string | null;
+  kind?: "fact" | "raw_turn" | string | null;
+  content?: string | null;
+  score?: number | null;
+  source_refs?: Array<Record<string, unknown>> | null;
+  tags?: string[] | null;
+  speaker?: string | null;
+  captured_at?: string | null;
+}
+
+export interface MemoryRerankDebug {
+  candidate_set?: string | null;
+  candidates?: Array<{
+    evidence_id?: string | null;
+    embedding_rank?: number | null;
+    embedding_score?: number | null;
+    rerank_score?: number | null;
+    final_rank?: number | null;
+    content?: string | null;
+  }> | null;
 }
 
 export interface RerankCandidate {

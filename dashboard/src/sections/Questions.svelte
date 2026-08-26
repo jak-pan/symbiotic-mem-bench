@@ -3,6 +3,7 @@
   import { store } from "../lib/store.svelte";
   import type {
     AnswererCallDebug,
+    MemoryEvidenceDebug,
     QueryPlannerCallDebug,
     QuestionDebug,
     QuestionRow,
@@ -106,7 +107,13 @@
 
   function plannerCall(row: QuestionRow): QueryPlannerCallDebug | null {
     const path = row.debug_artifact;
-    return path ? debugByPath[path]?.recall?.query_planner_call ?? null : null;
+    if (!path) return null;
+    const planner = debugByPath[path]?.recall?.query_planner_call
+      ?? debugByPath[path]?.recall?.planner
+      ?? null;
+    return planner && !planner.parsed_plan && planner.plan
+      ? { ...planner, parsed_plan: planner.plan }
+      : planner;
   }
 
   function recallDebug(row: QuestionRow): QuestionDebug["recall"] | null {
@@ -150,8 +157,55 @@
   }
 
   function answererCalls(row: QuestionRow): AnswererCallDebug[] {
-    const calls = recallDebug(row)?.answerer_calls;
+    const recall = recallDebug(row);
+    const calls = recall?.answerer_calls ?? recall?.answer_calls;
     return Array.isArray(calls) ? (calls as AnswererCallDebug[]) : [];
+  }
+
+  function evidenceProfile(items: MemoryEvidenceDebug[] | null | undefined): RetrievalProfileDebug | null {
+    if (!Array.isArray(items)) return null;
+    return {
+      facts: items.filter((item) => item.kind === "fact").map((item) => ({
+        score: item.score,
+        fact: {
+          memory_id: item.evidence_id,
+          content: item.content,
+          event_time: item.captured_at,
+          tags: item.tags,
+          source_refs: item.source_refs,
+        },
+      })),
+      raw_turns: items.filter((item) => item.kind === "raw_turn").map((item) => ({
+        score: item.score,
+        speaker: item.speaker,
+        text: item.content,
+        event_time: item.captured_at,
+        source_ref: item.source_refs?.[0],
+      })),
+    };
+  }
+
+  function initialProfile(recall: QuestionDebug["recall"]): RetrievalProfileDebug | null {
+    return recall?.initial_profile ?? evidenceProfile(recall?.evidence);
+  }
+
+  function fallbackProfile(recall: QuestionDebug["recall"]): RetrievalProfileDebug | null {
+    return recall?.fallback_profile ?? evidenceProfile(recall?.fallback_evidence);
+  }
+
+  function rerankProfiles(recall: QuestionDebug["recall"]): RerankProfile[] {
+    if (Array.isArray(recall?.rerank_trace)) return recall.rerank_trace;
+    return (recall?.rerank ?? []).map((pass) => ({
+      candidate_type: pass.candidate_set,
+      candidates: (pass.candidates ?? []).map((candidate) => ({
+        candidate_id: candidate.evidence_id ?? "",
+        embedding_rank: candidate.embedding_rank,
+        embedding_score: candidate.embedding_score,
+        rerank_score: candidate.rerank_score,
+        final_rank: candidate.final_rank,
+        text: candidate.content,
+      })),
+    }));
   }
 
   // The EXACT context handed to the answerer (first call). This is the ground truth of what the
@@ -258,6 +312,9 @@
       {@const planner = plannerCall(active)}
       {@const recall = recallDebug(active)}
       {@const calls = answererCalls(active)}
+      {@const initial = initialProfile(recall)}
+      {@const fallback = fallbackProfile(recall)}
+      {@const rerank = rerankProfiles(recall)}
       <div
         class="drawer fade-in"
         role="dialog"
@@ -370,21 +427,21 @@
               <section class="debug-section">
                 <h3>Search Results — retrieval candidates (not necessarily fed to the answerer)</h3>
                 <details class="prompt" open>
-                  <summary>INITIAL SEARCH RESPONSE · {profileCount(recall?.initial_profile)}</summary>
-                  {@render searchProfile(recall?.initial_profile)}
+                  <summary>INITIAL SEARCH RESPONSE · {profileCount(initial)}</summary>
+                  {@render searchProfile(initial)}
                 </details>
-                {#if recall?.fallback_profile}
+                {#if fallback}
                   <details class="prompt" open>
-                    <summary>FALLBACK SEARCH RESPONSE · {profileCount(recall.fallback_profile)}</summary>
-                    {@render searchProfile(recall.fallback_profile)}
+                    <summary>FALLBACK SEARCH RESPONSE · {profileCount(fallback)}</summary>
+                    {@render searchProfile(fallback)}
                   </details>
                 {/if}
               </section>
 
-              {#if recall?.rerank_trace?.length}
+              {#if rerank.length}
                 <section class="debug-section">
                   <h3>Rerank</h3>
-                  {#each recall.rerank_trace as rt, i (`rerank-trace-${i}`)}
+                  {#each rerank as rt, i (`rerank-trace-${i}`)}
                     <details class="prompt" open>
                       <summary>{i === 0 ? "INITIAL" : "FALLBACK"} RERANK · {rt.candidates.length} candidates</summary>
                       {@render rerankProfile(rt)}

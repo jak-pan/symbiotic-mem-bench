@@ -797,40 +797,25 @@ fn parse_probe_pack_scope(raw: &str) -> anyhow::Result<ProbePackScope> {
 fn raw_embedding_text_groups(
     rows: &[membench::symbiotic_memory_adapter::LongMemEvalRecord],
 ) -> Vec<(String, Vec<(String, String)>)> {
-    // Effective shape now comes from the kit's config crate defaults (the
-    // legacy env layer is gone); when the bench grows config-file plumbing
-    // these become the resolved config snapshot.
-    let distill = symbiotic_memory_config::DistillSection::default();
-    let max_input_tokens = symbiotic_memory_config::EmbedSection::default().max_input_tokens;
-    let raw_window = symbiotic_memory::ingest::RawWindowConfig::from_values(
-        distill.raw_window_size,
-        distill.raw_window_stride,
-    );
     rows.iter()
         .map(|row| {
-            let source = membench::symbiotic_memory_adapter::longmemeval_to_source(row);
-            let source_id = source.source_id.clone();
-            let texts = symbiotic_memory::ingest::source_turns_with_derived_units(
-                &source,
-                raw_window,
-                distill.raw_unit_max_input_tokens,
-            )
-            .into_iter()
-            .flat_map(move |turn| {
-                let formatted = symbiotic_memory::ingest::format_turn_for_embedding(&turn);
-                if symbiotic_memory::ingest::approx_tokens(&formatted) > max_input_tokens {
-                    symbiotic_memory::ingest::split_turn_by_text_budget(&turn, max_input_tokens)
-                } else {
-                    vec![turn]
-                }
-            })
-            .map(|turn| {
-                let label = format!("turn={}", turn.turn_id);
-                let text = symbiotic_memory::ingest::format_turn_for_embedding(&turn);
-                (label, text)
-            })
-            .collect::<Vec<_>>();
-            (source_id, texts)
+            let texts = row
+                .haystack_sessions
+                .iter()
+                .enumerate()
+                .flat_map(|(session_index, session)| {
+                    session
+                        .iter()
+                        .enumerate()
+                        .map(move |(message_index, message)| {
+                            (
+                                format!("session={session_index},message={message_index}"),
+                                message.content.clone(),
+                            )
+                        })
+                })
+                .collect();
+            (row.question_id.clone(), texts)
         })
         .collect()
 }
@@ -1502,7 +1487,14 @@ fn run_selected_benchmark(cli: Cli) -> anyhow::Result<()> {
             let fresh = effective_fresh(cli.resume, cli.answer_only, cli.rejudge, cli.fresh)?;
             let loader = membench::benchmark::loader_for(&benchmark)
                 .ok_or_else(|| anyhow::anyhow!("no loader registered for {benchmark}"))?;
-            let dataset = resolve_benchmark_dataset(loader.as_ref(), cli.dataset)?;
+            let dataset = if cli.smoke && cli.dataset.is_none() {
+                resolve_benchmark_dataset(
+                    loader.as_ref(),
+                    Some(repo_root().join("tests/fixtures/longmemeval-smoke.json")),
+                )?
+            } else {
+                resolve_benchmark_dataset(loader.as_ref(), cli.dataset)?
+            };
             run_symbiotic_memory_longmemeval(SymbioticMemoryCliRun {
                 benchmark,
                 dataset,
@@ -1607,7 +1599,21 @@ fn effective_fresh(
 }
 
 fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let manifest_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if manifest_root.file_name().and_then(|name| name.to_str()) == Some("symbiotic-memory")
+        && manifest_root
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            == Some("adapters")
+    {
+        return manifest_root
+            .parent()
+            .and_then(Path::parent)
+            .expect("adapter manifest lives under <repo>/adapters/symbiotic-memory")
+            .to_path_buf();
+    }
+    manifest_root
 }
 
 fn resolve_repo_path(path: &std::path::Path) -> PathBuf {
@@ -4034,7 +4040,7 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
     membench::symbiotic_memory_adapter::set_active_manifest_tag(loader.manifest_tag())?;
     let scope = loader.haystack_scope();
     let load_limit = (run.sample == "first" && run.limit > 0).then_some(run.limit);
-    let (rows, shared_questions) = match scope {
+    let (rows, _shared_questions) = match scope {
         membench::benchmark::HaystackScope::SharedCorpus => {
             let questions = loader.shared_questions(&run.dataset, load_limit)?;
             let rows = questions
@@ -4144,28 +4150,22 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
         }
     }
     let redo_active = redo_stage.is_some();
+    if redo_active {
+        anyhow::bail!(
+            "redo stages are not part of the stable Memory application facade; re-ingest into a fresh run root instead"
+        );
+    }
     // Guardrail: warn loudly when a tuning knob is set while its enabling gate is OFF, so a knob
     // never silently no-ops (which previously invalidated weeks of experiments).
     warn_inert_tuning_knobs(&run, redo_stage.as_deref());
-    membench::symbiotic_memory_adapter::set_redo_stage(redo_stage);
-    // Supersession-detection post-pass (MEMBENCH_SUPERSESSION_DETECTION): the kit's deterministic
-    // lifecycle-detection pass runs over each vault's active base facts BEFORE answering. It
-    // MUTATES the vault ledger / the recall index / the archive, so it is only valid over vaults this
-    // run owns as real copies — require --answer-only + --source-vault-root and prep with
-    // `prepare_supersession_detection_vaults` below (never the symlinking answer-only prep).
+    // Supersession reconciliation is a Memory-owned lifecycle operation. The stable application
+    // facade does not expose it yet, so the benchmark must refuse instead of editing vault files.
     let supersession_detection = run_env_bool(&run, "MEMBENCH_SUPERSESSION_DETECTION", false);
     if supersession_detection {
-        if !run.answer_only || run.source_vault_root.is_none() {
-            anyhow::bail!(
-                "MEMBENCH_SUPERSESSION_DETECTION=1 requires --answer-only with --source-vault-root \
-                 (the detection pass mutates vault copies of an existing ingested baseline)"
-            );
-        }
-        eprintln!(
-            "[longmemeval] supersession-detection post-pass enabled (MEMBENCH_SUPERSESSION_DETECTION=1): vaults will be copied, not linked"
+        anyhow::bail!(
+            "MEMBENCH_SUPERSESSION_DETECTION is unavailable through the stable Memory application facade; Memory must expose a lifecycle reconciliation operation first"
         );
     }
-    membench::symbiotic_memory_adapter::set_supersession_detection(supersession_detection);
     // Resolve the kit's typed config (SYMBIOTIC_MEMORY__* from env-file/process) and install it —
     // the adapter stamps its sections on every engine it constructs. Overridden keys are echoed so
     // an arm's config surface is visible in the run log.
@@ -4178,14 +4178,17 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
             &kit_config.hash[..12]
         );
     }
-    membench::symbiotic_memory_adapter::set_kit_config(kit_config.config.clone());
+    membench::symbiotic_memory_adapter::set_kit_config(
+        kit_config.config.clone(),
+        kit_config.hash.clone(),
+    )?;
     if redo_active && run.answer_only {
         anyhow::bail!("a redo stage and --answer-only are mutually exclusive");
     }
     if redo_active && run.source_vault_root.is_none() {
         anyhow::bail!("a redo stage requires --source-vault-root");
     }
-    if let Some(source_vault_root) = &run.source_vault_root {
+    if run.source_vault_root.is_some() {
         if !run.answer_only && !redo_active {
             anyhow::bail!("--source-vault-root is only valid with --answer-only or a redo stage");
         }
@@ -4194,15 +4197,10 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
                 "--source-vault-root creates a fresh linked vault view and cannot be combined with --resume"
             );
         }
-        if redo_active {
-            // A redo stage COPIES the vault ledger (re-running mutates it) and omits the vector
-            // index so it rebuilds fresh at the current embedding dimensions.
-            prepare_re_embed_linked_vaults(&run.run_root, source_vault_root, &rows)?;
-        } else if supersession_detection {
-            prepare_supersession_detection_vaults(&run.run_root, source_vault_root, &rows)?;
-        } else {
-            prepare_answer_only_linked_vaults(&run.run_root, source_vault_root, &rows)?;
-        }
+        anyhow::ensure!(
+            run.answer_only,
+            "--source-vault-root is only valid with --answer-only"
+        );
     }
     let mut policy = config.recall.clone();
     policy.answerer_enabled = run.answerer;
@@ -4251,101 +4249,63 @@ fn run_symbiotic_memory_longmemeval_native(run: SymbioticMemoryCliRun) -> anyhow
     if let Some(parent) = hypotheses_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    if run.store == "zvec" {
-        // The kit has exactly one store since the §12 step-3 cutover; the
-        // marker stays as a tripwire against replaying pre-cutover run roots.
-        let zvec_marker = run.run_root.join(".store-zvec");
-        std::fs::write(&zvec_marker, "zvec\n")?;
-        let embedder_factory = provider_runtime.embedding_factory(&run)?;
-        let distiller_factory = provider_runtime.distiller_factory(&run)?;
-        let answer_factory = provider_runtime.answer_factory(&run)?;
-        let planner_factory = provider_runtime.query_planner_factory(&run)?;
-        let reranker = provider_runtime.reranker(&run)?;
-        if scope == membench::benchmark::HaystackScope::SharedCorpus {
-            let corpus_keys: BTreeSet<_> = shared_questions
-                .iter()
-                .map(|question| question.corpus_key.clone())
-                .collect();
-            let mut corpora = Vec::with_capacity(corpus_keys.len());
-            for corpus_key in corpus_keys {
-                let record = loader.corpus_record(&run.dataset, &corpus_key)?;
-                corpora.push((
-                    corpus_key,
-                    membench::symbiotic_memory_adapter::longmemeval_to_source(&record),
-                ));
-            }
-            runtime.block_on(
-                membench::symbiotic_memory_adapter::run_shared_corpus_with_planner(
-                    corpora,
-                    shared_questions,
-                    &run.run_root,
-                    move || embedder_factory(),
-                    move || distiller_factory(),
-                    move || answer_factory(),
-                    planner_factory,
-                    reranker,
-                    memory_trace_sink,
-                    policy,
-                    hypotheses_path.clone(),
-                    adapter_ingest_diagnostic_mode(&run),
-                ),
-            )?;
-        } else {
-            let consolidator_factory = provider_runtime.consolidator_factory(&run)?;
-            if run.consolidate_briefs && consolidator_factory.is_none() {
-                anyhow::bail!(
-                    "--consolidate-briefs requires a truthy MEMBENCH_CONSOLIDATOR (for example `llm`); refusing a run whose manifest could never complete"
-                );
-            }
-            let answer_retry_factory = provider_runtime.answer_retry_factory(&run)?;
-            runtime.block_on(
-                membench::symbiotic_memory_adapter::run_longmemeval_vault_with_planner(
-                    &rows,
-                    &run.run_root,
-                    move || embedder_factory(),
-                    move || distiller_factory(),
-                    consolidator_factory,
-                    move || answer_factory(),
-                    answer_retry_factory,
-                    planner_factory,
-                    reranker,
-                    Some(provider_runtime.debug_metadata(&run)),
-                    memory_trace_sink,
-                    policy,
-                    hypotheses_path.clone(),
-                    run.routed,
-                    run.answer_only,
-                    run.consolidate_briefs,
-                    effective_stop_after_raw_embed(&run),
-                    adapter_ingest_diagnostic_mode(&run),
-                    Some(workflow_max_in_flight),
-                    run.resume,
-                ),
-            )?;
-        }
-    } else if run.store == "memory" {
-        if run.answer_only || run.consolidate_briefs || run.routed || run.score {
-            anyhow::bail!("--store memory only supports simple unscored slice runs");
-        }
-        let embedder_factory = provider_runtime.embedding_factory(&run)?;
-        let distiller_factory = provider_runtime.distiller_factory(&run)?;
-        let answer_factory = provider_runtime.answer_factory(&run)?;
-        runtime.block_on(membench::symbiotic_memory_adapter::run_longmemeval_slice(
-            &rows,
-            symbiotic_memory::storage::InMemoryStore::default,
-            move || embedder_factory(),
-            move || distiller_factory(),
-            move || answer_factory(),
+    anyhow::ensure!(
+        run.store == "zvec",
+        "storage selection is not part of the stable Memory application facade; use the default Memory engine"
+    );
+    anyhow::ensure!(
+        scope == membench::benchmark::HaystackScope::PerQuestion,
+        "shared-corpus execution is not yet exposed by the Memory application facade adapter"
+    );
+    anyhow::ensure!(
+        !run.consolidate_briefs
+            && !run_env_value(&run, "MEMBENCH_CONSOLIDATOR").is_some_and(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "llm" | "on" | "reweave" | "true" | "1"
+                )
+            }),
+        "brief consolidation is not part of the stable Memory application facade"
+    );
+    anyhow::ensure!(
+        !run.routed,
+        "benchmark-owned routed recall is unavailable through the stable Memory application facade"
+    );
+    anyhow::ensure!(
+        !role_has_override(&run, "ANSWER_RETRY"),
+        "a separate answer-retry provider is not exposed by the stable Memory application facade"
+    );
+    let embedder_factory = provider_runtime.embedding_factory(&run)?;
+    let distiller_factory = provider_runtime.distiller_factory(&run)?;
+    let answer_factory = provider_runtime.answer_factory(&run)?;
+    let planner_factory = provider_runtime.query_planner_factory(&run)?;
+    let reranker = provider_runtime.reranker(&run)?;
+    runtime.block_on(membench::symbiotic_memory_adapter::run_longmemeval_facade(
+        &rows,
+        membench::symbiotic_memory_adapter::MemoryFacadeProviders {
+            embedder: embedder_factory,
+            distiller: distiller_factory,
+            chat: answer_factory,
+            planner: planner_factory,
+            reranker,
+            trace_sink: memory_trace_sink,
+        },
+        membench::symbiotic_memory_adapter::MemoryFacadeRun {
+            run_id: run.run_name.clone(),
+            run_root: run.run_root.clone(),
+            source_vault_root: run
+                .source_vault_root
+                .as_deref()
+                .map(resolve_source_vault_root),
+            out_path: hypotheses_path.clone(),
             policy,
-            hypotheses_path.clone(),
-        ))?;
-    } else {
-        anyhow::bail!(
-            "unknown --store value: {} (sqlite and zvec-hybrid were deleted in the kit's §12 \
-             step-3 cutover; use zvec or memory)",
-            run.store
-        );
-    }
+            debug_metadata: Some(provider_runtime.debug_metadata(&run)),
+            answer_only: run.answer_only,
+            ingest_mode: adapter_ingest_mode(&run),
+            max_in_flight: workflow_max_in_flight,
+            allow_terminal_reenqueue: run.resume || run.answer_only,
+        },
+    ))?;
     if run.score {
         if run.benchmark == membench::eligibility::LONGMEMEVAL_V2_TEXT_ID {
             score_v2_native(&run, &rows, &hypotheses_path)?;
@@ -4475,31 +4435,6 @@ fn preflight_v2_score_targets(
         }
     }
     Ok(())
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-#[derive(Clone)]
-struct DynDistiller(Arc<dyn symbiotic_memory::Distiller>);
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-#[async_trait::async_trait]
-impl symbiotic_memory::Distiller for DynDistiller {
-    async fn distill(
-        &self,
-        source: &symbiotic_memory::SourceDocument,
-        receipt: &symbiotic_memory::RawArchiveReceipt,
-    ) -> anyhow::Result<Vec<symbiotic_memory::MemoryFact>> {
-        self.0.distill(source, receipt).await
-    }
-
-    async fn distill_into(
-        &self,
-        source: &symbiotic_memory::SourceDocument,
-        receipt: &symbiotic_memory::RawArchiveReceipt,
-        sink: &mut dyn symbiotic_memory::ingest::DistillSink,
-    ) -> anyhow::Result<()> {
-        self.0.distill_into(source, receipt, sink).await
-    }
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
@@ -4645,161 +4580,6 @@ fn clear_answer_only_run_outputs(run_root: &Path) -> anyhow::Result<()> {
     ] {
         remove_path_if_exists(&path)?;
     }
-    Ok(())
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-/// Like `prepare_answer_only_vaults`, but for re-embedding: collections are
-/// COPIED (re-embedding mutates them via `upsert_facts`, so sharing would
-/// corrupt the frozen source baseline). NOTE: re-embedding to a DIFFERENT
-/// dimensionality is not possible in place — the store refuses a dimension
-/// mismatch loudly; re-ingest (or reindex-from-L0) into a fresh root instead.
-fn prepare_re_embed_linked_vaults(
-    run_root: &Path,
-    source_vault_root: &Path,
-    rows: &[membench::symbiotic_memory_adapter::LongMemEvalRecord],
-) -> anyhow::Result<()> {
-    let source_vault_root = resolve_source_vault_root(source_vault_root);
-    if !source_vault_root.is_dir() {
-        anyhow::bail!(
-            "source vault root does not exist: {}",
-            source_vault_root.display()
-        );
-    }
-    let target_vault_root = run_root.join("vaults");
-    std::fs::create_dir_all(&target_vault_root)?;
-    for row in rows {
-        let source_vault = source_vault_root.join(&row.question_id);
-        let target_vault = target_vault_root.join(&row.question_id);
-        prepare_vault_from_source(&source_vault, &target_vault, ArchiveTransfer::Link)?;
-    }
-    Ok(())
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-/// Like `prepare_answer_only_vaults`, but the supersession-detection
-/// post-pass mutates the collections AND the canonical Archive Markdown
-/// before answering, so BOTH are real copies — nothing may alias the frozen
-/// source baseline.
-fn prepare_supersession_detection_vaults(
-    run_root: &Path,
-    source_vault_root: &Path,
-    rows: &[membench::symbiotic_memory_adapter::LongMemEvalRecord],
-) -> anyhow::Result<()> {
-    let source_vault_root = resolve_source_vault_root(source_vault_root);
-    if !source_vault_root.is_dir() {
-        anyhow::bail!(
-            "source vault root does not exist: {}",
-            source_vault_root.display()
-        );
-    }
-    let target_vault_root = run_root.join("vaults");
-    std::fs::create_dir_all(&target_vault_root)?;
-    for row in rows {
-        let source_vault = source_vault_root.join(&row.question_id);
-        let target_vault = target_vault_root.join(&row.question_id);
-        prepare_vault_from_source(&source_vault, &target_vault, ArchiveTransfer::Copy)?;
-    }
-    Ok(())
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-/// Stage answer-only vaults from a frozen source baseline. Collections are
-/// COPIED, never linked: the engine takes exclusive per-collection file
-/// locks and may write on open (reconcile, journal, flush), so aliasing a
-/// shared baseline would both corrupt it and collide concurrent arms. The
-/// L0 archive is read-only in an answer pass and stays a symlink.
-fn prepare_answer_only_linked_vaults(
-    run_root: &Path,
-    source_vault_root: &Path,
-    rows: &[membench::symbiotic_memory_adapter::LongMemEvalRecord],
-) -> anyhow::Result<()> {
-    let source_vault_root = resolve_source_vault_root(source_vault_root);
-    if !source_vault_root.is_dir() {
-        anyhow::bail!(
-            "source vault root does not exist: {}",
-            source_vault_root.display()
-        );
-    }
-    let target_vault_root = run_root.join("vaults");
-    std::fs::create_dir_all(&target_vault_root)?;
-    for row in rows {
-        let source_vault = source_vault_root.join(&row.question_id);
-        let target_vault = target_vault_root.join(&row.question_id);
-        prepare_vault_from_source(&source_vault, &target_vault, ArchiveTransfer::Link)?;
-    }
-    Ok(())
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-enum ArchiveTransfer {
-    Link,
-    Copy,
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-/// Stage one vault: manifest copied, every `*.zvec` collection directory
-/// copied (see the aliasing rationale above), archive linked or copied.
-/// The bench does not know collection names — anything the store put next
-/// to the manifest that ends in `.zvec` travels.
-fn prepare_vault_from_source(
-    source_vault: &Path,
-    target_vault: &Path,
-    archive: ArchiveTransfer,
-) -> anyhow::Result<()> {
-    use symbiotic_memory::vault::VAULT_INDEX_DIR;
-
-    let source_manifest = source_vault.join("manifest.json");
-    if !source_manifest.is_file() || !source_vault.join(VAULT_INDEX_DIR).is_dir() {
-        anyhow::bail!(
-            "source vault {} is missing manifest.json or its main collection (pre-cutover \
-             sqlite vaults are not usable; re-ingest on a fresh root)",
-            source_vault.display()
-        );
-    }
-    std::fs::create_dir_all(target_vault)?;
-    remove_path_if_exists(&target_vault.join("manifest.json"))?;
-    remove_path_if_exists(&target_vault.join("archive"))?;
-    for entry in std::fs::read_dir(target_vault)? {
-        let path = entry?.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("zvec") {
-            remove_path_if_exists(&path)?;
-        }
-    }
-    std::fs::copy(&source_manifest, target_vault.join("manifest.json"))?;
-    for entry in std::fs::read_dir(source_vault)? {
-        let path = entry?.path();
-        if path.is_dir() && path.extension().and_then(|e| e.to_str()) == Some("zvec") {
-            let name = path.file_name().expect("collection dir name");
-            copy_dir_recursive(&path, &target_vault.join(name))?;
-        }
-    }
-    let source_archive = source_vault.join("archive");
-    if source_archive.exists() {
-        match archive {
-            ArchiveTransfer::Link => link_path(&source_archive, &target_vault.join("archive"))?,
-            ArchiveTransfer::Copy => {
-                copy_dir_recursive(&source_archive, &target_vault.join("archive"))?
-            }
-        }
-    }
-    Ok(())
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-#[cfg(unix)]
-fn link_path(source: &Path, target: &Path) -> anyhow::Result<()> {
-    std::os::unix::fs::symlink(source, target)?;
-    Ok(())
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-#[cfg(not(unix))]
-fn link_path(source: &Path, target: &Path) -> anyhow::Result<()> {
-    if source.is_dir() {
-        anyhow::bail!("directory vault links require a Unix-like filesystem");
-    }
-    std::fs::hard_link(source, target)?;
     Ok(())
 }
 
@@ -5203,10 +4983,10 @@ impl ProviderRuntime {
     fn distiller_factory(
         &self,
         run: &SymbioticMemoryCliRun,
-    ) -> anyhow::Result<Arc<dyn Fn() -> DynDistiller + Send + Sync>> {
+    ) -> anyhow::Result<Arc<dyn Fn() -> Arc<dyn symbiotic_memory::Distiller> + Send + Sync>> {
         match run.distiller.as_str() {
             "heuristic" => Ok(Arc::new(|| {
-                DynDistiller(Arc::new(symbiotic_memory::PassthroughDistiller))
+                Arc::new(symbiotic_memory::PassthroughDistiller)
             })),
             "llm" => {
                 let prompt = load_memory_prompt(run, &run.distill_prompt)?;
@@ -5234,54 +5014,11 @@ impl ProviderRuntime {
                     if let Some(embedder_factory) = &boundary_embedder_factory {
                         windowed = windowed.with_boundary_embedder(embedder_factory());
                     }
-                    DynDistiller(Arc::new(windowed))
+                    Arc::new(windowed) as Arc<dyn symbiotic_memory::Distiller>
                 }))
             }
             other => anyhow::bail!("unknown --distiller value: {other}; expected heuristic or llm"),
         }
-    }
-
-    /// Optional LLM consolidation ("reweave") pass that runs after distill+embed and synthesizes
-    /// derived memory cards (itemized count/list ledgers, temporal anchors, current-state). Enabled
-    /// with `MEMBENCH_CONSOLIDATOR=llm`. Defaults to the distill chat binding; tune via the
-    /// `CONSOLIDATE` role env (e.g. `MEMBENCH_CONSOLIDATE_THINKING`, `MEMBENCH_CONSOLIDATE_MODEL`).
-    fn consolidator_factory(
-        &self,
-        run: &SymbioticMemoryCliRun,
-    ) -> anyhow::Result<Option<Arc<dyn Fn() -> Arc<dyn symbiotic_memory::Distiller> + Send + Sync>>>
-    {
-        let enabled = run_env_value(run, "MEMBENCH_CONSOLIDATOR")
-            .map(|value| {
-                matches!(
-                    value.trim().to_ascii_lowercase().as_str(),
-                    "llm" | "on" | "reweave" | "true" | "1"
-                )
-            })
-            .unwrap_or(false);
-        if !enabled {
-            return Ok(None);
-        }
-        let prompt = load_memory_prompt(run, "reweave")?;
-        let chat_factory = self.chat_factory(run, "CONSOLIDATE", &self.config.providers.distill)?;
-        let kit_distill = membench::symbiotic_memory_adapter::kit_config()
-            .distill
-            .clone();
-        // Reweave window size comes from the resolved kit config
-        // (`distill.consolidate_turns_per_window`; 0 = the bench default of 64).
-        let turns_per_window = Some(kit_distill.consolidate_turns_per_window)
-            .filter(|turns| *turns > 0)
-            .unwrap_or(64);
-        Ok(Some(Arc::new(move || {
-            let llm = symbiotic_memory::LlmDistiller::new(chat_factory(), prompt.clone())
-                .with_distill_config(kit_distill.clone());
-            // The reweave pass keeps its own window size — install the section
-            // first, then override the pass-specific turns.
-            Arc::new(
-                symbiotic_memory::WindowedDistiller::new(llm, turns_per_window)
-                    .with_distill_config(kit_distill.clone())
-                    .with_turns_per_window(turns_per_window),
-            ) as Arc<dyn symbiotic_memory::Distiller>
-        })))
     }
 
     fn answer_factory(
@@ -5298,22 +5035,6 @@ impl ProviderRuntime {
         self.chat_factory(run, "ANSWER", &self.config.providers.answer)
     }
 
-    fn answer_retry_factory(
-        &self,
-        run: &SymbioticMemoryCliRun,
-    ) -> anyhow::Result<
-        Option<Arc<dyn Fn() -> Arc<dyn symbiotic_memory::ChatProvider> + Send + Sync>>,
-    > {
-        if !run.answerer || !role_has_override(run, "ANSWER_RETRY") {
-            return Ok(None);
-        }
-        Ok(Some(self.chat_factory(
-            run,
-            "ANSWER_RETRY",
-            &self.config.providers.answer,
-        )?))
-    }
-
     /// Builds the cross-encoder reranker (ON by default — part of the owner-default stack;
     /// disable per-run with MEMBENCH_RERANK=0). Recall retrieves a wide embedding candidate set
     /// and the reranker re-orders it to the answer top-k, recovering evidence (e.g. itemized
@@ -5322,6 +5043,9 @@ impl ProviderRuntime {
         &self,
         run: &SymbioticMemoryCliRun,
     ) -> anyhow::Result<membench::symbiotic_memory_adapter::RerankCascade> {
+        if run.ephemeral_smoke_run {
+            return Ok(Default::default());
+        }
         let enabled = run_env_value(run, "MEMBENCH_RERANK")
             .map(|value| {
                 matches!(
@@ -5408,7 +5132,7 @@ impl ProviderRuntime {
         &self,
         run: &SymbioticMemoryCliRun,
     ) -> anyhow::Result<
-        Option<Arc<dyn Fn() -> Arc<dyn symbiotic_memory::recall::QueryPlanner> + Send + Sync>>,
+        Option<Arc<dyn Fn() -> Arc<dyn symbiotic_memory::QueryPlanner> + Send + Sync>>,
     > {
         if run.query_planner.as_deref() != Some("flash") {
             return Ok(None);
@@ -5416,9 +5140,8 @@ impl ProviderRuntime {
         let adapter = self.role_adapter(run, "QUERY_PLANNER", &self.config.providers.query_planner);
         let chat_factory = self.chat_factory(run, "QUERY_PLANNER", &adapter)?;
         Ok(Some(Arc::new(move || {
-            Arc::new(symbiotic_memory::recall::ChatQueryPlanner::new(
-                chat_factory(),
-            )) as Arc<dyn symbiotic_memory::recall::QueryPlanner>
+            Arc::new(symbiotic_memory::ChatQueryPlanner::new(chat_factory()))
+                as Arc<dyn symbiotic_memory::QueryPlanner>
         })))
     }
 
@@ -7325,7 +7048,7 @@ fn run_env_value(run: &SymbioticMemoryCliRun, key: &str) -> Option<String> {
 #[cfg(feature = "symbiotic-memory-adapter")]
 fn resolve_kit_config(
     run: &SymbioticMemoryCliRun,
-) -> anyhow::Result<symbiotic_memory_config::Resolved> {
+) -> anyhow::Result<symbiotic_memory::profile::Resolved> {
     let mut env: Vec<(String, String)> = Vec::new();
     if let Some(env_file) = run.env_file.clone().or_else(|| default_env_file(run)) {
         if let Ok(pairs) = load_env_file(&env_file) {
@@ -7338,8 +7061,8 @@ fn resolve_kit_config(
     }
     // Process env after the file so equal keys resolve to the process value
     // (later pairs win inside the resolver's env layer).
-    env.extend(symbiotic_memory_config::ConfigLayers::env_from_process());
-    symbiotic_memory_config::resolve(&symbiotic_memory_config::ConfigLayers {
+    env.extend(symbiotic_memory::profile::ConfigLayers::env_from_process());
+    symbiotic_memory::profile::resolve(&symbiotic_memory::profile::ConfigLayers {
         file: None,
         env,
         flags: Vec::new(),
@@ -7370,6 +7093,9 @@ fn effective_stop_after_raw_embed(run: &SymbioticMemoryCliRun) -> bool {
 /// `build_reranker()` so the run record reports the same model the recall engine actually used.
 /// Returns `{ "enabled": false }` when rerank is off.
 fn resolved_rerank_params(run: &SymbioticMemoryCliRun) -> serde_json::Value {
+    if run.ephemeral_smoke_run {
+        return json!({ "enabled": false, "reason": "local-smoke" });
+    }
     let enabled = run_env_value(run, "MEMBENCH_RERANK")
         .map(|value| {
             matches!(
@@ -7427,14 +7153,12 @@ fn normalize_ingest_diagnostic(value: String) -> Option<String> {
 }
 
 #[cfg(feature = "symbiotic-memory-adapter")]
-fn adapter_ingest_diagnostic_mode(
-    run: &SymbioticMemoryCliRun,
-) -> symbiotic_memory::IngestDiagnosticMode {
+fn adapter_ingest_mode(run: &SymbioticMemoryCliRun) -> symbiotic_memory::MemoryIngestMode {
     match effective_ingest_diagnostic(run).as_deref() {
-        Some("raw-embed") => symbiotic_memory::IngestDiagnosticMode::RawEmbedOnly,
-        Some("distill") => symbiotic_memory::IngestDiagnosticMode::DistillOnly,
-        Some("raw-embed-distill") => symbiotic_memory::IngestDiagnosticMode::RawEmbedAndDistill,
-        _ => symbiotic_memory::IngestDiagnosticMode::None,
+        Some("raw-embed") => symbiotic_memory::MemoryIngestMode::RawEmbedOnly,
+        Some("distill") => symbiotic_memory::MemoryIngestMode::DistillOnly,
+        Some("raw-embed-distill") => symbiotic_memory::MemoryIngestMode::RawEmbedAndDistill,
+        _ => symbiotic_memory::MemoryIngestMode::Complete,
     }
 }
 
@@ -7916,102 +7640,6 @@ mod tests {
         assert_eq!(owner["pid"].as_u64(), Some(std::process::id() as u64));
     }
 
-    #[cfg(all(feature = "symbiotic-memory-adapter", unix))]
-    #[test]
-    fn prepares_answer_only_vaults_with_copied_collections_and_linked_archive() {
-        use membench::symbiotic_memory_adapter::{LongMemEvalMessage, LongMemEvalRecord};
-        use symbiotic_memory::vault::VAULT_INDEX_DIR;
-
-        let dir = tempfile::tempdir().unwrap();
-        let source_root = dir.path().join("source-vaults");
-        let run_root = dir.path().join("run");
-        let source_vault = source_root.join("q1");
-        std::fs::create_dir_all(source_vault.join("archive/memories")).unwrap();
-        std::fs::create_dir_all(source_vault.join(VAULT_INDEX_DIR)).unwrap();
-        std::fs::create_dir_all(source_vault.join("receipts.zvec")).unwrap();
-        std::fs::write(source_vault.join("manifest.json"), r#"{"source":"stable"}"#).unwrap();
-        std::fs::write(source_vault.join("archive/memories/fact.md"), "fact").unwrap();
-        std::fs::write(
-            source_vault.join(VAULT_INDEX_DIR).join("segment.dat"),
-            b"zvec-bytes",
-        )
-        .unwrap();
-        let rows = vec![LongMemEvalRecord {
-            question_id: "q1".to_string(),
-            question_type: Some("direct".to_string()),
-            question: "What happened?".to_string(),
-            answer: None,
-            answer_session_ids: Vec::new(),
-            question_date: None,
-            haystack_dates: Vec::new(),
-            haystack_session_ids: Vec::new(),
-            haystack_sessions: vec![vec![LongMemEvalMessage {
-                role: "user".to_string(),
-                content: "fact".to_string(),
-                has_answer: false,
-            }]],
-        }];
-
-        prepare_answer_only_linked_vaults(&run_root, &source_root, &rows).unwrap();
-
-        let target_vault = run_root.join("vaults/q1");
-        // Collections are REAL COPIES (the engine locks + may write on open);
-        // every *.zvec sibling travels, not just the main collection.
-        for collection in [VAULT_INDEX_DIR, "receipts.zvec"] {
-            let meta = std::fs::symlink_metadata(target_vault.join(collection)).unwrap();
-            assert!(meta.file_type().is_dir() && !meta.file_type().is_symlink());
-        }
-        assert_eq!(
-            std::fs::read(target_vault.join(VAULT_INDEX_DIR).join("segment.dat")).unwrap(),
-            b"zvec-bytes"
-        );
-        // The read-only L0 archive stays a symlink; the manifest is a copy.
-        assert!(
-            std::fs::symlink_metadata(target_vault.join("archive"))
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
-        assert!(
-            !std::fs::symlink_metadata(target_vault.join("manifest.json"))
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
-
-        // Re-staging replaces stale target collections with the source's.
-        std::fs::write(
-            target_vault.join(VAULT_INDEX_DIR).join("segment.dat"),
-            b"stale-target",
-        )
-        .unwrap();
-        prepare_answer_only_linked_vaults(&run_root, &source_root, &rows).unwrap();
-        assert_eq!(
-            std::fs::read(target_vault.join(VAULT_INDEX_DIR).join("segment.dat")).unwrap(),
-            b"zvec-bytes"
-        );
-
-        // Mutating the copy never reaches the frozen source baseline.
-        std::fs::write(target_vault.join("manifest.json"), r#"{"source":"target"}"#).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(source_vault.join("manifest.json")).unwrap(),
-            r#"{"source":"stable"}"#
-        );
-
-        // A pre-cutover sqlite vault (no main collection) refuses loudly.
-        let sqlite_vault = source_root.join("q2");
-        std::fs::create_dir_all(&sqlite_vault).unwrap();
-        std::fs::write(sqlite_vault.join("manifest.json"), "{}").unwrap();
-        std::fs::write(sqlite_vault.join("vault.db"), b"sqlite").unwrap();
-        let err = prepare_vault_from_source(
-            &sqlite_vault,
-            &run_root.join("vaults/q2"),
-            ArchiveTransfer::Link,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("pre-cutover"), "{err}");
-    }
-
     #[cfg(unix)]
     #[test]
     fn vault_store_save_copy_records_meta_and_resolves_by_name() {
@@ -8021,7 +7649,7 @@ mod tests {
         let vaults = run_root.join("vaults");
         std::fs::create_dir_all(vaults.join("q1")).unwrap();
         std::fs::create_dir_all(vaults.join("q2")).unwrap();
-        std::fs::write(vaults.join("q1/vault.db"), b"sqlite").unwrap();
+        std::fs::write(vaults.join("q1/opaque-memory-data"), b"opaque").unwrap();
         std::fs::write(
             run_root.join("benchmark-report.json"),
             r#"{"metrics":{"accuracy":{"value":0.874}}}"#,
@@ -8031,8 +7659,8 @@ mod tests {
         // COPY (default): store is populated, source survives intact.
         vault_save_in(&store, &run_root, Some("golden"), false).unwrap();
         let stored_vaults = store.join("golden/vaults");
-        assert!(stored_vaults.join("q1/vault.db").is_file());
-        assert!(vaults.join("q1/vault.db").is_file());
+        assert!(stored_vaults.join("q1/opaque-memory-data").is_file());
+        assert!(vaults.join("q1/opaque-memory-data").is_file());
         assert!(
             !std::fs::symlink_metadata(&vaults)
                 .unwrap()
@@ -8900,8 +8528,8 @@ mod tests {
             &[
                 "run",
                 "--release",
-                "--features",
-                "symbiotic-memory-adapter",
+                "--manifest-path",
+                "adapters/symbiotic-memory/Cargo.toml",
                 "--bin",
                 "membench",
                 "--",
