@@ -291,6 +291,8 @@ fn percentile(sorted: &[i64], pct: f64) -> Option<f64> {
 // unpriced until a historical USD snapshot is available. Never apply current rates to June runs.
 // https://api-docs.deepseek.com/news/news260813/
 // https://api-docs.deepseek.com/news/news260910/
+// Earliest dated snapshot we retain; this is not a claimed model-launch timestamp.
+const DEEPSEEK_HISTORICAL_SNAPSHOT_START: i64 = 1_782_172_800; // 2026-06-23 00:00 UTC
 const DEEPSEEK_AUGUST_TRANSITION: i64 = 1_786_896_000; // 2026-08-16 16:00 UTC
 const DEEPSEEK_FLASH_TRANSITION: i64 = 1_789_012_800; // 2026-09-10 04:00 UTC
 
@@ -317,7 +319,7 @@ fn deepseek_pricing(model: &str, timestamp: Option<&str>) -> Option<Pricing> {
             },
         });
     }
-    if at.timestamp() >= DEEPSEEK_AUGUST_TRANSITION {
+    if !(DEEPSEEK_HISTORICAL_SNAPSHOT_START..DEEPSEEK_AUGUST_TRANSITION).contains(&at.timestamp()) {
         return None;
     }
     let (input, cached, output) = match model {
@@ -848,11 +850,11 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
-            "{\"queue_id\":\"chat:deepseek:deepseek-v4-flash\",\"item_id\":\"a\",\"operation\":\"chat\",\"status\":\"queued\",\"attempt\":0,\"timestamp\":\"2026-01-01T00:00:00Z\"}\n\
-             {\"queue_id\":\"chat:deepseek:deepseek-v4-flash\",\"item_id\":\"a\",\"operation\":\"chat\",\"status\":\"running\",\"attempt\":1,\"timestamp\":\"2026-01-01T00:00:01Z\"}\n\
-             {\"queue_id\":\"chat:deepseek:deepseek-v4-flash\",\"item_id\":\"a\",\"operation\":\"chat\",\"status\":\"succeeded\",\"attempt\":1,\"timestamp\":\"2026-01-01T00:00:02Z\",\"usage\":{\"prompt_tokens\":100,\"cache_hit_tokens\":90,\"cache_miss_tokens\":10,\"completion_tokens\":4}}\n\
-             {\"queue_id\":\"embedding:gemini:gemini-embedding-2\",\"item_id\":\"b\",\"operation\":\"embedding\",\"status\":\"succeeded\",\"attempt\":1,\"timestamp\":\"2026-01-01T00:00:03Z\",\"usage\":{\"prompt_tokens\":1000,\"cache_miss_tokens\":1000,\"completion_tokens\":0}}\n\
-             {\"queue_id\":\"embedding:openrouter:qwen/qwen3-embedding-8b\",\"item_id\":\"c\",\"operation\":\"embedding\",\"status\":\"succeeded\",\"attempt\":1,\"timestamp\":\"2026-01-01T00:00:04Z\",\"input_units\":100000,\"request_units\":8}\n",
+            "{\"queue_id\":\"chat:deepseek:deepseek-v4-flash\",\"item_id\":\"a\",\"operation\":\"chat\",\"status\":\"queued\",\"attempt\":0,\"timestamp\":\"2026-06-23T00:00:00Z\"}\n\
+             {\"queue_id\":\"chat:deepseek:deepseek-v4-flash\",\"item_id\":\"a\",\"operation\":\"chat\",\"status\":\"running\",\"attempt\":1,\"timestamp\":\"2026-06-23T00:00:01Z\"}\n\
+             {\"queue_id\":\"chat:deepseek:deepseek-v4-flash\",\"item_id\":\"a\",\"operation\":\"chat\",\"status\":\"succeeded\",\"attempt\":1,\"timestamp\":\"2026-06-23T00:00:02Z\",\"usage\":{\"prompt_tokens\":100,\"cache_hit_tokens\":90,\"cache_miss_tokens\":10,\"completion_tokens\":4}}\n\
+             {\"queue_id\":\"embedding:gemini:gemini-embedding-2\",\"item_id\":\"b\",\"operation\":\"embedding\",\"status\":\"succeeded\",\"attempt\":1,\"timestamp\":\"2026-06-23T00:00:03Z\",\"usage\":{\"prompt_tokens\":1000,\"cache_miss_tokens\":1000,\"completion_tokens\":0}}\n\
+             {\"queue_id\":\"embedding:openrouter:qwen/qwen3-embedding-8b\",\"item_id\":\"c\",\"operation\":\"embedding\",\"status\":\"succeeded\",\"attempt\":1,\"timestamp\":\"2026-06-23T00:00:04Z\",\"input_units\":100000,\"request_units\":8}\n",
         )
         .unwrap();
 
@@ -1104,5 +1106,19 @@ mod tests {
         assert_eq!(rollup.cost_micro_usd, None);
         assert_eq!(rollup.unknown_cache_input_tokens, 1000000);
         assert_eq!(rollup.prompt_cache_misses, 0);
+    }
+    #[test]
+    fn june_snapshot_does_not_reprice_earlier_history() {
+        for model in ["deepseek-v4-flash", "deepseek-v4-pro"] {
+            for timestamp in ["2026-01-01T00:00:00Z", "2026-06-22T23:59:59Z"] {
+                let rollup = rollup_one(flash_trace(model, timestamp));
+                assert_eq!(rollup.cost_micro_usd, None, "{model} {timestamp}");
+                assert_eq!(rollup.unpriced_calls, 1);
+            }
+        }
+        assert_eq!(
+            rollup_one(flash_trace("deepseek-v4-flash", "2026-06-23T00:00:00Z")).cost_micro_usd,
+            Some(351400)
+        );
     }
 }

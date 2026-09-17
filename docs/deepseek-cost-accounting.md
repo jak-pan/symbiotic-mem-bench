@@ -15,8 +15,8 @@ cost always takes precedence over an estimate.
 
 | Interval/model | Uncached input / M | Cached input / M | Output / M |
 | --- | ---: | ---: | ---: |
-| June snapshot: V4 Flash, before August 16 16:00 UTC | $0.14 | $0.0028 | $0.28 |
-| June snapshot: V4 Pro, before August 16 16:00 UTC | $0.435 | $0.003625 | $0.87 |
+| V4 Flash: June 23 until August 16 16:00 UTC (exclusive) | $0.14 | $0.0028 | $0.28 |
+| V4 Pro: June 23 until August 16 16:00 UTC (exclusive) | $0.435 | $0.003625 | $0.87 |
 | Flash from September 10 04:00 UTC, peak | $0.30 | $0.006 | $1.20 |
 | Flash from September 10 04:00 UTC, off-peak | $0.15 | $0.003 | $0.60 |
 
@@ -25,6 +25,9 @@ the right boundary is excluded. Weekends and all other hours are off-peak.
 Current Flash rates cover `deepseek-flash`, `deepseek-v4-flash`, and
 `deepseek-v4-flash-vision-exp`. Historical June rates only cover the original V4
 Flash and Pro identifiers; new identifiers are not retroactively priced.
+The June snapshot is eligible from June 23 00:00 UTC, the earliest retained
+calendar-date snapshot, not an asserted launch or tariff-change instant. Earlier
+traces remain unpriced unless they carry a provider-reported cost.
 
 The prior V4 tariff changed on August 16. Its intervening USD snapshot is not in
 this catalog, so that interval is explicitly unpriced. Pro calls after that date
@@ -77,8 +80,34 @@ Clippy remains blocked by pre-existing warnings outside `src/cost.rs` in
 `live.rs`, `registry.rs`, and `runner.rs`; the changed module is warning-free.
 The checkout's existing lockfile also requires refresh against current local
 optional path dependencies. Validation used Cargo's local refresh without
-including that unrelated lockfile change in this patch. Optional adapter/server
-feature qualification and deployment are not claimed.
+including that unrelated lockfile change in this patch. This initial qualification
+covered core tests; feature-check follow-up is recorded below. Deployment is not
+claimed.
 
 The parent task owns delivery/review of this work branch. No main-branch merge or
 production deployment is part of this lane.
+
+
+## Review follow-up — September 17, 2026
+
+Historical pricing now has an explicit lower coverage boundary at the June 23
+snapshot date. A regression test first reproduced the incorrect January pricing,
+then passed with dates before that snapshot left unpriced. The synthetic queue
+fixture now uses a date inside the supported historical interval.
+
+All `ModelStat`, `RoleStat`, and `ModelTraceRollup` constructors were checked in
+both the clean branch and the ongoing dashboard checkout. The server/CLI on this
+branch serialize the rollup directly, so no constructor changes are needed.
+The ongoing protobuf dashboard constructs separate generated `pb::ModelStat`
+and `pb::ModelRollup` types from JSON; those types remain source-compatible and
+retain null cost, but their existing schema does not yet transport the new
+unknown-token/unpriced-call fields. Updating that unrelated in-progress schema
+belongs to its dashboard integration lane.
+
+`cargo check --release --offline --features server --bin membench-server` passed.
+The optional adapter check reached source and failed on unchanged API drift in
+`src/symbiotic_memory_adapter.rs`: removed `IngestDiagnosticMode`/`IngestPipeline`
+imports, removed `MemoryArchiveWriter`, and an obsolete third argument to
+`detect_and_apply_supersessions`. None of those files or dependency APIs were
+changed here. No constructor error was found. The final core suite passed all
+49 tests (14 cost tests), and changed-file formatting/diff checks passed.
