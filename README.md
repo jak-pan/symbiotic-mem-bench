@@ -436,7 +436,8 @@ Cost is derived from:
 - output tokens;
 - pricing table version used by the run.
 
-When a provider trace includes `cost_micro_usd`, membench uses that value. A local
+When trace usage includes `cost_micro_usd`, membench uses that reported value. Top-level
+provider-queue costs are producer estimates and are recalculated from the dated catalog. A local
 response-cache hit contributes **zero new provider cost**, even if its saved response still carries
 old usage or cost. Token totals describe the traces, including saved usage on response-cache hits;
 they are not a count of newly billed provider tokens.
@@ -449,7 +450,8 @@ June V4 traces retain the June snapshot. Unsupported historical intervals or mis
 remain unpriced instead of receiving today's rates. See [cost accounting](docs/deepseek-cost-accounting.md)
 for the rate boundaries and sources. Gemini embedding and OpenRouter catalog pricing remain supported.
 
-Missing or inconsistent cache counters are explicitly unknown, not cache misses.
+Missing or inconsistent numeric cache counters are explicitly unknown, not cache misses.
+State-only cache labels are not evidence because older emitters synthesize them from missing counters.
 `unknown_cache_input_tokens` records that input volume. When a cache discount exists and the split
 cannot be derived, the call stays unpriced. `unpriced_calls` identifies incomplete accounting at run,
 model and role level; `cost_micro_usd` is null if any call in that group is unpriced, so a partial sum

@@ -46,7 +46,9 @@ Sources checked September 17, 2026:
 ## Cache and incomplete accounting
 
 Provider prefix caching discounts input tokens. An explicit hit count or miss
-count plus the input total is sufficient to derive the other bucket. Missing or
+count plus the input total is sufficient to derive the other bucket. State-only
+`prompt_cache` labels are ignored because older normalized trace emitters derive
+`miss` from absent counters; numeric counters are required. Missing or
 contradictory counters stay unknown; they do not increment prompt-cache misses.
 `unknown_cache_input_tokens` exposes the unknown volume. A cache-discounted
 estimate requires a trustworthy split and complete token usage.
@@ -59,7 +61,11 @@ saved usage on local replays; they must not be read as newly billed token totals
 `unpriced_calls` is exposed at run, model, and role levels. If any call in a group
 is unpriced, that group's `cost_micro_usd` is null, rather than a misleading sum
 of only the priced calls. Reported costs retain precedence over missing usage or
-tariffs. Estimates retain their tariff source and the catalog version.
+tariffs. Estimates retain their tariff source and the catalog version. Top-level
+`cost_micro_usd` on provider-queue rows is a producer estimate from configured
+rates, not a provider receipt. The rollup recalculates it from timestamp and
+numeric token/cache counters; unsupported periods or incomplete evidence stay
+unpriced. Usage-level reported costs retain precedence.
 
 ## Verification and handoff — September 17, 2026
 
@@ -111,3 +117,15 @@ imports, removed `MemoryArchiveWriter`, and an obsolete third argument to
 `detect_and_apply_supersessions`. None of those files or dependency APIs were
 changed here. No constructor error was found. The final core suite passed all
 49 tests (14 cost tests), and changed-file formatting/diff checks passed.
+
+
+## Producer-provenance review — September 17, 2026
+
+Two additional real-shape regressions first reproduced misleading certainty:
+normalized traces labeled absent counters as `miss`, and queue traces supplied a
+top-level cost calculated from a potentially stale configured tariff. Cache
+splits now require numeric counters, and queue-level cost estimates are
+recalculated using this catalog instead of being marked provider-reported.
+Usage-level reported cost and zero new cost for local response replay retain
+precedence. The final core suite passed all 51 tests, including 16 cost tests.
+Changed-file formatting and diff checks passed. No provider call was needed.

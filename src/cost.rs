@@ -61,8 +61,6 @@ struct RawCache {
     #[serde(default)]
     response_cache: Option<String>,
     #[serde(default)]
-    prompt_cache: Option<String>,
-    #[serde(default)]
     cached_input_tokens: Option<u64>,
 }
 
@@ -437,6 +435,8 @@ fn estimate_cost_micro_usd(
 }
 
 // Missing or contradictory counters are unknown, never automatically a cache miss.
+// Normalized prompt_cache labels are not evidence: older emitters synthesize "miss"
+// from absent counters. Only numeric provider counters establish the split.
 fn cache_split(input: u64, usage: &RawUsage, cache: &RawCache) -> Option<(u64, u64)> {
     if let (Some(saved), Some(reported)) = (cache.cached_input_tokens, usage.cache_hit_tokens)
         && saved != reported
@@ -449,11 +449,6 @@ fn cache_split(input: u64, usage: &RawUsage, cache: &RawCache) -> Option<(u64, u
         (Some(hit), Some(miss)) if hit.checked_add(miss) == Some(input) => Some((hit, miss)),
         (Some(hit), None) if hit <= input => Some((hit, input - hit)),
         (None, Some(miss)) if miss <= input => Some((input - miss, miss)),
-        (None, None) => match cache.prompt_cache.as_deref() {
-            Some("miss") => Some((0, input)),
-            Some("hit") => Some((input, 0)),
-            _ => None,
-        },
         _ => None,
     }
 }
@@ -557,7 +552,9 @@ pub fn rollup_model_trace_file(path: &Path) -> Option<ModelTraceRollup> {
         let reported_cost = response_replayed
             .then_some(0)
             .or(usage.cost_micro_usd)
-            .or(trace.cost_micro_usd);
+            // Queue-level prices are estimates from the producer's configured tariff,
+            // not provider receipts; recalculate them using this dated catalog.
+            .or(trace.cost_micro_usd.filter(|_| trace.queue_id.is_none()));
         let pricing = pricing_for(&operator, &operation, &model, trace.timestamp.as_deref());
         let estimated_cost = reported_cost.or_else(|| {
             if operation == "rerank" {
@@ -1120,5 +1117,44 @@ mod tests {
             rollup_one(flash_trace("deepseek-v4-flash", "2026-06-23T00:00:00Z")).cost_micro_usd,
             Some(351400)
         );
+    }
+    #[test]
+    fn normalized_cache_labels_without_counters_do_not_establish_a_split() {
+        // Foundation emits these labels even when the provider omitted both counters.
+        for label in ["miss", "hit", "partial_hit"] {
+            let trace = serde_json::json!({
+                "model": {"operation":"chat", "operator":"deepseek", "model":"deepseek-flash"},
+                "timestamp":"2026-09-17T01:00:00Z",
+                "cache": {"response_cache":"miss", "prompt_cache":label,
+                          "cached_input_tokens":null},
+                "usage": {"input_tokens":1000000, "output_tokens":1000000,
+                          "reasoning_tokens":null, "media_units":null, "cost_micro_usd":null},
+                "outcome":"succeeded"
+            });
+            let rollup = rollup_one(trace);
+            assert_eq!(rollup.cost_micro_usd, None, "{label}");
+            assert_eq!(rollup.unknown_cache_input_tokens, 1000000);
+            assert_eq!(rollup.prompt_cache_misses, 0);
+            assert_eq!(rollup.prompt_cache_hits, 0);
+        }
+    }
+
+    #[test]
+    fn queue_estimated_cost_does_not_override_dated_provider_rates() {
+        let mut trace = serde_json::json!({
+            "queue_id":"chat:deepseek:deepseek-flash", "status":"succeeded",
+            "timestamp":"2026-09-17T01:00:00Z", "cost_micro_usd":351400,
+            "usage": {"prompt_tokens":1000000, "completion_tokens":1000000,
+                      "cache_hit_tokens":500000, "cache_miss_tokens":500000}
+        });
+        let rollup = rollup_one(trace.clone());
+        assert_eq!(rollup.cost_micro_usd, Some(1353000));
+        assert!(rollup.cost_estimated);
+        trace["timestamp"] = "".into();
+        assert_eq!(rollup_one(trace.clone()).cost_micro_usd, None);
+        trace["usage"]["cost_micro_usd"] = 12345.into();
+        let rollup = rollup_one(trace);
+        assert_eq!(rollup.cost_micro_usd, Some(12345));
+        assert!(!rollup.cost_estimated);
     }
 }
