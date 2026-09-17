@@ -76,6 +76,30 @@ struct RawUsage {
     cache_miss_tokens: Option<u64>,
     #[serde(default)]
     cost_micro_usd: Option<u64>,
+    #[serde(default)]
+    provider: Option<RawProviderUsage>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct RawProviderUsage {
+    #[serde(default)]
+    reported_cost_usd: Option<String>,
+}
+
+impl RawProviderUsage {
+    fn reported_cost_micro_usd(&self) -> Option<u64> {
+        let dollars = self
+            .reported_cost_usd
+            .as_deref()?
+            .trim()
+            .parse::<f64>()
+            .ok()?;
+        let micro_usd = (dollars * 1_000_000.0).round();
+        // The floating representation of u64::MAX rounds to 2^64, so the upper
+        // bound must be exclusive; casting first would silently saturate.
+        (dollars.is_finite() && dollars >= 0.0 && micro_usd < u64::MAX as f64)
+            .then_some(micro_usd as u64)
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -552,6 +576,7 @@ pub fn rollup_model_trace_file(path: &Path) -> Option<ModelTraceRollup> {
         let reported_cost = response_replayed
             .then_some(0)
             .or(usage.cost_micro_usd)
+            .or_else(|| usage.provider.as_ref()?.reported_cost_micro_usd())
             // Queue-level prices are estimates from the producer's configured tariff,
             // not provider receipts; recalculate them using this dated catalog.
             .or(trace.cost_micro_usd.filter(|_| trace.queue_id.is_none()));
@@ -1156,5 +1181,48 @@ mod tests {
         let rollup = rollup_one(trace);
         assert_eq!(rollup.cost_micro_usd, Some(12345));
         assert!(!rollup.cost_estimated);
+    }
+    #[test]
+    fn provider_decimal_receipt_is_reported_and_respects_cost_precedence() {
+        let mut trace = serde_json::json!({
+            "queue_id":"chat:unknown:unknown", "status":"succeeded",
+            "cost_micro_usd":351400,
+            "usage": {"provider": {"response_id":"synthetic-response", "served_model":"unknown",
+                       "created":1789600000, "reasoning_tokens":42,
+                       "reported_cost_usd":"0.00000349"}}
+        });
+        let rollup = rollup_one(trace.clone());
+        assert_eq!(rollup.cost_micro_usd, Some(3));
+        assert!(!rollup.cost_estimated);
+        assert_eq!(rollup.unpriced_calls, 0);
+        trace["usage"]["cost_micro_usd"] = 9.into();
+        assert_eq!(rollup_one(trace.clone()).cost_micro_usd, Some(9));
+        trace["cache"] = serde_json::json!({"response_cache":"hit"});
+        assert_eq!(rollup_one(trace).cost_micro_usd, Some(0));
+    }
+
+    #[test]
+    fn provider_decimal_receipt_rejects_invalid_costs_and_rounds_to_micro_usd() {
+        for (dollars, expected) in [
+            ("0", Some(0)),
+            ("0.00000049", Some(0)),
+            ("0.0000005", Some(1)),
+            ("0.1234567", Some(123457)),
+            ("1e-6", Some(1)),
+            ("NaN", None),
+            ("inf", None),
+            ("-0.01", None),
+            ("not-cost", None),
+            ("1e308", None),
+            ("18446744073709551616", None),
+        ] {
+            let rollup = rollup_one(serde_json::json!({
+                "queue_id":"chat:unknown:unknown", "status":"succeeded",
+                "usage":{"provider":{"reported_cost_usd":dollars}}
+            }));
+            assert_eq!(rollup.cost_micro_usd, expected, "{dollars}");
+            assert_eq!(rollup.calls, 1);
+            assert!(!rollup.cost_estimated);
+        }
     }
 }

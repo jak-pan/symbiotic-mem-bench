@@ -65,7 +65,13 @@ tariffs. Estimates retain their tariff source and the catalog version. Top-level
 `cost_micro_usd` on provider-queue rows is a producer estimate from configured
 rates, not a provider receipt. The rollup recalculates it from timestamp and
 numeric token/cache counters; unsupported periods or incomplete evidence stay
-unpriced. Usage-level reported costs retain precedence.
+unpriced. Usage-level reported costs retain precedence. The optional
+`usage.provider.reported_cost_usd` decimal string is accepted as a provider
+receipt after validation of finite, nonnegative, representable micro-USD. Values
+are rounded to the nearest micro-dollar. Source precedence is: local response
+replay zero; existing `usage.cost_micro_usd`; provider decimal receipt; legacy
+non-queue top-level cost; dated estimate. The shared adapter populates provider
+receipt metadata only from the provider's reported cost, never a queue estimate.
 
 ## Verification and handoff — September 17, 2026
 
@@ -129,3 +135,13 @@ recalculated using this catalog instead of being marked provider-reported.
 Usage-level reported cost and zero new cost for local response replay retain
 precedence. The final core suite passed all 51 tests, including 16 cost tests.
 Changed-file formatting and diff checks passed. No provider call was needed.
+
+
+## Shared provider metadata — September 17, 2026
+
+The cost parser now reads optional `Usage.provider.reported_cost_usd` emitted by
+the shared Memory adapter. Two regressions first failed before the parser change;
+all 53 core tests (18 cost tests) then passed. They verify metadata-only receipts
+without token usage, rounding, malformed/non-finite/negative/out-of-range values,
+existing micro-USD precedence, and replay zero. Missing optional metadata leaves
+old traces compatible. No paid API call was made.

@@ -436,7 +436,8 @@ Cost is derived from:
 - output tokens;
 - pricing table version used by the run.
 
-When trace usage includes `cost_micro_usd`, membench uses that reported value. Top-level
+When trace usage includes `cost_micro_usd`, membench uses that reported value. Otherwise,
+optional `usage.provider.reported_cost_usd` is validated and rounded to micro-USD. Top-level
 provider-queue costs are producer estimates and are recalculated from the dated catalog. A local
 response-cache hit contributes **zero new provider cost**, even if its saved response still carries
 old usage or cost. Token totals describe the traces, including saved usage on response-cache hits;
