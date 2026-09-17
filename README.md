@@ -501,18 +501,31 @@ Cost is derived from:
 - output tokens;
 - pricing table version used by the run.
 
-When a provider trace includes `cost_micro_usd`, membench uses the provider-reported value. When
-the trace has token buckets but no explicit cost, membench estimates cost from the built-in pricing
-catalog and marks the rollup as estimated. The current built-in catalog is
-`official-pricing-2026-06-19`:
+When trace usage includes `cost_micro_usd`, membench uses that reported value. Otherwise,
+optional `usage.provider.reported_cost_usd` (or normalized `metadata.provider.reported_cost_usd`)
+is validated and rounded to micro-USD. Conflicting copies remain unpriced. Top-level
+provider-queue costs are producer estimates and are recalculated from the dated catalog. A local
+response-cache hit (`usage.response_cache_hit` or `cache.response_cache: "hit"`) contributes
+**zero new provider cost**, even if its saved response still carries
+old usage or cost. Token totals describe the traces, including saved usage on response-cache hits;
+they are not a count of newly billed provider tokens.
 
-- DeepSeek API official pricing for `deepseek-v4-flash` and `deepseek-v4-pro`, including cache-hit,
-  cache-miss, and output-token prices.
-- Gemini API official pricing for `gemini-embedding-2` standard and batch text-input prices.
+Otherwise, complete token usage is priced using the versioned built-in catalog
+`official-pricing-2026-09-17`, and the result is marked estimated. Native DeepSeek Flash pricing
+uses the provider-created timestamp when available, otherwise the trace's RFC 3339 timestamp,
+to select the UTC peak/off-peak rates and historical tariff. The returned provider model takes
+precedence for pricing; requested model identity remains unchanged in reports.
+The current `deepseek-flash` name and its two retired Flash aliases share the September 10 tariff;
+June V4 traces retain the June snapshot. Unsupported historical intervals or missing timestamps
+remain unpriced instead of receiving today's rates. See [cost accounting](docs/deepseek-cost-accounting.md)
+for the rate boundaries and sources. Gemini embedding and OpenRouter catalog pricing remain supported.
 
-Runs without token usage for a model stay unpriced for that model. New Symbiotic Memory Gemini
-embedding traces should include input tokens from Gemini `countTokens`; old traces may remain
-unpriced because they recorded queue events before embedding token usage existed.
+Missing or inconsistent numeric cache counters are explicitly unknown, not cache misses.
+State-only cache labels are not evidence because older emitters synthesize them from missing counters.
+`unknown_cache_input_tokens` records that input volume. When a cache discount exists and the split
+cannot be derived, the call stays unpriced. `unpriced_calls` identifies incomplete accounting at run,
+model and role level; `cost_micro_usd` is null if any call in that group is unpriced, so a partial sum
+cannot appear as the total. Unknown usage is never converted into a zero-cost estimate.
 
 Queue traces should preserve timestamps for queued, running, succeeded, and failed events. The crate
 can derive queue wait time, run time, total time, attempts, and final status by grouping events by
