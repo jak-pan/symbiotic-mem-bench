@@ -73,7 +73,6 @@ case "$profile" in
     operator="${MEMBENCH_DISTILL_OPERATOR:-deepseek}"
     model="${MEMBENCH_DISTILL_MODEL:-deepseek-v4-flash}"
     embedder="${MEMBENCH_EMBEDDER:-hash}"
-    store="${MEMBENCH_STORE:-sqlite}"
     ;;
   *)
     echo "unknown profile: $profile" >&2
@@ -158,7 +157,6 @@ SYMBIOTIC_MEMORY__TRANSPORT__HTTP1_ONLY="$http1_bool" \
   --sample "$sample" \
   --distiller llm \
   --embedder "$embedder" \
-  --store "$store" \
   --fresh \
   --ingest-diagnostic distill \
   --no-answerer \

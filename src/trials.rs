@@ -432,20 +432,22 @@ fn debug_summary(run_root: &Path, row: Option<&QuestionRow>) -> Option<Value> {
     let debug_json = std::fs::read_to_string(&debug_path).ok()?;
     let parsed: Value = serde_json::from_str(&debug_json).ok()?;
     let sha256 = Sha256::digest(debug_json.as_bytes());
+    let planner = nested(&parsed, &["recall", "query_planner_call"])
+        .or_else(|| nested(&parsed, &["recall", "planner"]));
+    let answer_calls = nested(&parsed, &["recall", "answerer_calls"])
+        .or_else(|| nested(&parsed, &["recall", "answer_calls"]));
     Some(json!({
         "path": portable_path(&debug_path),
         "sha256": format!("{sha256:x}"),
-        "query_planner_call": hash_if_present(&parsed, &["recall", "query_planner_call"]),
+        "query_planner_call": planner.map(|value| hash_text(&value.to_string())),
         "retrieval_query_count": nested(&parsed, &["recall", "retrieval_queries"]).and_then(Value::as_array).map(Vec::len),
-        "answerer_call_count": nested(&parsed, &["recall", "answerer_calls"]).and_then(Value::as_array).map(Vec::len),
-        "answer_system_prompt_hash": nested(&parsed, &["recall", "answerer_calls"])
-            .and_then(Value::as_array)
+        "answerer_call_count": answer_calls.and_then(Value::as_array).map(Vec::len),
+        "answer_system_prompt_hash": answer_calls.and_then(Value::as_array)
             .and_then(|calls| calls.first())
             .and_then(|call| call.get("system_prompt"))
             .and_then(Value::as_str)
             .map(hash_text),
-        "answer_prompt_hash": nested(&parsed, &["recall", "answerer_calls"])
-            .and_then(Value::as_array)
+        "answer_prompt_hash": answer_calls.and_then(Value::as_array)
             .and_then(|calls| calls.first())
             .and_then(|call| call.get("prompt"))
             .and_then(Value::as_str)
@@ -468,10 +470,6 @@ fn nested<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
         cursor = cursor.get(*key)?;
     }
     Some(cursor)
-}
-
-fn hash_if_present(value: &Value, path: &[&str]) -> Option<String> {
-    nested(value, path).map(|value| hash_text(&value.to_string()))
 }
 
 fn hash_text(value: &str) -> String {

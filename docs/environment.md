@@ -58,11 +58,13 @@ intentionally testing a different environment.
 
 ## Dependency Sources
 
-The Symbiotic Memory adapter dependencies (`symbiotic-memory`, `symbiotic-memory-config`,
-`symbiotic-core`, `symbiotic-queue`) are pinned to exact Git revisions in `Cargo.toml`. The neutral
+The Symbiotic Memory adapter dependencies (`symbiotic-memory`, `symbiotic-core`,
+`symbiotic-queue`) are pinned to exact Git revisions in `Cargo.toml`. The neutral
 core and `server` feature do not activate the adapter dependencies and build from a clean clone.
-The two Symbiotic Memory crates currently live in the private
-`symbiotic-sh/symbiotic-memory` repository, so an adapter build needs read access to that repository.
+Symbiotic Memory currently lives in the private `symbiotic-sh/symbiotic-memory`
+repository, so an adapter build needs read access to that repository. Its public
+`profile` re-export supplies layered configuration; consumers must not depend on
+the implementation config crate directly.
 
 The pinned APIs are complete and build directly without a sibling override. For intentional
 co-development only, a gitignored `.cargo/config.toml` can point those pins at sibling checkouts:
@@ -70,7 +72,6 @@ co-development only, a gitignored `.cargo/config.toml` can point those pins at s
 ```toml
 [patch."ssh://git@github.com/symbiotic-sh/symbiotic-memory"]
 symbiotic-memory = { path = "../symbiotic-memory" }
-symbiotic-memory-config = { path = "../symbiotic-memory/config" }
 
 [patch."https://github.com/symbiotic-sh/symbiotic-foundation"]
 symbiotic-core = { path = "../symbiotic-foundation/crates/symbiotic-core" }

@@ -88,8 +88,9 @@ owner-default stack is: `llm` distill (DeepSeek Flash), OpenRouter `qwen/qwen3-e
 embeddings at 1024 dims (`--embedder openrouter` is the default; Gemini embeddings are NOT the
 default), cross-encoder reranking ON by default with the free
 `nvidia/llama-nemotron-rerank-vl-1b-v2:free` model (`MEMBENCH_RERANK=0` disables it), the
-`zvec-hybrid` store, unified answering, DeepSeek Flash query planning, and judge scoring. Reweave
-brief generation is opt-in (`MEMBENCH_CONSOLIDATOR=llm`), not a default. The native adapter owns
+Memory-selected persistent backend, unified answering, DeepSeek Flash query planning, and judge
+scoring. The stable application facade does not expose benchmark-owned reweave/redo operations;
+those modes fail before provider calls. The native adapter owns
 the run state, provider queues, response caches, hypotheses, verdicts, score summaries, and
 normalized run report.
 
@@ -223,8 +224,9 @@ runs/symbiotic-memory/long-mem-eval/500/20260617-153012-a1b2c3d4/
 Native runs re-ingest by default. `membench` passes `--fresh` for normal native benchmark runs so
 the run root is reset and every question is ingested from source again. Reuse is opt-in with
 `--resume` or `--answer-only`. For cheap answer-only comparisons, use `--source-vault-root
-runs/inputs/vault-roots/.../vaults`; the rerun links immutable `memory.sqlite` and `archive/`
-state, copies mutable manifests, and writes fresh answer/score artifacts in its own run root.
+runs/inputs/vault-roots/.../vaults`; Memory opens each existing per-question state directory through
+its normal application facade. Membench does not copy, link, or inspect backend files. Fresh
+answer/score artifacts stay in the new run root.
 
 Relative `--registry-root`, `--run-root`, and `save-record --records-root` paths resolve from this
 repo root, not from the caller's current working directory.
@@ -435,12 +437,13 @@ Dashboard live monitor semantics:
   traces. It is the source-backed extractive brief pass, not a benchmark-only step.
 - The Memory Pipeline label `prompt plan` corresponds to `query_plan`. It is the optional
   query-planner output from the memory engine, not a duplicate paid planner call from the benchmark.
-  Trace metrics keep prompt/response hashes and the question-debug path; the raw planner
+  Trace metrics keep prompt/response hashes and the question-debug path; the facade's full
   system prompt, user prompt, response text, retrieval queries, and scored search responses live in
   that question-debug bundle. In the dashboard, open `QUESTIONS` and select a row to inspect those
   details without running another model call.
 - Recall-native stages now include `answer embed`, `fact search`, `raw search`, `support`, and
-  `answer ctx`. Those events are emitted by `RecallEngine`, not synthesized by the benchmark.
+  `answer ctx`. Those events are emitted by Memory through its public trace sink, not synthesized
+  by the benchmark.
 
 Default freshness rule:
 
@@ -449,7 +452,7 @@ normal native run  -> fresh re-ingest
 --resume           -> continue an interrupted run root
 --answer-only      -> re-answer from an existing ingested run root
 --source-vault-root runs/inputs/vault-roots/.../vaults
-                   -> link immutable vault state for cheap isolated answer-only reruns
+                   -> open existing per-question Memory state for answer-only reruns
 ```
 
 Answer-only native runs default to a `workflow_max_in_flight` of 500 so recall/answer comparisons

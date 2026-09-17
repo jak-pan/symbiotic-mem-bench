@@ -13,6 +13,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+./scripts/check-memory-adapter-boundary.sh
+
 python3 - <<'PY'
 import re
 import sys

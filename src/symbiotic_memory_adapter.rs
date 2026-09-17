@@ -1,111 +1,51 @@
+//! Symbiotic Memory application-facade adapter.
+//!
+//! This module deliberately knows nothing about Memory's stores, manifests,
+//! indexes, or pipeline implementation. It supplies providers and benchmark
+//! records to `MemoryEngine`, then persists only facade results and diagnostics.
+
 use chrono::{DateTime, Local, NaiveDateTime, SecondsFormat, TimeZone, Utc};
-#[cfg(feature = "symbiotic-memory-adapter")]
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-#[cfg(feature = "symbiotic-memory-adapter")]
-use std::collections::BTreeMap;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-#[cfg(feature = "symbiotic-memory-adapter")]
 use std::io::{BufRead, Write};
-use std::path::Path;
-#[cfg(feature = "symbiotic-memory-adapter")]
-use std::path::PathBuf;
-#[cfg(feature = "symbiotic-memory-adapter")]
-use std::sync::{Arc, Mutex};
-#[cfg(feature = "symbiotic-memory-adapter")]
-use std::time::{Duration, Instant};
-#[cfg(feature = "symbiotic-memory-adapter")]
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+
 use symbiotic_core::{QueueId, QueueItemId};
-#[cfg(feature = "symbiotic-memory-adapter")]
-use symbiotic_memory::ingest::raw_unit_fingerprint;
-use symbiotic_memory::ingest::{Distiller, IngestDiagnosticMode, IngestPipeline};
-#[cfg(feature = "symbiotic-memory-adapter")]
-use symbiotic_memory::manifest::{MemoryRunManifest, MemoryStage, stable_hash_json};
-use symbiotic_memory::providers::{ChatProvider, EmbeddingProvider, Reranker};
-use symbiotic_memory::recall::RecallEngine;
-#[cfg(feature = "symbiotic-memory-adapter")]
-use symbiotic_memory::recall::{QueryPlanner, RecallAnswerDebug, RecallTraceContext};
-use symbiotic_memory::storage::MemoryStore;
-#[cfg(feature = "symbiotic-memory-adapter")]
-use symbiotic_memory::trace::{
-    MemoryTraceEvent, MemoryTraceEventKind, MemoryTraceOperation, MemoryTraceSink,
+
+use symbiotic_memory::{
+    Actor, AllowAll, ArchiveMode, ChatProvider, Distiller, EmbeddingProvider,
+    MemoryDetailedIngestRequest, MemoryDetailedRecallRequest, MemoryDiagnosticMode, MemoryEngine,
+    MemoryEngineConfig, MemoryEngineServices, MemoryIngestExecutionStatus, MemoryIngestMode,
+    MemoryIngestRequest, MemoryOperationContext, MemoryProviders, MemoryRecallDiagnostics,
+    MemoryRecallRequest, MemorySessionContext, MemoryTraceSink, MemoryVault, QueryPlanner,
+    RecallPolicy, Reranker, Scope, Sensitivity, SourceDocument, SourceTurn,
 };
-#[cfg(feature = "symbiotic-memory-adapter")]
-use symbiotic_memory::types::{SourceDocument, SourceTurn};
-#[cfg(feature = "symbiotic-memory-adapter")]
 use symbiotic_queue::{
     EnqueueDisposition, EnqueueRequest, QueueBackend, QueueError, QueueItem,
     QueueStatus as DurableQueueStatus, SqliteQueue,
 };
 
-/// The reranker configuration threaded from the harness into the `RecallEngine`. Carries the main
-/// (stage-2) reranker plus an optional cheap stage-1 prefilter reranker and its top-x cut. Built by
-/// `membench`'s `reranker()` from the `MEMBENCH_RERANK*` env knobs; a `None` cascade (or a cascade with
-/// `main == None`) means rerank is disabled.
-#[cfg(feature = "symbiotic-memory-adapter")]
+/// Reranker services installed into the stable Memory facade.
 #[derive(Clone, Default)]
 pub struct RerankCascade {
-    /// Main (stage-2) reranker. `None` when MEMBENCH_RERANK is off.
     pub main: Option<Arc<dyn Reranker>>,
-    /// Optional cheap stage-1 prefilter reranker (enabled when MEMBENCH_RERANK_STAGE1_MODEL is set).
     pub stage1: Option<Arc<dyn Reranker>>,
-    /// Stage-1 -> stage-2 count cut (MEMBENCH_RERANK_STAGE1_TOP_X, default 20). Only meaningful when
-    /// `stage1` is present.
     pub stage1_top_x: usize,
 }
 
-fn current_reference_datetime() -> String {
-    Local::now().to_rfc3339_opts(SecondsFormat::Secs, false)
-}
-
-fn longmemeval_answer_reference_datetime(row: &LongMemEvalRecord) -> String {
-    let benchmark_datetime = row
-        .question_date
-        .as_deref()
-        .and_then(parse_longmemeval_datetime)
-        .map(|datetime| datetime.to_rfc3339_opts(SecondsFormat::Secs, false));
-    select_answer_reference_datetime(
-        |key| std::env::var(key).ok(),
-        benchmark_datetime,
-        current_reference_datetime(),
-    )
-}
-
-fn select_answer_reference_datetime<F>(
-    env: F,
-    benchmark_datetime: Option<String>,
-    default_datetime: String,
-) -> String
-where
-    F: Fn(&str) -> Option<String>,
-{
-    [
-        "MEMBENCH_REFERENCE_DATETIME",
-        // Alias for explicitly pinned benchmark clocks.
-        "MEMBENCH_REFERENCE_DATE",
-    ]
-    .into_iter()
-    .find_map(|key| {
-        env(key)
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-    })
-    .or(benchmark_datetime)
-    .unwrap_or(default_datetime)
-}
-
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct LongMemEvalRecord {
     pub question_id: String,
     pub question_type: Option<String>,
     pub question: String,
     pub question_date: Option<String>,
     pub answer: Option<Value>,
-    /// Gold evidence session ids (`answer_<hash>[_<N>]`); the pieces a correct
-    /// answer must draw on. Used by `gold-eval` to ground retrieval coverage.
     #[serde(default)]
     pub answer_session_ids: Vec<String>,
     pub haystack_dates: Vec<String>,
@@ -113,12 +53,10 @@ pub struct LongMemEvalRecord {
     pub haystack_sessions: Vec<Vec<LongMemEvalMessage>>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct LongMemEvalMessage {
     pub role: String,
     pub content: String,
-    /// LongMemEval ground-truth turn-level evidence flag: true on the exact turns that contain the
-    /// answer. Most turns are false (assistant lectures, chit-chat, adjacent topics = noise).
     #[serde(default)]
     pub has_answer: bool,
 }
@@ -137,15 +75,6 @@ pub struct BenchHypothesis {
     pub router_final: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub router_reason: Option<String>,
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-#[derive(Clone, Debug, Serialize)]
-pub struct ScoreRecordReport {
-    pub hypotheses: usize,
-    pub verdicts: usize,
-    pub debug_files_updated: usize,
-    pub summary_path: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -241,12 +170,97 @@ pub struct BenchModelDebug {
     pub max_tokens: Option<u32>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedCorpusQuestion {
+    pub id: String,
+    pub question: String,
+    pub question_type: Option<String>,
+    pub reference_date: Option<String>,
+    pub corpus_key: String,
+}
+
+pub type EmbeddingFactory = Arc<dyn Fn() -> Arc<dyn EmbeddingProvider> + Send + Sync>;
+pub type DistillerFactory = Arc<dyn Fn() -> Arc<dyn Distiller> + Send + Sync>;
+pub type ChatFactory = Arc<dyn Fn() -> Arc<dyn ChatProvider> + Send + Sync>;
+pub type PlannerFactory = Arc<dyn Fn() -> Arc<dyn QueryPlanner> + Send + Sync>;
+
+#[derive(Clone)]
+pub struct MemoryFacadeProviders {
+    pub embedder: EmbeddingFactory,
+    pub distiller: DistillerFactory,
+    pub chat: ChatFactory,
+    pub planner: Option<PlannerFactory>,
+    pub reranker: RerankCascade,
+    pub trace_sink: Option<Arc<dyn MemoryTraceSink>>,
+}
+
+#[derive(Clone)]
+pub struct MemoryFacadeRun {
+    pub run_id: String,
+    pub run_root: PathBuf,
+    pub source_vault_root: Option<PathBuf>,
+    pub out_path: PathBuf,
+    pub policy: RecallPolicy,
+    pub debug_metadata: Option<BenchDebugMetadata>,
+    pub answer_only: bool,
+    pub ingest_mode: MemoryIngestMode,
+    pub max_in_flight: usize,
+    pub allow_terminal_reenqueue: bool,
+}
+
+static KIT_CONFIG: OnceLock<symbiotic_memory::profile::MemoryConfig> = OnceLock::new();
+static KIT_CONFIG_HASH: OnceLock<String> = OnceLock::new();
+static ACTIVE_MANIFEST_TAG: OnceLock<String> = OnceLock::new();
+
+pub fn set_kit_config(
+    config: symbiotic_memory::profile::MemoryConfig,
+    config_hash: impl Into<String>,
+) -> anyhow::Result<()> {
+    KIT_CONFIG
+        .set(config)
+        .map_err(|_| anyhow::anyhow!("Memory profile was already set"))?;
+    KIT_CONFIG_HASH
+        .set(config_hash.into())
+        .map_err(|_| anyhow::anyhow!("Memory profile hash was already set"))
+}
+
+pub fn kit_config() -> &'static symbiotic_memory::profile::MemoryConfig {
+    static DEFAULT: OnceLock<symbiotic_memory::profile::MemoryConfig> = OnceLock::new();
+    KIT_CONFIG
+        .get()
+        .unwrap_or_else(|| DEFAULT.get_or_init(symbiotic_memory::profile::MemoryConfig::default))
+}
+
+fn kit_config_hash() -> String {
+    KIT_CONFIG_HASH.get().cloned().unwrap_or_else(|| {
+        let value = serde_json::to_vec(kit_config()).unwrap_or_default();
+        format!("sha256:{}", hex::encode(Sha256::digest(value)))
+    })
+}
+
+pub fn set_active_manifest_tag(tag: impl Into<String>) -> anyhow::Result<()> {
+    let tag = tag.into();
+    if let Some(active) = ACTIVE_MANIFEST_TAG.get() {
+        anyhow::ensure!(active == &tag, "benchmark identity is already `{active}`");
+        return Ok(());
+    }
+    ACTIVE_MANIFEST_TAG
+        .set(tag)
+        .map_err(|_| anyhow::anyhow!("benchmark identity was set concurrently"))
+}
+
+fn active_manifest_tag() -> &'static str {
+    ACTIVE_MANIFEST_TAG
+        .get()
+        .map(String::as_str)
+        .unwrap_or("longmemeval-v1")
+}
+
 pub fn load_longmemeval(
     path: impl AsRef<Path>,
     limit: Option<usize>,
 ) -> anyhow::Result<Vec<LongMemEvalRecord>> {
-    let raw = fs::read_to_string(path)?;
-    let mut rows: Vec<LongMemEvalRecord> = serde_json::from_str(&raw)?;
+    let mut rows: Vec<LongMemEvalRecord> = serde_json::from_str(&fs::read_to_string(path)?)?;
     if let Some(limit) = limit {
         rows.truncate(limit);
     }
@@ -266,36 +280,31 @@ pub fn longmemeval_to_source(record: &LongMemEvalRecord) -> SourceDocument {
             .haystack_dates
             .get(session_idx)
             .and_then(|date| parse_longmemeval_datetime(date));
-        if first_event_time.is_none() {
-            first_event_time = session_time;
-        }
-        for (msg_idx, msg) in session.iter().enumerate() {
+        first_event_time = first_event_time.or(session_time);
+        for (message_idx, message) in session.iter().enumerate() {
             turns.push(SourceTurn {
-                turn_id: format!("{session_id}:{msg_idx}"),
+                turn_id: format!("{session_id}:{message_idx}"),
                 source_id: record.question_id.clone(),
-                speaker: Some(msg.role.clone()),
-                // MUST stay None: actor is skip_serializing_if-None and ingest_source_hash covers
-                // the whole SourceDocument, so any value here would change every golden vault's
-                // source hash and trip the answer-only staleness gate. The LongMemEval role
-                // already lives in `speaker`.
+                speaker: Some(message.role.clone()),
                 actor: None,
-                // The LongMemEval haystack date is when the session was held — i.e. the capture
-                // timestamp. A raw turn is never a resolved event, so event_time is None and
-                // ingested_at is stamped at persist time.
                 captured_at: session_time,
                 event_time: None,
                 ingested_at: None,
-                text: msg.content.clone(),
+                text: message.content.clone(),
                 ordinal: turns.len(),
                 locator: None,
-                scope: Default::default(),
+                scope: Scope::default(),
             });
         }
     }
     SourceDocument {
         source_id: record.question_id.clone(),
         source_kind: "longmemeval".to_string(),
-        captured_at: first_event_time.unwrap_or_else(Utc::now),
+        captured_at: first_event_time.unwrap_or_else(|| {
+            Utc.timestamp_opt(0, 0)
+                .single()
+                .expect("Unix epoch is valid")
+        }),
         turns,
         raw_payload: None,
         locator: None,
@@ -309,2152 +318,311 @@ pub fn parse_longmemeval_datetime(input: &str) -> Option<DateTime<Utc>> {
         .to_string();
     NaiveDateTime::parse_from_str(&without_weekday, "%Y/%m/%d %H:%M")
         .ok()
-        .map(|dt| Utc.from_utc_datetime(&dt))
+        .map(|datetime| Utc.from_utc_datetime(&datetime))
 }
 
-pub async fn run_longmemeval_slice<S, E, D, C>(
+fn reference_datetime(row: &LongMemEvalRecord) -> String {
+    std::env::var("MEMBENCH_REFERENCE_DATETIME")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            row.question_date
+                .as_deref()
+                .and_then(parse_longmemeval_datetime)
+                .map(|value| value.to_rfc3339_opts(SecondsFormat::Secs, false))
+        })
+        .unwrap_or_else(|| Local::now().to_rfc3339_opts(SecondsFormat::Secs, false))
+}
+
+pub async fn run_longmemeval_facade(
     rows: &[LongMemEvalRecord],
-    store_factory: impl Fn() -> S,
-    embedder_factory: impl Fn() -> E + Send + Sync + 'static,
-    distiller_factory: impl Fn() -> D + Send + Sync + 'static,
-    chat_factory: impl Fn() -> C + Send + Sync + 'static,
-    policy: symbiotic_memory::config::RecallPolicy,
-    out_path: impl AsRef<Path>,
-) -> anyhow::Result<Vec<BenchHypothesis>>
-where
-    S: MemoryStore + Clone,
-    E: EmbeddingProvider + Clone + 'static,
-    D: Distiller,
-    C: ChatProvider,
-{
-    if let Some(parent) = out_path.as_ref().parent() {
+    providers: MemoryFacadeProviders,
+    run: MemoryFacadeRun,
+) -> anyhow::Result<Vec<BenchHypothesis>> {
+    if let Some(parent) = run.out_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut out = read_existing_hypotheses(out_path.as_ref())?;
-    let mut completed: BTreeSet<_> = out.iter().map(|h| h.question_id.clone()).collect();
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(out_path.as_ref())?;
-
-    for (idx, row) in rows.iter().enumerate() {
-        if completed.contains(&row.question_id) {
-            eprintln!(
-                "[longmemeval] {}/{} {} skipped",
-                idx + 1,
-                rows.len(),
-                row.question_id
-            );
-            continue;
-        }
-        eprintln!(
-            "[longmemeval] {}/{} {} ingest+answer",
-            idx + 1,
-            rows.len(),
-            row.question_id
-        );
-        let store = store_factory();
-        let embedder = embedder_factory();
-        let ingest = IngestPipeline::new(store.clone(), embedder.clone(), distiller_factory())
-            .with_distill_config(kit_config().distill.clone())
-            .with_embed_config(kit_config().embed.clone());
-        ingest.ingest(longmemeval_to_source(row)).await?;
-        let engine = RecallEngine::new(store, embedder, chat_factory(), policy.clone())
-            .with_recall_tuning(kit_config().recall.clone())
-            .with_experimental(kit_config().experimental.clone());
-        let reference_date = longmemeval_answer_reference_datetime(row);
-        let answer = engine
-            .answer_with_reference_date(&row.question, Some(reference_date.as_str()))
-            .await?;
-        let hypothesis = BenchHypothesis {
-            question_id: row.question_id.clone(),
-            question_type: row.question_type.clone(),
-            question: row.question.clone(),
-            hypothesis: answer.text,
-            debug_artifact: None,
-            router_initial: None,
-            router_final: None,
-            router_reason: None,
-        };
-        writeln!(file, "{}", serde_json::to_string(&hypothesis)?)?;
-        file.flush()?;
-        completed.insert(hypothesis.question_id.clone());
-        out.push(hypothesis);
-    }
-
-    Ok(out)
-}
-
-/// Process-global redo stage. Reuse/redo decision tree over a source vault (set once per run):
-///   embed   → re-embed facts+briefs (reuse distill+reweave content); cheapest, no LLM
-///   reweave → re-run consolidation (reuse distill + fact vectors); consolidator LLM only
-///   distill → re-distill onward (reuse captured turns); full $$ except capture
-///   index   → rebuild the recall index only (reuse all embeddings)
-/// embed is handled in-adapter; reweave/distill/index invalidate manifest stages and let the
-/// existing ingest path re-run them, so the real pipeline reuses every valid upstream stage.
-static REDO_STAGE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-
-pub fn set_redo_stage(stage: Option<String>) {
-    if let Some(stage) = stage {
-        let _ = REDO_STAGE.set(stage);
-    }
-}
-
-fn redo_stage() -> Option<&'static str> {
-    REDO_STAGE.get().map(String::as_str)
-}
-
-/// The resolved kit config for this run (set once by the harness before the
-/// run starts, from the SYMBIOTIC_MEMORY__* env-file/process layers). The
-/// adapter installs its sections on every engine it constructs — recall
-/// tuning, experimental gates, distill and embed knobs — so bench arms are
-/// plain config overrides instead of ad-hoc plumbing. Defaults when unset.
-static KIT_CONFIG: std::sync::OnceLock<symbiotic_memory_config::MemoryConfig> =
-    std::sync::OnceLock::new();
-
-pub fn set_kit_config(config: symbiotic_memory_config::MemoryConfig) {
-    let _ = KIT_CONFIG.set(config);
-}
-
-/// Benchmark identity stamped into new vault manifests. Existing v1 callers keep the historical tag.
-static ACTIVE_MANIFEST_TAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-
-pub fn set_active_manifest_tag(tag: impl Into<String>) -> anyhow::Result<()> {
-    let tag = tag.into();
-    if let Some(active) = ACTIVE_MANIFEST_TAG.get() {
-        anyhow::ensure!(
-            active == &tag,
-            "benchmark manifest identity already set to '{active}', cannot change it to '{tag}'"
-        );
-        return Ok(());
-    }
-    ACTIVE_MANIFEST_TAG
-        .set(tag)
-        .map_err(|_| anyhow::anyhow!("benchmark manifest identity was set concurrently"))
-}
-
-pub fn active_manifest_tag() -> &'static str {
-    ACTIVE_MANIFEST_TAG
-        .get()
-        .map(String::as_str)
-        .unwrap_or("longmemeval-v1")
-}
-
-pub fn kit_config() -> &'static symbiotic_memory_config::MemoryConfig {
-    static DEFAULT: std::sync::OnceLock<symbiotic_memory_config::MemoryConfig> =
-        std::sync::OnceLock::new();
-    KIT_CONFIG
-        .get()
-        .unwrap_or_else(|| DEFAULT.get_or_init(symbiotic_memory_config::MemoryConfig::default))
-}
-
-/// A lightweight query against a corpus shared by several benchmark questions.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SharedCorpusQuestion {
-    pub id: String,
-    pub question: String,
-    pub question_type: Option<String>,
-    pub reference_date: Option<String>,
-    pub corpus_key: String,
-}
-
-fn reembed_mode() -> bool {
-    redo_stage() == Some("embed")
-}
-
-/// Supersession-detection post-pass gate (`MEMBENCH_SUPERSESSION_DETECTION`, resolved by the
-/// harness like the redo stage). For an answer-only run over linked source vaults, each vault's
-/// ledger + archive get the kit's deterministic [`symbiotic_memory::detect_and_apply_supersessions`]
-/// pass applied BEFORE answering. Detection MUTATES the store (status flips via `upsert_facts`),
-/// the recall index and the Archive Markdown, so the harness preps these arms with COPIED vaults
-/// (`prepare_supersession_detection_vaults`), never symlinks into the frozen source baseline.
-static SUPERSESSION_DETECTION: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
-pub fn set_supersession_detection(enabled: bool) {
-    let _ = SUPERSESSION_DETECTION.set(enabled);
-}
-
-fn supersession_detection_enabled() -> bool {
-    SUPERSESSION_DETECTION.get().copied().unwrap_or(false)
-}
-
-/// Whether `--re-embed` should also recompute raw-turn embeddings. Default FALSE: a re-embed only
-/// changes fact `search_text` (via the distill/enrich metadata logic) — raw-turn text is identical,
-/// so re-embedding turns re-calls the embedding API for every turn just to produce byte-identical
-/// vectors. That bulk turn re-embed is the dominant cost of a full re-embed. With this off, the prep
-/// COPIES the source `index.zvec` index (preserving the existing turn vectors) and only facts are
-/// re-embedded + upserted. Set `MEMBENCH_REEMBED_TURNS=1` to force a full turn re-embed — required when
-/// the embedding model or dimensions change (the copied index would then be stale).
-pub fn reembed_turns() -> bool {
-    std::env::var("MEMBENCH_REEMBED_TURNS")
-        .ok()
-        .is_some_and(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES" | "on"))
-}
-
-/// Embed texts in bounded batches, firing batches CONCURRENTLY through the provider queue (which is
-/// sized for ~1000 in-flight) rather than awaiting one at a time. `buffered` preserves input order,
-/// so the returned vectors line up with `texts`. Chunk size bounds per-request size (e.g. Gemini
-/// caps embed batches at 100); concurrency bounds in-flight batches per vault.
-async fn embed_texts_in_chunks<E: EmbeddingProvider>(
-    embedder: &E,
-    texts: &[String],
-) -> anyhow::Result<Vec<Vec<f32>>> {
-    let chunk = std::env::var("MEMBENCH_REEMBED_CHUNK")
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .filter(|size| *size > 0)
-        .unwrap_or(100);
-    let concurrency = std::env::var("MEMBENCH_REEMBED_CONCURRENCY")
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .filter(|size| *size > 0)
-        .unwrap_or(16);
-    let batches: Vec<Vec<String>> = texts.chunks(chunk).map(<[String]>::to_vec).collect();
-    let results: Vec<Result<Vec<Vec<f32>>, _>> = futures::stream::iter(batches)
-        .map(|batch| async move { embedder.embed_many(&batch).await })
-        .buffered(concurrency)
-        .collect()
-        .await;
-    let mut out = Vec::with_capacity(texts.len());
-    for result in results {
-        out.extend(result.map_err(|err| anyhow::anyhow!("re-embed embedding failed: {err}"))?);
-    }
-    Ok(out)
-}
-
-fn corpus_vault_component(corpus_key: &str) -> anyhow::Result<&str> {
-    if corpus_key.is_empty()
-        || corpus_key == "."
-        || corpus_key == ".."
-        || !corpus_key
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-    {
-        anyhow::bail!("unsafe shared-corpus key '{corpus_key}'");
-    }
-    Ok(corpus_key)
-}
-
-/// Ingest each named corpus once, then answer every associated question against that shared store.
-///
-/// Completed hypotheses are resumed from `out_path`. Corpus manifests are reused only when the
-/// source hash, benchmark identity, and all required ingest stages match.
-#[cfg(feature = "symbiotic-memory-adapter")]
-#[allow(clippy::too_many_arguments)]
-pub async fn run_shared_corpus_with_planner<E, D, C>(
-    corpora: Vec<(String, SourceDocument)>,
-    questions: Vec<SharedCorpusQuestion>,
-    run_root: impl AsRef<Path>,
-    embedder_factory: impl Fn() -> E + Send + Sync + 'static,
-    distiller_factory: impl Fn() -> D + Send + Sync + 'static,
-    chat_factory: impl Fn() -> C + Send + Sync + 'static,
-    planner_factory: Option<Arc<dyn Fn() -> Arc<dyn QueryPlanner> + Send + Sync>>,
-    reranker: RerankCascade,
-    memory_trace_sink: Option<Arc<dyn MemoryTraceSink>>,
-    policy: symbiotic_memory::config::RecallPolicy,
-    out_path: impl AsRef<Path>,
-    ingest_diagnostic_mode: IngestDiagnosticMode,
-) -> anyhow::Result<Vec<BenchHypothesis>>
-where
-    E: EmbeddingProvider + Clone + Send + Sync + 'static,
-    D: Distiller + 'static,
-    C: ChatProvider + 'static,
-{
-    let run_root = run_root.as_ref();
-    let out_path = out_path.as_ref();
-    if let Some(parent) = out_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut output = read_existing_hypotheses(out_path)?;
-    let mut completed: BTreeSet<_> = output.iter().map(|row| row.question_id.clone()).collect();
-    anyhow::ensure!(
-        completed.len() == output.len(),
-        "shared-corpus hypotheses contain duplicate question ids"
-    );
-
-    let mut corpus_map = BTreeMap::new();
-    for (key, source) in corpora {
-        corpus_vault_component(&key)?;
-        if corpus_map.insert(key.clone(), source).is_some() {
-            anyhow::bail!("duplicate shared corpus key '{key}'");
-        }
-    }
-    let mut questions_by_corpus: BTreeMap<String, Vec<SharedCorpusQuestion>> = BTreeMap::new();
-    let mut selected_question_count = 0usize;
-    for question in questions {
-        selected_question_count += 1;
-        corpus_vault_component(&question.corpus_key)?;
-        questions_by_corpus
-            .entry(question.corpus_key.clone())
-            .or_default()
-            .push(question);
-    }
-    for key in questions_by_corpus.keys() {
-        if !corpus_map.contains_key(key) {
-            anyhow::bail!("shared-corpus questions reference missing corpus '{key}'");
-        }
-    }
-    let selected_ids: BTreeSet<_> = questions_by_corpus
-        .values()
-        .flatten()
-        .map(|question| question.id.clone())
+    let existing = read_hypotheses(&run.out_path)?;
+    let completed: BTreeSet<_> = existing
+        .iter()
+        .map(|hypothesis| hypothesis.question_id.clone())
         .collect();
     anyhow::ensure!(
-        selected_ids.len() == selected_question_count,
-        "shared-corpus selection contains duplicate question ids"
-    );
-    let stale_ids: Vec<_> = completed.difference(&selected_ids).cloned().collect();
-    anyhow::ensure!(
-        stale_ids.is_empty(),
-        "shared-corpus hypotheses contain question ids outside the current selection: {}",
-        stale_ids.join(", ")
+        completed.len() == existing.len(),
+        "hypotheses contain duplicate question ids"
     );
     let mut output_file = fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(out_path)?;
-
-    let RerankCascade {
-        main: reranker_main,
-        stage1: reranker_stage1,
-        stage1_top_x,
-    } = reranker;
-
-    for (corpus_key, group) in questions_by_corpus {
-        let source = corpus_map
-            .get(&corpus_key)
-            .expect("corpus completeness checked above")
-            .clone();
-        let vault_dir = run_root
-            .join("corpus-vaults")
-            .join(corpus_vault_component(&corpus_key)?);
-        fs::create_dir_all(&vault_dir)?;
-        let manifest_path = vault_dir.join("manifest.json");
-        let source_hash = source_shape_hash(&source)?;
-        let dimensions = embedder_factory().dimensions();
-        let (store, _) =
-            open_store_with_metrics(vault_dir.clone(), "zvec".to_string(), dimensions).await?;
-
-        let existing = MemoryRunManifest::load(&manifest_path)?;
-        let reusable = existing.as_ref().is_some_and(|manifest| {
-            manifest.source_hash == source_hash
-                && manifest.policy_version == active_manifest_tag()
-                && post_ingest_complete(manifest, false)
-        });
-        if reusable {
-            eprintln!("[shared-corpus] reusing complete corpus '{corpus_key}'");
-        } else {
-            if existing.as_ref().is_some_and(|manifest| {
-                manifest.source_hash != source_hash
-                    || manifest.policy_version != active_manifest_tag()
-            }) {
-                anyhow::bail!(
-                    "shared corpus '{corpus_key}' manifest has a different source hash or benchmark \
-                     identity; use a fresh run root"
-                );
-            }
-            eprintln!(
-                "[shared-corpus] {} corpus '{corpus_key}' ({} turns)",
-                if existing.is_some() {
-                    "resuming"
-                } else {
-                    "ingesting"
-                },
-                source.turns.len(),
-            );
-            IngestPipeline::new(store.clone(), embedder_factory(), distiller_factory())
-                .with_distill_config(kit_config().distill.clone())
-                .with_embed_config(kit_config().embed.clone())
-                .with_archive_root(&vault_dir)
-                .with_manifest_path(&manifest_path, active_manifest_tag())
-                .with_optional_trace_sink(memory_trace_sink.clone())
-                .with_diagnostic_mode(ingest_diagnostic_mode)
-                .ingest(source)
-                .await?;
-            let manifest = MemoryRunManifest::load(&manifest_path)?.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "shared corpus ingest did not write {}",
-                    manifest_path.display()
-                )
-            })?;
-            if !post_ingest_complete(&manifest, false) {
-                anyhow::bail!("shared corpus '{corpus_key}' ingest did not complete");
-            }
-        }
-
-        let total = group.len();
-        for (index, question) in group.into_iter().enumerate() {
-            if completed.contains(&question.id) {
-                eprintln!(
-                    "[shared-corpus] {}/{total} {} skipped (already complete)",
-                    index + 1,
-                    question.id
-                );
-                continue;
-            }
-            let mut engine = RecallEngine::new(
-                store.clone(),
-                embedder_factory(),
-                chat_factory(),
-                policy.clone(),
-            )
-            .with_recall_tuning(kit_config().recall.clone())
-            .with_experimental(kit_config().experimental.clone())
-            .with_optional_reranker(reranker_main.clone())
-            .with_optional_reranker_stage1(reranker_stage1.clone())
-            .with_rerank_stage1_top_x(reranker_stage1.is_some().then_some(stage1_top_x))
-            .with_optional_trace_sink(memory_trace_sink.clone())
-            .with_trace_context(RecallTraceContext::new(
-                question.id.clone(),
-                question.id.clone(),
-                question.id.clone(),
-            ));
-            if let Some(planner_factory) = &planner_factory {
-                engine = engine.with_query_planner(planner_factory());
-            }
-            let recall = engine
-                .answer_debug_with_reference_date(
-                    &question.question,
-                    question.reference_date.as_deref(),
-                )
-                .await?;
-            let hypothesis = BenchHypothesis {
-                question_id: question.id.clone(),
-                question_type: question.question_type.clone(),
-                question: question.question.clone(),
-                hypothesis: recall.final_answer.text,
-                debug_artifact: None,
-                router_initial: Some(recall.recall_profile.clone()),
-                router_final: Some(recall.recall_profile),
-                router_reason: Some("shared-corpus recall".to_string()),
-            };
-            writeln!(output_file, "{}", serde_json::to_string(&hypothesis)?)?;
-            output_file.flush()?;
-            completed.insert(question.id);
-            output.push(hypothesis);
-        }
-    }
-    Ok(output)
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-pub async fn run_longmemeval_vault<E, D, C>(
-    rows: &[LongMemEvalRecord],
-    run_root: impl AsRef<Path>,
-    embedder_factory: impl Fn() -> E + Send + Sync + 'static,
-    distiller_factory: impl Fn() -> D + Send + Sync + 'static,
-    chat_factory: impl Fn() -> C + Send + Sync + 'static,
-    policy: symbiotic_memory::config::RecallPolicy,
-    out_path: impl AsRef<Path>,
-    routed: bool,
-    answer_only: bool,
-    consolidate_briefs: bool,
-    stop_after_raw_embed: bool,
-    ingest_diagnostic_mode: IngestDiagnosticMode,
-    allow_terminal_reenqueue: bool,
-) -> anyhow::Result<Vec<BenchHypothesis>>
-where
-    E: EmbeddingProvider + Clone + Send + Sync + 'static,
-    D: Distiller + 'static,
-    C: ChatProvider + 'static,
-{
-    run_longmemeval_vault_with_planner(
-        rows,
-        run_root,
-        embedder_factory,
-        distiller_factory,
-        None,
-        chat_factory,
-        None,
-        None,
-        RerankCascade::default(),
-        None,
-        None,
-        policy,
-        out_path,
-        routed,
-        answer_only,
-        consolidate_briefs,
-        stop_after_raw_embed,
-        ingest_diagnostic_mode,
-        None,
-        allow_terminal_reenqueue,
-    )
-    .await
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-pub async fn run_longmemeval_vault_with_planner<E, D, C>(
-    rows: &[LongMemEvalRecord],
-    run_root: impl AsRef<Path>,
-    embedder_factory: impl Fn() -> E + Send + Sync + 'static,
-    distiller_factory: impl Fn() -> D + Send + Sync + 'static,
-    consolidator_factory: Option<Arc<dyn Fn() -> Arc<dyn Distiller> + Send + Sync>>,
-    chat_factory: impl Fn() -> C + Send + Sync + 'static,
-    answer_retry_factory: Option<Arc<dyn Fn() -> Arc<dyn ChatProvider> + Send + Sync>>,
-    planner_factory: Option<Arc<dyn Fn() -> Arc<dyn QueryPlanner> + Send + Sync>>,
-    reranker: RerankCascade,
-    debug_metadata: Option<BenchDebugMetadata>,
-    memory_trace_sink: Option<Arc<dyn MemoryTraceSink>>,
-    policy: symbiotic_memory::config::RecallPolicy,
-    out_path: impl AsRef<Path>,
-    routed: bool,
-    answer_only: bool,
-    consolidate_briefs: bool,
-    stop_after_raw_embed: bool,
-    ingest_diagnostic_mode: IngestDiagnosticMode,
-    workflow_max_in_flight_override: Option<usize>,
-    allow_terminal_reenqueue: bool,
-) -> anyhow::Result<Vec<BenchHypothesis>>
-where
-    E: EmbeddingProvider + Clone + Send + Sync + 'static,
-    D: Distiller + 'static,
-    C: ChatProvider + 'static,
-{
-    fs::create_dir_all(run_root.as_ref())?;
-    let workflow_queue_path = run_root
-        .as_ref()
-        .join("workflow")
-        .join("longmemeval")
-        .join("queue.sqlite");
-    let workflow_queue: Arc<dyn QueueBackend> = Arc::new(SqliteQueue::open(&workflow_queue_path)?);
-    let workflow_queue_id = QueueId::new("workflow:longmemeval");
-    let _legacy_event_path = run_root
-        .as_ref()
-        .join("workflow")
-        .join("longmemeval")
-        .join("events.jsonl");
-    if _legacy_event_path.exists() {
-        eprintln!(
-            "[longmemeval] ignoring legacy workflow event log at {}",
-            _legacy_event_path.display()
-        );
-    }
-    fs::create_dir_all(run_root.as_ref().join("workflow").join("longmemeval"))?;
-    run_longmemeval_vault_with_workflow_queue(
-        rows,
-        run_root,
-        workflow_queue,
-        workflow_queue_id,
-        embedder_factory,
-        distiller_factory,
-        consolidator_factory,
-        chat_factory,
-        answer_retry_factory,
-        planner_factory,
-        reranker,
-        debug_metadata,
-        memory_trace_sink,
-        policy,
-        out_path,
-        routed,
-        answer_only,
-        consolidate_briefs,
-        stop_after_raw_embed,
-        ingest_diagnostic_mode,
-        workflow_max_in_flight_override,
-        allow_terminal_reenqueue,
-    )
-    .await
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-pub async fn run_longmemeval_vault_with_workflow_queue<E, D, C>(
-    rows: &[LongMemEvalRecord],
-    run_root: impl AsRef<Path>,
-    workflow_queue: Arc<dyn QueueBackend>,
-    workflow_queue_id: QueueId,
-    embedder_factory: impl Fn() -> E + Send + Sync + 'static,
-    distiller_factory: impl Fn() -> D + Send + Sync + 'static,
-    consolidator_factory: Option<Arc<dyn Fn() -> Arc<dyn Distiller> + Send + Sync>>,
-    chat_factory: impl Fn() -> C + Send + Sync + 'static,
-    answer_retry_factory: Option<Arc<dyn Fn() -> Arc<dyn ChatProvider> + Send + Sync>>,
-    planner_factory: Option<Arc<dyn Fn() -> Arc<dyn QueryPlanner> + Send + Sync>>,
-    reranker: RerankCascade,
-    debug_metadata: Option<BenchDebugMetadata>,
-    memory_trace_sink: Option<Arc<dyn MemoryTraceSink>>,
-    policy: symbiotic_memory::config::RecallPolicy,
-    out_path: impl AsRef<Path>,
-    routed: bool,
-    answer_only: bool,
-    consolidate_briefs: bool,
-    stop_after_raw_embed: bool,
-    ingest_diagnostic_mode: IngestDiagnosticMode,
-    workflow_max_in_flight_override: Option<usize>,
-    allow_terminal_reenqueue: bool,
-) -> anyhow::Result<Vec<BenchHypothesis>>
-where
-    E: EmbeddingProvider + Clone + Send + Sync + 'static,
-    D: Distiller + 'static,
-    C: ChatProvider + 'static,
-{
-    if let Some(parent) = out_path.as_ref().parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::create_dir_all(run_root.as_ref())?;
-    let completed = if answer_only && !allow_terminal_reenqueue {
-        reset_hypotheses_for_answer_only(out_path.as_ref())?;
-        BTreeSet::new()
-    } else {
-        read_existing_hypothesis_ids(out_path.as_ref())?
-    };
-    let debug_run_id = debug_run_id(out_path.as_ref());
-    let file = Arc::new(Mutex::new(
-        fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(out_path.as_ref())?,
-    ));
-    let run_root = run_root.as_ref().to_path_buf();
-    let embedder_factory = Arc::new(embedder_factory);
-    let distiller_factory = Arc::new(distiller_factory);
-    let consolidator_factory = Arc::new(consolidator_factory);
-    let chat_factory = Arc::new(chat_factory);
-    let answer_retry_factory = Arc::new(answer_retry_factory);
-    let planner_factory = Arc::new(planner_factory);
-    let reranker = Arc::new(reranker);
-    let debug_metadata = Arc::new(debug_metadata);
-    let memory_trace_sink = Arc::new(memory_trace_sink);
-    let policy = Arc::new(policy);
-    let consolidate_briefs = Arc::new(consolidate_briefs);
-    let stop_after_raw_embed = Arc::new(stop_after_raw_embed);
-    let ingest_diagnostic_mode = Arc::new(ingest_diagnostic_mode);
-    let total = rows.len();
-    let question_timeout = question_timeout();
-    let workflow_max_in_flight = workflow_max_in_flight(workflow_max_in_flight_override);
-    let workflow_max_attempts = workflow_max_attempts();
-    let workflow_lease_seconds = question_timeout
+        .open(&run.out_path)?;
+    let workflow_dir = run.run_root.join("workflow").join("longmemeval");
+    fs::create_dir_all(&workflow_dir)?;
+    let workflow_queue: Arc<dyn QueueBackend> =
+        Arc::new(SqliteQueue::open(workflow_dir.join("queue.sqlite"))?);
+    let workflow_queue_id = QueueId::new(format!("workflow:{}", run.run_id));
+    let lease_seconds = question_timeout()
         .map(|timeout| timeout.as_secs().saturating_add(60).max(60))
         .unwrap_or(660);
-
-    let pending_rows = rows
+    let max_attempts = workflow_max_attempts();
+    let pending: Vec<_> = rows
         .iter()
-        .enumerate()
-        .filter(|(_, row)| !completed.contains(&row.question_id))
-        .map(|(idx, row)| (idx, row.clone()))
-        .collect::<Vec<_>>();
-
-    eprintln!(
-        "[longmemeval] pending={} total={} workflow_queue={} question_timeout={} workflow_max_in_flight={} workflow_max_attempts={}",
-        pending_rows.len(),
-        total,
-        workflow_queue_id.0,
-        question_timeout
-            .map(|timeout| format!("{}s", timeout.as_secs()))
-            .unwrap_or_else(|| "disabled".to_string()),
-        workflow_max_in_flight,
-        workflow_max_attempts
-    );
-
-    let row_buffer = workflow_max_in_flight.min(pending_rows.len().max(1));
-    let completed_hyps = futures::stream::iter(pending_rows)
-        .map(|(idx, row)| {
-            let file = file.clone();
-            let run_root = run_root.clone();
-            let embedder_factory = embedder_factory.clone();
-            let distiller_factory = distiller_factory.clone();
-            let consolidator_factory = consolidator_factory.clone();
-            let chat_factory = chat_factory.clone();
-            let answer_retry_factory = answer_retry_factory.clone();
-            let planner_factory = planner_factory.clone();
-            let reranker = reranker.clone();
-            let debug_metadata = debug_metadata.clone();
-            let memory_trace_sink = memory_trace_sink.clone();
-            let policy = policy.clone();
-            let consolidate_briefs = consolidate_briefs.clone();
-            let stop_after_raw_embed = stop_after_raw_embed.clone();
-            let ingest_diagnostic_mode = ingest_diagnostic_mode.clone();
-            let workflow_queue = workflow_queue.clone();
-            let workflow_queue_id = workflow_queue_id.clone();
-            let debug_run_id = debug_run_id.clone();
-            async move {
-                let question_id = row.question_id.clone();
-                let input_hash = workflow_input_hash(
-                    &row,
-                    routed,
-                    answer_only,
-                    *consolidate_briefs,
-                    *ingest_diagnostic_mode,
-                    &policy,
-                );
-                let started = Instant::now();
-                eprintln!(
-                    "[longmemeval] {}/{} {} {}",
-                    idx + 1,
-                    total,
-                    question_id,
-                    if routed { "process-routed" } else { "process" }
-                );
-                let worker_id = workflow_worker_id(&question_id);
-                let queue_item = enqueue_and_claim_workflow_row(
-                    workflow_queue.as_ref(),
-                    workflow_queue_id.clone(),
-                    &worker_id,
-                    &question_id,
-                    &input_hash,
-                    routed,
-                    workflow_lease_seconds,
-                    workflow_max_in_flight,
-                    workflow_max_attempts,
-                    allow_terminal_reenqueue || answer_only,
-                )
-                .await?;
-                let heartbeat = spawn_workflow_heartbeat(
-                    workflow_queue.clone(),
-                    queue_item.item_id.clone(),
-                    worker_id.clone(),
-                    workflow_lease_seconds,
-                );
-                let row_result = process_vault_row(
-                    &row,
-                    &run_root,
-                    &*embedder_factory,
-                    &*distiller_factory,
-                    consolidator_factory.as_ref().clone(),
-                    &*chat_factory,
-                    answer_retry_factory.as_ref().clone(),
-                    planner_factory.as_ref().clone(),
-                    reranker.as_ref().clone(),
-                    debug_metadata.as_ref().clone(),
-                    memory_trace_sink.as_ref().clone(),
-                    (*policy).clone(),
-                    routed,
-                    answer_only,
-                    *consolidate_briefs,
-                    *stop_after_raw_embed,
-                    *ingest_diagnostic_mode,
-                    &debug_run_id,
-                );
-                let hypothesis = match run_workflow_row(row_result, question_timeout).await {
-                    Ok(hypothesis) => hypothesis,
-                    Err(err) => {
-                        // A single failed question (e.g. a transient empty/timed-out embedding that
-                        // leaves recall with no usable query vector, or any other per-question recall
-                        // error) must cost at most this one question — never abort the whole run. We
-                        // record the queue item as FAILED (so a later pass can retry it), emit an
-                        // "unavailable" hypothesis so scoring sees a row for this question, and return
-                        // Ok so the buffered stream keeps draining the remaining questions. We do NOT
-                        // call `complete` here — the item stays in the failed state recorded below.
-                        heartbeat.abort();
-                        fail_workflow_item(
-                            workflow_queue.as_ref(),
-                            &queue_item.item_id,
-                            &worker_id,
-                            &err.to_string(),
-                            queue_item.attempt,
-                        )
-                        .await?;
-                        eprintln!(
-                            "[longmemeval] {}/{} {} recall-unavailable: {err}; marking question unavailable and continuing",
-                            idx + 1,
-                            total,
-                            question_id
-                        );
-                        let hypothesis = BenchHypothesis {
-                            question_id: question_id.clone(),
-                            question_type: row.question_type.clone(),
-                            question: row.question.clone(),
-                            hypothesis: "UNAVAILABLE: recall failed for this question".to_string(),
-                            debug_artifact: None,
-                            router_initial: Some("recall-unavailable".to_string()),
-                            router_final: Some("recall-unavailable".to_string()),
-                            router_reason: Some(err.to_string()),
-                        };
-                        {
-                            let mut file = file.lock().expect("hypothesis file lock");
-                            writeln!(file, "{}", serde_json::to_string(&hypothesis)?)?;
-                            file.flush()?;
-                        }
-                        return Ok::<_, anyhow::Error>(hypothesis);
-                    }
-                };
-                {
-                    let mut file = file.lock().expect("hypothesis file lock");
-                    writeln!(file, "{}", serde_json::to_string(&hypothesis)?)?;
-                    file.flush()?;
-                }
-                let complete_result = workflow_queue
-                    .complete(&queue_item.item_id, &worker_id)
-                    .await;
-                heartbeat.abort();
-                complete_result.map_err(queue_error)?;
-                eprintln!(
-                    "[longmemeval] {}/{} {} done elapsed={}s",
-                    idx + 1,
-                    total,
-                    question_id,
-                    started.elapsed().as_secs()
-                );
-                Ok::<_, anyhow::Error>(hypothesis)
-            }
+        .filter(|row| {
+            !completed.contains(&row.question_id)
+                && !(run.ingest_mode != MemoryIngestMode::Complete
+                    && ingest_diagnostic_path(&run.run_root, &row.question_id).is_file())
         })
-        .map(tokio::spawn)
-        .buffer_unordered(row_buffer)
-        .map(|join_result| match join_result {
-            Ok(row_result) => row_result,
-            Err(err) => Err(anyhow::anyhow!("workflow task join failed: {err}")),
-        })
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .collect::<anyhow::Result<Vec<_>>>()?;
-
-    Ok(completed_hyps)
-}
-
-/// The blessed kit store behind every bench vault. The kit's vault facade
-/// owns the store (ROBUST-PLANE §12 — the sqlite and zvec-hybrid backends
-/// were deleted in the step-3 cutover); the bench hands it a directory and
-/// a profile, full stop. The hybrid-era index-cache machinery (sqlite
-/// sha256 manifest, trust/rebuild ladder) died with the ledger.
-#[cfg(feature = "symbiotic-memory-adapter")]
-type BenchMemoryStore = symbiotic_memory::VaultStore;
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-async fn open_store_with_metrics(
-    vault_dir: PathBuf,
-    backend: String,
-    dimensions: usize,
-) -> anyhow::Result<(BenchMemoryStore, BTreeMap<String, serde_json::Value>)> {
-    tokio::task::spawn_blocking(move || {
-        open_store_with_metrics_blocking(&vault_dir, &backend, dimensions)
-    })
-    .await?
-}
-
-/// Open the vault at `vault_dir` through the kit's vault facade — canonical
-/// layout only. The bench knows NOTHING about the store's file names or
-/// internals: it hands the kit a directory and a profile, full stop. Since
-/// the §12 step-3 cutover the kit has exactly one store; any other backend
-/// label is a stale run marker and refuses loudly.
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn open_store_with_metrics_blocking(
-    vault_dir: &Path,
-    backend: &str,
-    dimensions: usize,
-) -> anyhow::Result<(BenchMemoryStore, BTreeMap<String, serde_json::Value>)> {
-    if !matches!(backend, "zvec" | "auto" | "") {
-        anyhow::bail!(
-            "store backend `{backend}` was deleted in the kit's §12 step-3 cutover \
-             (only `zvec` exists); re-ingest this run on a fresh root"
-        );
-    }
-    let mut profile = kit_config().clone();
-    profile.storage.backend = "zvec".to_string();
-    profile.storage.vector_dimensions = dimensions;
-    let (vault, _report) = symbiotic_memory::Vault::open_with_report(vault_dir, &profile)?;
-    Ok((vault.store(), BTreeMap::new()))
-}
-
-/// MEMBENCH_IGNORE_SOURCE_HASH opt-out for the answer-only manifest gate. A field-name rename in
-/// `SourceDocument` changes the serialized shape (and thus `source_shape_hash`) even when the
-/// underlying source DATA is unchanged, which makes the answer-only path refuse to reuse a golden
-/// vault. When this is set, the gate logs a warning and proceeds instead of refusing. Off by default.
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn ignore_source_hash() -> bool {
-    std::env::var("MEMBENCH_IGNORE_SOURCE_HASH")
-        .ok()
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "on" | "yes"
-            )
-        })
-        .unwrap_or(false)
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-async fn record_adapter_stage(
-    sink: Option<&Arc<dyn MemoryTraceSink>>,
-    run_id: &str,
-    question_id: &str,
-    stage: &str,
-    started_at: DateTime<Utc>,
-    duration: Duration,
-    metrics: BTreeMap<String, serde_json::Value>,
-) {
-    let Some(sink) = sink else {
-        return;
-    };
-    let mut event = MemoryTraceEvent::native_stage(
-        run_id.to_string(),
-        question_id.to_string(),
-        MemoryStage::Index,
-        MemoryTraceEventKind::OperationSucceeded,
-    );
-    event.question_id = Some(question_id.to_string());
-    event.source_id = Some(question_id.to_string());
-    event.operation = MemoryTraceOperation::AdapterCall;
-    event.stage = Some(stage.to_string());
-    event.started_at = Some(started_at);
-    event.finished_at = Some(Utc::now());
-    event.duration_ms = Some(duration.as_millis().min(i64::MAX as u128) as i64);
-    event.metrics = serde_json::Value::Object(metrics.into_iter().collect());
-    if let Err(err) = sink.record_memory_event(event).await {
-        eprintln!("[longmemeval] memory trace write failed for {question_id}: {err}");
-    }
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-async fn record_adapter_stage_started(
-    sink: Option<&Arc<dyn MemoryTraceSink>>,
-    run_id: &str,
-    question_id: &str,
-    stage: &str,
-    metrics: BTreeMap<String, serde_json::Value>,
-) {
-    let Some(sink) = sink else {
-        return;
-    };
-    let mut event = MemoryTraceEvent::native_stage(
-        run_id.to_string(),
-        question_id.to_string(),
-        MemoryStage::Index,
-        MemoryTraceEventKind::OperationStarted,
-    );
-    event.question_id = Some(question_id.to_string());
-    event.source_id = Some(question_id.to_string());
-    event.operation = MemoryTraceOperation::AdapterCall;
-    event.stage = Some(stage.to_string());
-    event.started_at = Some(Utc::now());
-    event.metrics = serde_json::Value::Object(metrics.into_iter().collect());
-    if let Err(err) = sink.record_memory_event(event).await {
-        eprintln!("[longmemeval] memory trace write failed for {question_id}: {err}");
-    }
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn insert_elapsed_ms(
-    metrics: &mut BTreeMap<String, serde_json::Value>,
-    key: &str,
-    elapsed: Duration,
-) {
-    metrics.insert(
-        key.to_string(),
-        serde_json::json!(elapsed.as_millis().min(i64::MAX as u128) as i64),
-    );
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn store_backend_label(run_root: &Path) -> anyhow::Result<&'static str> {
-    let marker = run_root.join(".store-zvec");
-    if !marker.exists() {
-        return Ok("zvec");
-    }
-    let raw = std::fs::read_to_string(marker)?;
-    match raw.trim() {
-        "zvec" | "" => Ok("zvec"),
-        other => anyhow::bail!(
-            "run marker names store `{other}`, which was deleted in the kit's \
-             §12 step-3 cutover (only `zvec` exists); re-ingest on a fresh run root"
-        ),
-    }
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn spawn_workflow_heartbeat(
-    queue: Arc<dyn QueueBackend>,
-    item_id: QueueItemId,
-    worker_id: String,
-    lease_seconds: u64,
-) -> tokio::task::JoinHandle<()> {
-    let interval_seconds = (lease_seconds / 3).clamp(5, 60);
-    tokio::spawn(async move {
-        let interval = Duration::from_secs(interval_seconds);
-        loop {
-            tokio::time::sleep(interval).await;
-            if let Err(err) = queue.heartbeat(&item_id, &worker_id, lease_seconds).await {
-                eprintln!(
-                    "[longmemeval] workflow heartbeat stopped for {}: {}",
-                    item_id.0, err
-                );
-                break;
-            }
-        }
-    })
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-/// Apply the kit's deterministic supersession-detection pass over an answer-only vault BEFORE
-/// answering: same-subject / same-attribute / different-value active base-fact pairs with strictly
-/// ordered dates get the older side stamped `Superseded`, exactly as slot-key supersession would
-/// have. Persists through the store (ledger + recall index via `upsert_facts`) AND the
-/// vault archive (canonical Markdown), so the arm's vaults must be real copies. Logs every flagged
-/// pair (with content snippets, for false-positive review) into the run log and records the
-/// per-vault counts as a `supersession_detection` adapter stage in the memory trace.
-async fn run_supersession_detection_pass(
-    question_id: &str,
-    vault_dir: &Path,
-    store: &BenchMemoryStore,
-    embedder: &(impl EmbeddingProvider + ?Sized),
-    memory_trace_sink: Option<&Arc<dyn MemoryTraceSink>>,
-    debug_run_id: &str,
-) -> anyhow::Result<()> {
-    let detection_started_at = Utc::now();
-    let detection_started = Instant::now();
-    let archive = symbiotic_memory::MemoryArchiveWriter::new(vault_dir);
-    let report =
-        symbiotic_memory::detect_and_apply_supersessions(store, embedder, Some(&archive)).await?;
-    eprintln!(
-        "[longmemeval] {question_id} supersession-detection: flagged {} pairs (compared {}, skipped-ambiguous {})",
-        report.flagged.len(),
-        report.pairs_compared,
-        report.skipped_ambiguous
-    );
-    // Fetch both sides of every flagged pair so the run log carries enough content to judge
-    // false positives without reopening the vault.
-    let mut contents = BTreeMap::<String, String>::new();
-    if !report.flagged.is_empty() {
-        let ids: Vec<String> = report
-            .flagged
-            .iter()
-            .flat_map(|pair| [pair.older_memory_id.clone(), pair.newer_memory_id.clone()])
-            .collect::<std::collections::BTreeSet<String>>()
-            .into_iter()
-            .collect();
-        for evidence in store.get_facts_by_memory_ids(&ids).await? {
-            contents.insert(
-                evidence.fact.memory_id.clone(),
-                log_snippet(&evidence.fact.content),
-            );
-        }
-    }
-    let mut flagged_json = Vec::with_capacity(report.flagged.len());
-    for pair in &report.flagged {
-        let older_snippet = contents
-            .get(&pair.older_memory_id)
-            .map(String::as_str)
-            .unwrap_or("");
-        let newer_snippet = contents
-            .get(&pair.newer_memory_id)
-            .map(String::as_str)
-            .unwrap_or("");
-        eprintln!(
-            "[longmemeval] {question_id} superseded pair entity={} sim={:.2} older={} {:?} newer={} {:?}",
-            pair.entity_key,
-            pair.similarity,
-            pair.older_memory_id,
-            older_snippet,
-            pair.newer_memory_id,
-            newer_snippet
-        );
-        flagged_json.push(serde_json::json!({
-            "older_memory_id": pair.older_memory_id,
-            "newer_memory_id": pair.newer_memory_id,
-            "entity_key": pair.entity_key,
-            "similarity": pair.similarity,
-            "older_content": older_snippet,
-            "newer_content": newer_snippet,
-        }));
-    }
-    record_adapter_stage(
-        memory_trace_sink,
-        debug_run_id,
-        question_id,
-        "supersession_detection",
-        detection_started_at,
-        detection_started.elapsed(),
-        BTreeMap::from([
-            (
-                "pairs_flagged".to_string(),
-                serde_json::json!(report.flagged.len()),
-            ),
-            (
-                "pairs_compared".to_string(),
-                serde_json::json!(report.pairs_compared),
-            ),
-            (
-                "pairs_skipped_ambiguous".to_string(),
-                serde_json::json!(report.skipped_ambiguous),
-            ),
-            ("flagged".to_string(), serde_json::json!(flagged_json)),
-        ]),
-    )
-    .await;
-    Ok(())
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-/// Single-line, bounded content excerpt for supersession-pair log lines.
-fn log_snippet(content: &str) -> String {
-    let single_line = content.split_whitespace().collect::<Vec<_>>().join(" ");
-    if single_line.chars().count() <= 120 {
-        return single_line;
-    }
-    let mut snippet: String = single_line.chars().take(120).collect();
-    snippet.push('…');
-    snippet
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-async fn process_vault_row<E, D, C>(
-    row: &LongMemEvalRecord,
-    run_root: &Path,
-    embedder_factory: &(impl Fn() -> E + Send + Sync),
-    distiller_factory: &(impl Fn() -> D + Send + Sync),
-    consolidator_factory: Option<Arc<dyn Fn() -> Arc<dyn Distiller> + Send + Sync>>,
-    chat_factory: &(impl Fn() -> C + Send + Sync),
-    answer_retry_factory: Option<Arc<dyn Fn() -> Arc<dyn ChatProvider> + Send + Sync>>,
-    planner_factory: Option<Arc<dyn Fn() -> Arc<dyn QueryPlanner> + Send + Sync>>,
-    reranker: RerankCascade,
-    debug_metadata: Option<BenchDebugMetadata>,
-    memory_trace_sink: Option<Arc<dyn MemoryTraceSink>>,
-    policy: symbiotic_memory::config::RecallPolicy,
-    routed: bool,
-    answer_only: bool,
-    consolidate_briefs: bool,
-    stop_after_raw_embed: bool,
-    ingest_diagnostic_mode: IngestDiagnosticMode,
-    debug_run_id: &str,
-) -> anyhow::Result<BenchHypothesis>
-where
-    E: EmbeddingProvider + Clone + Send + Sync + 'static,
-    D: Distiller + 'static,
-    C: ChatProvider + 'static,
-{
-    let setup_started_at = Utc::now();
-    let setup_started = Instant::now();
-    let mut setup_metrics = BTreeMap::<String, serde_json::Value>::new();
-    // Informational only since the §12 step-3 cutover (one store exists);
-    // a stale marker naming a deleted backend refuses loudly.
-    let store_backend = store_backend_label(run_root)?;
-    setup_metrics.insert(
-        "store_backend".to_string(),
-        serde_json::json!(store_backend),
-    );
-    record_adapter_stage_started(
-        memory_trace_sink.as_ref(),
-        debug_run_id,
-        &row.question_id,
-        "pre_capture_setup",
-        setup_metrics.clone(),
-    )
-    .await;
-    let ingest_diagnostic_mode = if stop_after_raw_embed || raw_embed_only_diagnostic() {
-        IngestDiagnosticMode::RawEmbedOnly
-    } else {
-        ingest_diagnostic_mode
-    };
-    let vault_dir = run_root.join("vaults").join(&row.question_id);
-    let step_started = Instant::now();
-    fs::create_dir_all(&vault_dir)?;
-    insert_elapsed_ms(
-        &mut setup_metrics,
-        "create_vault_dir_ms",
-        step_started.elapsed(),
-    );
-
-    let step_started = Instant::now();
-    let source = longmemeval_to_source(&row);
-    let source_hash = source_shape_hash(&source)?;
-    insert_elapsed_ms(&mut setup_metrics, "source_hash_ms", step_started.elapsed());
-
-    let step_started = Instant::now();
-    let manifest_path = vault_dir.join("manifest.json");
-    let loaded_manifest = MemoryRunManifest::load(&manifest_path)?;
-    if answer_only && loaded_manifest.is_none() {
-        anyhow::bail!(
-            "answer-only run requires an existing manifest for vault {}",
-            row.question_id
-        );
-    }
-    let mut manifest = loaded_manifest.unwrap_or_else(|| {
-        let mut manifest = MemoryRunManifest::new(
-            row.question_id.clone(),
-            source_hash.clone(),
-            active_manifest_tag(),
-        );
-        manifest.index_backend = Some(store_backend.to_string());
-        manifest
-    });
-    if manifest.source_hash != source_hash {
-        // MEMBENCH_IGNORE_SOURCE_HASH opt-out: a field-name rename in SourceDocument changes the
-        // serialized shape (and thus this hash) even though the underlying source DATA is unchanged.
-        // When set, log a warning and PROCEED reusing the existing vault instead of refusing. The
-        // stored manifest source_hash is left untouched (we do not rewrite it), so the check still
-        // fires for anyone who has not opted out.
-        if ignore_source_hash() {
-            eprintln!(
-                "[longmemeval] WARNING: vault {} manifest source hash mismatch (stored={} computed={}); MEMBENCH_IGNORE_SOURCE_HASH set, proceeding with existing vault",
-                row.question_id, manifest.source_hash, source_hash
-            );
-        } else {
-            anyhow::bail!(
-                "vault {} manifest source hash changed; use a fresh run root",
-                row.question_id
-            );
-        }
-    }
-    manifest.index_backend = Some(store_backend.to_string());
-    manifest.save(&manifest_path)?;
-    insert_elapsed_ms(&mut setup_metrics, "manifest_ms", step_started.elapsed());
-
-    let step_started = Instant::now();
-    let dimensions = embedder_factory().dimensions();
-    insert_elapsed_ms(
-        &mut setup_metrics,
-        "embedding_dimensions_ms",
-        step_started.elapsed(),
-    );
-
-    let step_started = Instant::now();
-    let (store, store_open_metrics) =
-        open_store_with_metrics(vault_dir.clone(), store_backend.to_string(), dimensions).await?;
-    insert_elapsed_ms(&mut setup_metrics, "store_open_ms", step_started.elapsed());
-    setup_metrics.extend(store_open_metrics);
-
-    let step_started = Instant::now();
-    let mut existing_turns = store.turns().await?;
-    let mut existing_facts = store.active_facts().await?;
-    // Capture the counts we actually need downstream, then for answer-only — which only ever reads
-    // these counts/emptiness below, never the data itself — free the embeddings immediately instead
-    // of carrying ~100MB/vault through recall+answer. Under buffer_unordered concurrency that
-    // retention was the multi-GB blowup. Re-embed needs the full vectors, so keep them when reembed.
-    let existing_turn_count = existing_turns.len();
-    let existing_fact_count = existing_facts.len();
-    if answer_only && !reembed_mode() {
-        existing_turns = Vec::new();
-        existing_facts = Vec::new();
-    }
-    insert_elapsed_ms(
-        &mut setup_metrics,
-        "load_existing_ms",
-        step_started.elapsed(),
-    );
-    setup_metrics.insert(
-        "store_backend".to_string(),
-        serde_json::json!(store_backend),
-    );
-    setup_metrics.insert(
-        "existing_turn_count".to_string(),
-        serde_json::json!(existing_turn_count),
-    );
-    setup_metrics.insert(
-        "existing_fact_count".to_string(),
-        serde_json::json!(existing_fact_count),
-    );
-    record_adapter_stage(
-        memory_trace_sink.as_ref(),
-        debug_run_id,
-        &row.question_id,
-        "pre_capture_setup",
-        setup_started_at,
-        setup_started.elapsed(),
-        setup_metrics,
-    )
-    .await;
-
-    // Non-embed redo stages: invalidate the target stage(s) so the ingest path below re-runs them,
-    // reusing every valid upstream stage. reweave re-runs consolidation (slotted ledgers are cleanly
-    // superseded by slot-key on upsert); index rebuilds only. embed is handled in its own branch.
-    let mut redo_invalidated_stage = false;
-    match redo_stage() {
-        Some("reweave") => {
-            // Re-running consolidation requires removing the prior briefs first (otherwise the
-            // consolidator reweaves over its own old output and stale briefs contaminate recall).
-            // Briefs now live in a dedicated table, so clear them wholesale and invalidate the
-            // consolidate + index stages; the ingest path below re-runs consolidation with the new
-            // prompt and reuses the base distilled facts untouched.
-            let cleared = store.clear_briefs().await?;
-            eprintln!(
-                "[longmemeval] {} MEMBENCH_REDO=reweave cleared {cleared} prior briefs",
-                row.question_id
-            );
-            manifest.stages.remove(&MemoryStage::Consolidate);
-            manifest.stages.remove(&MemoryStage::Index);
-            redo_invalidated_stage = true;
-        }
-        Some("index") => {
-            manifest.stages.remove(&MemoryStage::Index);
-            redo_invalidated_stage = true;
-        }
-        Some("distill") => {
-            anyhow::bail!(
-                "--redo distill on an existing vault is not supported (base facts would duplicate); \
-                 run a fresh ingest to re-distill"
-            );
-        }
-        _ => {}
-    }
-    if redo_invalidated_stage {
-        // Persist the invalidation: the ingest pipeline below reloads the manifest FROM DISK and
-        // skips any stage still marked Succeeded there. Without this save the on-disk stage stays
-        // Succeeded, the rebuild is skipped, and for reweave the briefs are wiped (clear_briefs
-        // above) WITHOUT being re-woven. Saving forces the pipeline to actually re-run the stage.
-        manifest.save(&manifest_path)?;
-    }
-
-    let mut incremental_ingest_completed = false;
-    if reembed_mode() {
-        // Re-embed an already-distilled vault: rebuild each fact's embedding text from its metadata
-        // (content + subjects + slot_key + tags + event_time/valid_from dates) and re-embed facts +
-        // raw turns with the current embedder, overwriting the stored vectors. Reuses the persisted
-        // distill/consolidation — no LLM re-distill. The index then rebuilds at the current dims.
-        if existing_facts.is_empty() {
-            anyhow::bail!(
-                "--re-embed requires an ingested vault with facts for {}",
-                row.question_id
-            );
-        }
-        let reembed_started_at = Utc::now();
-        let reembed_started = Instant::now();
-        let embedder = embedder_factory();
-        let dims_profile = format!("dimensions:{}", embedder.dimensions());
-        let mut facts = existing_facts.clone();
-        for fact in facts.iter_mut() {
-            // Clear the distill-time search_text so enrich rebuilds it from current metadata logic.
-            fact.search_text = None;
-            fact.embedding_profile = Some(dims_profile.clone());
-            symbiotic_memory::enrich_fact_search_metadata(fact);
-        }
-        let fact_texts: Vec<String> = facts
-            .iter()
-            .map(symbiotic_memory::fact_retrieval_text)
-            .collect();
-        let fact_embeddings = embed_texts_in_chunks(&embedder, &fact_texts).await?;
-        anyhow::ensure!(
-            fact_embeddings.len() == facts.len(),
-            "re-embed produced {} embeddings for {} facts",
-            fact_embeddings.len(),
-            facts.len()
-        );
-        let reembedded_fact_count = facts.len();
-        store.upsert_facts(facts, fact_embeddings).await?;
-        // Raw turns are only re-embedded when explicitly requested (dims/model change). By default
-        // the prep copied the source zvec index forward, so the existing turn vectors are already
-        // present — recomputing them would re-call the embedding API for identical vectors (the bulk
-        // cost of a re-embed). See `reembed_turns`.
-        let mut reembedded_turn_count = 0usize;
-        if reembed_turns() && !existing_turns.is_empty() {
-            let turn_texts: Vec<String> = existing_turns
-                .iter()
-                .map(|turn| turn.text.clone())
-                .collect();
-            let turn_embeddings = embed_texts_in_chunks(&embedder, &turn_texts).await?;
-            anyhow::ensure!(
-                turn_embeddings.len() == existing_turns.len(),
-                "re-embed produced {} embeddings for {} turns",
-                turn_embeddings.len(),
-                existing_turns.len()
-            );
-            reembedded_turn_count = existing_turns.len();
-            store
-                .upsert_turns(existing_turns.clone(), turn_embeddings)
-                .await?;
-        }
-        record_adapter_stage(
-            memory_trace_sink.as_ref(),
-            debug_run_id,
-            &row.question_id,
-            "re_embed",
-            reembed_started_at,
-            reembed_started.elapsed(),
-            BTreeMap::from([
-                (
-                    "reembedded_fact_count".to_string(),
-                    serde_json::json!(reembedded_fact_count),
-                ),
-                (
-                    "reembedded_turn_count".to_string(),
-                    serde_json::json!(reembedded_turn_count),
-                ),
-                (
-                    "embedding_dimensions".to_string(),
-                    serde_json::json!(embedder.dimensions()),
-                ),
-            ]),
-        )
-        .await;
-        // upsert_facts/upsert_turns already wrote the new vectors into the store.
-        incremental_ingest_completed = true;
-    } else if answer_only {
-        if existing_turn_count == 0
-            || existing_fact_count == 0
-            || !post_ingest_complete(&manifest, consolidate_briefs)
-        {
-            anyhow::bail!(
-                "answer-only run requires a complete ingested vault for {}",
-                row.question_id
-            );
-        }
-        if supersession_detection_enabled() {
-            run_supersession_detection_pass(
+        .cloned()
+        .collect();
+    let mut tasks = futures::stream::iter(pending.into_iter().map(|row| {
+        let providers = providers.clone();
+        let run = run.clone();
+        let workflow_queue = workflow_queue.clone();
+        let workflow_queue_id = workflow_queue_id.clone();
+        async move {
+            let worker_id = workflow_worker_id(&row.question_id);
+            let input_hash = workflow_input_hash(&row, &run)?;
+            let queue_item = enqueue_and_claim_workflow_row(
+                workflow_queue.as_ref(),
+                workflow_queue_id,
+                &worker_id,
                 &row.question_id,
-                &vault_dir,
-                &store,
-                &embedder_factory(),
-                memory_trace_sink.as_ref(),
-                debug_run_id,
+                &input_hash,
+                lease_seconds,
+                run.max_in_flight,
+                max_attempts,
+                run.allow_terminal_reenqueue,
             )
             .await?;
-        }
-    } else if !post_ingest_complete(&manifest, consolidate_briefs) {
-        let mut ingest =
-            IngestPipeline::new(store.clone(), embedder_factory(), distiller_factory())
-                .with_distill_config(kit_config().distill.clone())
-                .with_embed_config(kit_config().embed.clone())
-                .with_archive_root(&vault_dir)
-                .with_manifest_path(&manifest_path, active_manifest_tag())
-                .with_optional_trace_sink(memory_trace_sink.clone())
-                .with_diagnostic_mode(ingest_diagnostic_mode);
-        if consolidate_briefs {
-            // Consolidation is explicit: the caller must supply the provider
-            // factory as well as enabling the run flag. Test-only convenience
-            // wrappers intentionally supply no consolidator.
-            if let Some(consolidator_factory) = consolidator_factory {
-                ingest = ingest.with_consolidator(consolidator_factory());
-            }
-        }
-        ingest.ingest(source.clone()).await?;
-        incremental_ingest_completed = true;
-        manifest = MemoryRunManifest::load(&manifest_path)?
-            .ok_or_else(|| anyhow::anyhow!("ingest did not write {}", manifest_path.display()))?;
-    }
-    let pre_recall_started_at = Utc::now();
-    let pre_recall_started = Instant::now();
-    let mut pre_recall_metrics = BTreeMap::<String, serde_json::Value>::new();
-    pre_recall_metrics.insert(
-        "store_backend".to_string(),
-        serde_json::json!(store_backend),
-    );
-    pre_recall_metrics.insert(
-        "incremental_ingest_completed".to_string(),
-        serde_json::json!(incremental_ingest_completed),
-    );
-    record_adapter_stage_started(
-        memory_trace_sink.as_ref(),
-        debug_run_id,
-        &row.question_id,
-        "pre_recall_setup",
-        pre_recall_metrics.clone(),
-    )
-    .await;
-    if ingest_diagnostic_mode != IngestDiagnosticMode::None {
-        let step_started = Instant::now();
-        let turn_count = store.turns().await?.len();
-        let fact_count = manifest
-            .stages
-            .get(&MemoryStage::DistillWindow)
-            .and_then(|stage| stage.metrics.get("fact_count"))
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or_default();
-        insert_elapsed_ms(
-            &mut pre_recall_metrics,
-            "load_counts_ms",
-            step_started.elapsed(),
-        );
-        pre_recall_metrics.insert("fact_count".to_string(), serde_json::json!(fact_count));
-        pre_recall_metrics.insert("turn_count".to_string(), serde_json::json!(turn_count));
-        pre_recall_metrics.insert(
-            "store_backend".to_string(),
-            serde_json::json!(store_backend),
-        );
-        pre_recall_metrics.insert(
-            "ingest_diagnostic_mode".to_string(),
-            serde_json::json!(ingest_diagnostic_mode.as_str()),
-        );
-        pre_recall_metrics.insert(
-            "incremental_ingest_completed".to_string(),
-            serde_json::json!(incremental_ingest_completed),
-        );
-        record_adapter_stage(
-            memory_trace_sink.as_ref(),
-            debug_run_id,
-            &row.question_id,
-            "pre_recall_setup",
-            pre_recall_started_at,
-            pre_recall_started.elapsed(),
-            pre_recall_metrics,
-        )
-        .await;
-        let hypothesis = BenchHypothesis {
-            question_id: row.question_id.clone(),
-            question_type: row.question_type.clone(),
-            question: row.question.clone(),
-            hypothesis: format!(
-                "DIAGNOSTIC_STOP_AFTER_{}",
-                ingest_diagnostic_mode
-                    .as_str()
-                    .replace('-', "_")
-                    .to_ascii_uppercase()
-            ),
-            debug_artifact: None,
-            router_initial: Some(format!("diagnostic-{}", ingest_diagnostic_mode.as_str())),
-            router_final: Some(format!("diagnostic-{}", ingest_diagnostic_mode.as_str())),
-            router_reason: Some(format!(
-                "stopped after {} ingest isolate",
-                ingest_diagnostic_mode.as_str()
-            )),
-        };
-        write_json_atomic(&vault_dir.join("answer.json"), &hypothesis)?;
-        manifest.save(&manifest_path)?;
-        return Ok(hypothesis);
-    }
-    let step_started = Instant::now();
-    let (fact_count, turn_count) = if answer_only {
-        (existing_fact_count, existing_turn_count)
-    } else {
-        (
-            store.active_facts().await?.len(),
-            store.turns().await?.len(),
-        )
-    };
-    insert_elapsed_ms(
-        &mut pre_recall_metrics,
-        "load_counts_ms",
-        step_started.elapsed(),
-    );
-    if fact_count == 0 {
-        anyhow::bail!(
-            "vault {} produced zero active facts after ingest",
-            row.question_id
-        );
-    }
-    // No pre-recall index maintenance: the store's collections ARE the index
-    // (the hybrid-era trust/rebuild ladder died with the ledger in the §12
-    // step-3 cutover).
-    pre_recall_metrics.insert("fact_count".to_string(), serde_json::json!(fact_count));
-    pre_recall_metrics.insert("turn_count".to_string(), serde_json::json!(turn_count));
-    pre_recall_metrics.insert(
-        "store_backend".to_string(),
-        serde_json::json!(store_backend),
-    );
-    pre_recall_metrics.insert(
-        "incremental_ingest_completed".to_string(),
-        serde_json::json!(incremental_ingest_completed),
-    );
-    record_adapter_stage(
-        memory_trace_sink.as_ref(),
-        debug_run_id,
-        &row.question_id,
-        "pre_recall_setup",
-        pre_recall_started_at,
-        pre_recall_started.elapsed(),
-        pre_recall_metrics,
-    )
-    .await;
-
-    let answer_retry_chat = answer_retry_factory.as_ref().map(|factory| factory());
-    let RerankCascade {
-        main: reranker_main,
-        stage1: reranker_stage1,
-        stage1_top_x: rerank_stage1_top_x,
-    } = reranker;
-    // Gold-oracle mode: build the answerer's context from ONLY the gold-session turns and hand it to
-    // the engine as a forced context. Recall still runs (so the question-debug profile/plan stay
-    // populated) but its retrieved evidence is discarded before the answerer — the reader sees nothing
-    // but clean gold. None outside oracle mode (or if the record has no resolvable gold sessions),
-    // which leaves the normal recall→rerank→answer path untouched.
-    let gold_oracle_context = if oracle_gold_enabled() {
-        // Always Some in oracle mode — empty for abstention questions (forces an abstain), never a
-        // fallback to the noisy recall path.
-        build_gold_oracle_context(&row)
-    } else {
-        None
-    };
-    let mut engine = RecallEngine::new(store, embedder_factory(), chat_factory(), policy)
-        .with_recall_tuning(kit_config().recall.clone())
-        .with_experimental(kit_config().experimental.clone())
-        .with_optional_answer_retry_chat(answer_retry_chat)
-        .with_optional_reranker(reranker_main)
-        .with_optional_reranker_stage1(reranker_stage1.clone())
-        .with_rerank_stage1_top_x(reranker_stage1.is_some().then_some(rerank_stage1_top_x))
-        .with_optional_trace_sink(memory_trace_sink.clone())
-        .with_optional_forced_context(gold_oracle_context)
-        .with_trace_context(RecallTraceContext::new(
-            row.question_id.clone(),
-            row.question_id.clone(),
-            row.question_id.clone(),
-        ));
-    if let Some(planner_factory) = planner_factory {
-        engine = engine.with_query_planner(planner_factory());
-    }
-    let workflow_hash = workflow_input_hash(
-        &row,
-        routed,
-        answer_only,
-        consolidate_briefs,
-        IngestDiagnosticMode::None,
-        &engine.policy,
-    );
-    manifest.begin(MemoryStage::Answer, workflow_hash.clone());
-    manifest.save(&manifest_path)?;
-    let reference_date = longmemeval_answer_reference_datetime(row);
-    let recall_debug = match engine
-        .answer_debug_with_reference_date(&row.question, Some(reference_date.as_str()))
-        .await
-    {
-        Ok(value) => value,
-        Err(err) => {
-            manifest.fail(MemoryStage::Answer, err.to_string());
-            manifest.save(&manifest_path)?;
-            return Err(err.into());
-        }
-    };
-    let answer_text = recall_debug.final_answer.text.clone();
-    let recall_profile = recall_debug.recall_profile.clone();
-    let recall_debug = Some(recall_debug);
-    let debug_artifact = recall_debug.as_ref().map(|_| {
-        let snapshot_path = question_debug_snapshot_path(&vault_dir, debug_run_id);
-        snapshot_path
-            .strip_prefix(run_root)
-            .unwrap_or(&snapshot_path)
-            .display()
-            .to_string()
-    });
-    let hypothesis = BenchHypothesis {
-        question_id: row.question_id.clone(),
-        question_type: row.question_type.clone(),
-        question: row.question.clone(),
-        hypothesis: answer_text,
-        debug_artifact,
-        router_initial: Some(recall_profile.clone()),
-        router_final: Some(recall_profile),
-        router_reason: Some("memory recall profile".to_string()),
-    };
-    if let Some(recall_debug) = recall_debug.as_ref() {
-        write_question_debug(
-            run_root,
-            &vault_dir,
-            &row,
-            source.turns.len(),
-            turn_count,
-            fact_count,
-            routed,
-            answer_only,
-            consolidate_briefs,
-            workflow_hash.clone(),
-            recall_debug,
-            &hypothesis,
-            debug_metadata.as_ref(),
-            debug_run_id,
-        )?;
-    }
-    write_json_atomic(&vault_dir.join("answer.json"), &hypothesis)?;
-    manifest.succeed(
-        MemoryStage::Answer,
-        stable_hash_json(&hypothesis)?,
-        BTreeMap::from([("fact_count".to_string(), serde_json::json!(fact_count))]),
-    );
-    manifest.save(&manifest_path)?;
-    Ok(hypothesis)
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn write_question_debug(
-    run_root: &Path,
-    vault_dir: &Path,
-    row: &LongMemEvalRecord,
-    source_turn_count: usize,
-    indexed_turn_count: usize,
-    fact_count: usize,
-    routed: bool,
-    answer_only: bool,
-    consolidate_briefs: bool,
-    workflow_input_hash: String,
-    recall_debug: &RecallAnswerDebug,
-    hypothesis: &BenchHypothesis,
-    debug_metadata: Option<&BenchDebugMetadata>,
-    debug_run_id: &str,
-) -> anyhow::Result<String> {
-    let debug_dir = vault_dir.join("debug");
-    fs::create_dir_all(&debug_dir)?;
-    let mut provider_trace_artifacts = serde_json::Map::new();
-    if let Some(metadata) = debug_metadata {
-        for key in [
-            "model_traces_jsonl",
-            "model_queue_sqlite",
-            "model_queue_traces_jsonl",
-            "response_cache_dir",
-        ] {
-            if let Some(path) = metadata.trace_artifacts.get(key) {
-                provider_trace_artifacts
-                    .insert(key.to_string(), serde_json::Value::String(path.clone()));
-            }
-        }
-    }
-    let debug = serde_json::json!({
-        "schema_version": 1,
-        "question": {
-            "id": row.question_id,
-            "type": row.question_type,
-            "text": row.question,
-            "date": row.question_date,
-            "gold_answer": row.answer,
-        },
-        "source": {
-            "haystack_dates": row.haystack_dates,
-            "haystack_session_ids": row.haystack_session_ids,
-            "haystack_session_count": row.haystack_sessions.len(),
-            "source_turn_count": source_turn_count,
-            "indexed_turn_count": indexed_turn_count,
-        },
-        "workflow": {
-            "routed": routed,
-            "answer_only": answer_only,
-            "consolidate_briefs": consolidate_briefs,
-            "input_hash": workflow_input_hash,
-        },
-        "ingest": {
-            "active_fact_count": fact_count,
-            "manifest_path": "manifest.json",
-        },
-        "runtime": {
-            "bench_owned_metadata": debug_metadata,
-            "trace_note": "Answerer calls inline their returned usage/cache tokens when the provider returns them; full provider queue/model events remain in the trace artifacts.",
-        },
-        "recall": recall_debug,
-        "hypothesis": hypothesis,
-        "provider_trace_artifacts": provider_trace_artifacts,
-        "scoring": serde_json::Value::Null,
-    });
-    let latest_path = debug_dir.join("question-debug.json");
-    write_json_atomic(&latest_path, &debug)?;
-
-    let snapshot_path = question_debug_snapshot_path(vault_dir, debug_run_id);
-    if let Some(parent) = snapshot_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    write_json_atomic(&snapshot_path, &debug)?;
-    Ok(snapshot_path
-        .strip_prefix(run_root)
-        .unwrap_or(&snapshot_path)
-        .display()
-        .to_string())
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn question_debug_snapshot_path(vault_dir: &Path, debug_run_id: &str) -> std::path::PathBuf {
-    vault_dir
-        .join("debug")
-        .join("hypotheses")
-        .join(debug_run_id)
-        .join("question-debug.json")
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-#[allow(dead_code)]
-async fn run_longmemeval_sqlite_sequential<E, D, C>(
-    rows: &[LongMemEvalRecord],
-    run_root: impl AsRef<Path>,
-    embedder_factory: impl Fn() -> E,
-    distiller_factory: impl Fn() -> D,
-    chat_factory: impl Fn() -> C,
-    policy: symbiotic_memory::config::RecallPolicy,
-    out_path: impl AsRef<Path>,
-    routed: bool,
-) -> anyhow::Result<Vec<BenchHypothesis>>
-where
-    E: EmbeddingProvider + Clone + 'static,
-    D: Distiller,
-    C: ChatProvider,
-{
-    if let Some(parent) = out_path.as_ref().parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::create_dir_all(run_root.as_ref())?;
-    let mut out = read_existing_hypotheses(out_path.as_ref())?;
-    let mut completed: BTreeSet<_> = out.iter().map(|h| h.question_id.clone()).collect();
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(out_path.as_ref())?;
-
-    for (idx, row) in rows.iter().enumerate() {
-        if completed.contains(&row.question_id) {
-            eprintln!(
-                "[longmemeval] {}/{} {} skipped",
-                idx + 1,
-                rows.len(),
-                row.question_id
+            let heartbeat = spawn_workflow_heartbeat(
+                workflow_queue.clone(),
+                queue_item.item_id.clone(),
+                worker_id.clone(),
+                lease_seconds,
             );
-            continue;
-        }
-        eprintln!(
-            "[longmemeval] {}/{} {} {}",
-            idx + 1,
-            rows.len(),
-            row.question_id,
-            if routed { "process-routed" } else { "process" }
-        );
-        let vault_dir = run_root.as_ref().join("vaults").join(&row.question_id);
-        fs::create_dir_all(&vault_dir)?;
-        // This legacy sequential path is sqlite-pinned by name; the pin now
-        // flows through the profile instead of a concrete store type.
-        let (store, _) = open_store_with_metrics(
-            vault_dir.clone(),
-            "sqlite".to_string(),
-            embedder_factory().dimensions(),
-        )
-        .await?;
-        let existing_turns = store.turns().await?;
-        let existing_facts = store.active_facts().await?;
-        if existing_turns.is_empty() {
-            let ingest =
-                IngestPipeline::new(store.clone(), embedder_factory(), distiller_factory())
-                    .with_distill_config(kit_config().distill.clone())
-                    .with_embed_config(kit_config().embed.clone())
-                    .with_archive_root(&vault_dir)
-                    .with_manifest_path(vault_dir.join("manifest.json"), "longmemeval-v1");
-            ingest.ingest(longmemeval_to_source(row)).await?;
-        } else if existing_facts.is_empty() {
-            let ingest =
-                IngestPipeline::new(store.clone(), embedder_factory(), distiller_factory())
-                    .with_distill_config(kit_config().distill.clone())
-                    .with_embed_config(kit_config().embed.clone())
-                    .with_archive_root(&vault_dir)
-                    .with_manifest_path(vault_dir.join("manifest.json"), "longmemeval-v1");
-            ingest.ingest(longmemeval_to_source(row)).await?;
-        }
-        let engine = RecallEngine::new(store, embedder_factory(), chat_factory(), policy.clone())
-            .with_recall_tuning(kit_config().recall.clone())
-            .with_experimental(kit_config().experimental.clone());
-        let reference_date = longmemeval_answer_reference_datetime(row);
-        // One bad question (e.g. a transient empty/timed-out embedding that leaves recall with no
-        // usable query vector) must cost at most this one question, never the whole run. Catch the
-        // per-question error, log it, and emit an "unavailable" hypothesis so the loop continues and
-        // the remaining questions still run. The recall engine already drops individual bad sub-query
-        // vectors; this only triggers when an entire question's recall genuinely cannot proceed.
-        let hypothesis = match engine
-            .answer_with_reference_date(&row.question, Some(reference_date.as_str()))
-            .await
-        {
-            Ok(answer) => BenchHypothesis {
-                question_id: row.question_id.clone(),
-                question_type: row.question_type.clone(),
-                question: row.question.clone(),
-                hypothesis: answer.text,
-                debug_artifact: None,
-                router_initial: None,
-                router_final: None,
-                router_reason: None,
-            },
-            Err(err) => {
-                eprintln!(
-                    "[longmemeval] {}/{} {} recall-unavailable: {err}; marking question unavailable and continuing",
-                    idx + 1,
-                    rows.len(),
-                    row.question_id
-                );
-                BenchHypothesis {
-                    question_id: row.question_id.clone(),
-                    question_type: row.question_type.clone(),
-                    question: row.question.clone(),
-                    hypothesis: "UNAVAILABLE: recall failed for this question".to_string(),
-                    debug_artifact: None,
-                    router_initial: Some("recall-unavailable".to_string()),
-                    router_final: Some("recall-unavailable".to_string()),
-                    router_reason: Some(err.to_string()),
+            let result =
+                run_workflow_row(process_record(row, providers, run), question_timeout()).await;
+            match result {
+                Ok(outcome) => Ok(ClaimedRecordOutcome {
+                    outcome,
+                    queue_item,
+                    worker_id,
+                    heartbeat,
+                }),
+                Err(error) => {
+                    heartbeat.abort();
+                    fail_workflow_item(
+                        workflow_queue.as_ref(),
+                        &queue_item.item_id,
+                        &worker_id,
+                        &error.to_string(),
+                        queue_item.attempt,
+                    )
+                    .await?;
+                    Err(error)
                 }
             }
-        };
-        writeln!(file, "{}", serde_json::to_string(&hypothesis)?)?;
-        file.flush()?;
-        completed.insert(hypothesis.question_id.clone());
-        out.push(hypothesis);
-    }
-
-    Ok(out)
-}
-
-fn read_existing_hypotheses(path: &Path) -> anyhow::Result<Vec<BenchHypothesis>> {
-    if !path.is_file() {
-        return Ok(Vec::new());
-    }
-    let file = fs::File::open(path)?;
-    let mut out = Vec::new();
-    for line in std::io::BufReader::new(file).lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
         }
-        out.push(parse_bench_hypothesis_line(&line)?);
-    }
-    Ok(out)
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn read_existing_hypothesis_ids(path: &Path) -> anyhow::Result<BTreeSet<String>> {
-    if !path.is_file() {
-        return Ok(BTreeSet::new());
-    }
-    let file = fs::File::open(path)?;
-    let mut out = BTreeSet::new();
-    for line in std::io::BufReader::new(file).lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let value: Value = serde_json::from_str(&line)?;
-        reject_forbidden_hypothesis_fields(&value)?;
-        let Some(question_id) = value.get("question_id").and_then(Value::as_str) else {
-            anyhow::bail!("hypothesis row missing question_id");
-        };
-        out.insert(question_id.to_string());
-    }
-    Ok(out)
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn reset_hypotheses_for_answer_only(path: &Path) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(path)?;
-    Ok(())
-}
-
-fn parse_bench_hypothesis_line(line: &str) -> anyhow::Result<BenchHypothesis> {
-    let value: Value = serde_json::from_str(line)?;
-    reject_forbidden_hypothesis_fields(&value)?;
-    Ok(serde_json::from_value(value)?)
-}
-
-fn reject_forbidden_hypothesis_fields(value: &Value) -> anyhow::Result<()> {
-    let Some(object) = value.as_object() else {
-        anyhow::bail!("benchmark hypothesis line must be a JSON object");
-    };
-    const FORBIDDEN: &[&str] = &["answer", "gold", "oracle", "label", "verdict"];
-    if let Some(field) = FORBIDDEN.iter().find(|field| object.contains_key(**field)) {
-        anyhow::bail!("benchmark hypothesis contains forbidden scoring field `{field}`");
-    }
-    Ok(())
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-pub fn record_external_scores(
-    run_root: impl AsRef<Path>,
-    hypotheses_path: impl AsRef<Path>,
-    scored_path: Option<impl AsRef<Path>>,
-    verdicts_path: Option<impl AsRef<Path>>,
-    scorer: &str,
-) -> anyhow::Result<ScoreRecordReport> {
-    let run_root = run_root.as_ref();
-    let hypotheses_path = hypotheses_path.as_ref();
-    let scored_path = scored_path.as_ref().map(|path| path.as_ref().to_path_buf());
-    let verdicts_path = verdicts_path
-        .as_ref()
-        .map(|path| path.as_ref().to_path_buf());
-    if scored_path.is_none() && verdicts_path.is_none() {
-        anyhow::bail!("provide --scored or --verdicts");
-    }
-
-    let hypotheses = read_existing_hypotheses(hypotheses_path)?;
-    if hypotheses.is_empty() {
-        anyhow::bail!(
-            "no hypotheses found in {}; score only generated hypotheses from the current run",
-            hypotheses_path.display()
-        );
-    }
-    let hypothesis_ids = hypotheses
-        .iter()
-        .map(|hypothesis| hypothesis.question_id.clone())
-        .collect::<BTreeSet<_>>();
-
-    let scores_dir = run_root.join("scores");
-    fs::create_dir_all(&scores_dir)?;
-    let scored_artifact = scored_path
-        .as_ref()
-        .map(|path| copy_score_artifact(path, &scores_dir))
-        .transpose()?;
-    let verdicts_artifact = verdicts_path
-        .as_ref()
-        .map(|path| copy_score_artifact(path, &scores_dir))
-        .transpose()?;
-
-    let scored_summary = scored_artifact
-        .as_ref()
-        .map(|artifact| read_json_file(&run_root.join(artifact)))
-        .transpose()?;
-    let verdicts = verdicts_artifact
-        .as_ref()
-        .map(|artifact| read_verdicts_jsonl(&run_root.join(artifact), &hypothesis_ids))
-        .transpose()?
-        .unwrap_or_default();
-    let verdict_by_question = verdicts
-        .iter()
-        .map(|verdict| (verdict.question_id.clone(), verdict.clone()))
-        .collect::<BTreeMap<_, _>>();
-    let metrics = score_metrics(scored_summary.as_ref(), &verdicts);
-    let artifact_hashes = score_artifact_hashes(
-        run_root,
-        scored_artifact.as_deref(),
-        verdicts_artifact.as_deref(),
-    )?;
-    let score_input = serde_json::json!({
-        "scorer": scorer,
-        "hypotheses_hash": hash_file(hypotheses_path)?,
-        "hypotheses": hypothesis_ids,
-        "artifacts": artifact_hashes,
-    });
-    let score_summary = serde_json::json!({
-        "schema_version": 1,
-        "scorer": scorer,
-        "hypotheses_file": hypotheses_path.display().to_string(),
-        "hypotheses_hash": score_input["hypotheses_hash"],
-        "hypotheses_count": hypotheses.len(),
-        "scored_artifact": scored_artifact,
-        "verdicts_artifact": verdicts_artifact,
-        "artifact_hashes": artifact_hashes,
-        "metrics": metrics,
-        "scored_summary": scored_summary,
-    });
-    let summary_path = run_root.join("score-summary.json");
-    write_json_atomic(&summary_path, &score_summary)?;
-
-    let mut debug_files_updated = 0usize;
-    for hypothesis in &hypotheses {
-        let verdict = verdict_by_question.get(&hypothesis.question_id);
-        debug_files_updated += update_question_debug_score(
-            &run_root.join("vaults").join(&hypothesis.question_id),
-            hypothesis.debug_artifact.as_deref(),
-            scorer,
-            scored_artifact.as_deref(),
-            verdicts_artifact.as_deref(),
-            verdict,
-        )?;
-    }
-
-    Ok(ScoreRecordReport {
-        hypotheses: hypotheses.len(),
-        verdicts: verdicts.len(),
-        debug_files_updated,
-        summary_path: summary_path.display().to_string(),
-    })
-}
-
-pub fn clear_score_artifacts(
-    run_root: impl AsRef<Path>,
-    hypotheses_path: impl AsRef<Path>,
-) -> anyhow::Result<usize> {
-    let run_root = run_root.as_ref();
-    let hypotheses_path = hypotheses_path.as_ref();
-    let mut removed = 0usize;
-
-    removed += remove_score_artifact_if_exists(&run_root.join("score-summary.json"))?;
-    removed += remove_score_artifact_if_exists(&run_root.join("scores"))?;
-    for directory in ["raw", "artifacts"] {
-        for file_name in [
-            "verdicts.jsonl",
-            "partial-verdicts.jsonl",
-            "scored.json",
-            "score-summary.json",
-        ] {
-            removed += remove_score_artifact_if_exists(&run_root.join(directory).join(file_name))?;
-        }
-    }
-
-    let hypotheses = hypotheses_path.to_string_lossy();
-    for suffix in [".scored.json", ".verdicts.jsonl", ".partial.verdicts.jsonl"] {
-        removed += remove_score_artifact_if_exists(Path::new(&format!("{hypotheses}{suffix}")))?;
-    }
-
-    Ok(removed)
-}
-
-fn remove_score_artifact_if_exists(path: &Path) -> anyhow::Result<usize> {
-    if !path.exists() {
-        return Ok(0);
-    }
-    if path.is_dir() {
-        fs::remove_dir_all(path)?;
-    } else {
-        fs::remove_file(path)?;
-    }
-    Ok(1)
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn debug_run_id(out_path: &Path) -> String {
-    let name = out_path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .filter(|stem| !stem.trim().is_empty())
-        .unwrap_or("hypotheses");
-    let sanitized = name
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-                ch
-            } else {
-                '-'
+    }))
+    .buffer_unordered(run.max_in_flight.max(1));
+    while let Some(result) = tasks.next().await {
+        let claimed = result?;
+        let output_result = (|| -> anyhow::Result<()> {
+            if let Some(hypothesis) = claimed.outcome.as_ref() {
+                writeln!(output_file, "{}", serde_json::to_string(hypothesis)?)?;
+                output_file.flush()?;
             }
-        })
-        .collect::<String>();
-    let trimmed = sanitized
-        .trim_matches('-')
-        .chars()
-        .take(96)
-        .collect::<String>();
-    if trimmed.is_empty() {
-        "hypotheses".to_string()
+            Ok(())
+        })();
+        if let Err(error) = output_result {
+            claimed.heartbeat.abort();
+            fail_workflow_item(
+                workflow_queue.as_ref(),
+                &claimed.queue_item.item_id,
+                &claimed.worker_id,
+                &error.to_string(),
+                claimed.queue_item.attempt,
+            )
+            .await?;
+            return Err(error);
+        }
+        let complete_result = workflow_queue
+            .complete(&claimed.queue_item.item_id, &claimed.worker_id)
+            .await;
+        claimed.heartbeat.abort();
+        complete_result.map_err(queue_error)?;
+    }
+    read_hypotheses(&run.out_path)
+}
+
+struct ClaimedRecordOutcome {
+    outcome: Option<BenchHypothesis>,
+    queue_item: QueueItem,
+    worker_id: String,
+    heartbeat: tokio::task::JoinHandle<()>,
+}
+
+async fn process_record(
+    row: LongMemEvalRecord,
+    providers: MemoryFacadeProviders,
+    run: MemoryFacadeRun,
+) -> anyhow::Result<Option<BenchHypothesis>> {
+    let state_root = match &run.source_vault_root {
+        Some(source_root) => source_root.join(&row.question_id),
+        None => run.run_root.join("vaults").join(&row.question_id),
+    };
+    if run.answer_only {
+        anyhow::ensure!(
+            state_root.is_dir(),
+            "answer-only Memory state does not exist for {} at {}",
+            row.question_id,
+            state_root.display()
+        );
     } else {
-        trimmed
+        fs::create_dir_all(&state_root)?;
     }
+    let services = MemoryEngineServices {
+        reranker: providers.reranker.main.clone(),
+        prefilter_reranker: providers.reranker.stage1.clone(),
+        prefilter_limit: providers
+            .reranker
+            .stage1
+            .is_some()
+            .then_some(providers.reranker.stage1_top_x.max(1)),
+        query_planner: providers.planner.as_ref().map(|factory| factory()),
+        trace_sink: providers.trace_sink.clone(),
+    };
+    let engine = MemoryEngine::open_with_services(
+        MemoryEngineConfig {
+            vault: MemoryVault::Persistent(state_root.clone()),
+            archive: ArchiveMode::VaultDefault,
+            profile: kit_config().clone(),
+            recall_policy: run.policy.clone(),
+            access_policy: Arc::new(AllowAll),
+            config_hash: format!("{}:{}", active_manifest_tag(), kit_config_hash()),
+        },
+        MemoryProviders {
+            embedder: (providers.embedder)(),
+            chat: (providers.chat)(),
+            distiller: (providers.distiller)(),
+        },
+        services,
+    )?;
+    let space = format!("benchmark:{}", active_manifest_tag());
+    let session = engine.session(
+        MemorySessionContext::new(
+            format!("{}:{}", run.run_id, row.question_id),
+            Actor::Agent("membench".to_string()),
+            space.clone(),
+        )
+        .with_write_scope(Scope::space(space))
+        .with_egress(Sensitivity::Restricted),
+    );
+    let operation = MemoryOperationContext::new(
+        run.run_id.clone(),
+        row.question_id.clone(),
+        row.question_id.clone(),
+    );
+    if !run.answer_only {
+        let ingest = session
+            .ingest_detailed(MemoryDetailedIngestRequest {
+                ingest: MemoryIngestRequest {
+                    source: longmemeval_to_source(&row),
+                    fact_tags: vec![format!("benchmark:{}", active_manifest_tag())],
+                },
+                mode: run.ingest_mode,
+                operation: Some(operation.clone()),
+            })
+            .await?;
+        if ingest.status == MemoryIngestExecutionStatus::DiagnosticStop {
+            write_ingest_diagnostic(&run.run_root, &row.question_id, &ingest)?;
+            return Ok(None);
+        }
+    }
+    let recalled = session
+        .recall_detailed(MemoryDetailedRecallRequest {
+            recall: MemoryRecallRequest {
+                question: row.question.clone(),
+                reference_date: Some(reference_datetime(&row)),
+            },
+            diagnostics: MemoryDiagnosticMode::Full,
+            operation: Some(operation),
+        })
+        .await?;
+    let diagnostics = recalled
+        .diagnostics
+        .ok_or_else(|| anyhow::anyhow!("Memory returned no requested recall diagnostics"))?;
+    let debug_artifact = write_question_debug(
+        &run.run_root,
+        &row,
+        &diagnostics,
+        &recalled.recall.answer,
+        run.debug_metadata.as_ref(),
+    )?;
+    Ok(Some(BenchHypothesis {
+        question_id: row.question_id,
+        question_type: row.question_type,
+        question: row.question,
+        hypothesis: recalled.recall.answer.text,
+        debug_artifact: Some(debug_artifact),
+        router_initial: None,
+        router_final: None,
+        router_reason: None,
+    }))
 }
 
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn update_question_debug_score(
-    vault_dir: &Path,
-    debug_artifact: Option<&str>,
-    scorer: &str,
-    scored_artifact: Option<&str>,
-    verdicts_artifact: Option<&str>,
-    verdict: Option<&ScoreVerdict>,
-) -> anyhow::Result<usize> {
-    let mut paths = vec![vault_dir.join("debug").join("question-debug.json")];
-    if let Some(debug_artifact) = debug_artifact {
-        if let Some(run_root) = vault_dir.parent().and_then(Path::parent) {
-            paths.push(run_root.join(debug_artifact));
-        }
-    }
-    let mut updated = 0usize;
-    for debug_path in paths {
-        if !debug_path.is_file() {
-            continue;
-        }
-        let mut debug = read_json_file(&debug_path)?;
-        if let Some(object) = debug.as_object_mut() {
-            object.insert(
-                "scoring".to_string(),
-                serde_json::json!({
-                    "scorer": scorer,
-                    "scored_artifact": scored_artifact,
-                    "verdicts_artifact": verdicts_artifact,
-                    "verdict": verdict,
-                }),
-            );
-        }
-        write_json_atomic(&debug_path, &debug)?;
-        updated += 1;
-    }
-    Ok(updated)
+fn write_ingest_diagnostic(
+    run_root: &Path,
+    question_id: &str,
+    result: &symbiotic_memory::MemoryDetailedIngestResult,
+) -> anyhow::Result<()> {
+    let path = ingest_diagnostic_path(run_root, question_id);
+    write_json_atomic(&path, result)
 }
 
-#[cfg(feature = "symbiotic-memory-adapter")]
+fn ingest_diagnostic_path(run_root: &Path, question_id: &str) -> PathBuf {
+    run_root
+        .join("artifacts")
+        .join("ingest-diagnostics")
+        .join(format!("{question_id}.json"))
+}
+
+fn workflow_input_hash(row: &LongMemEvalRecord, run: &MemoryFacadeRun) -> anyhow::Result<String> {
+    let mut hasher = Sha256::new();
+    hasher.update(serde_json::to_vec(row)?);
+    hasher.update(b"\0");
+    hasher.update(serde_json::to_vec(&run.policy)?);
+    hasher.update(b"\0");
+    hasher.update(serde_json::to_vec(&run.ingest_mode)?);
+    hasher.update(b"\0");
+    hasher.update(if run.answer_only {
+        b"answer-only".as_slice()
+    } else {
+        b"ingest-and-recall".as_slice()
+    });
+    hasher.update(b"\0");
+    hasher.update(active_manifest_tag().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(kit_config_hash().as_bytes());
+    Ok(hex::encode(hasher.finalize()))
+}
+
 async fn enqueue_and_claim_workflow_row(
     queue: &dyn QueueBackend,
     queue_id: QueueId,
     worker_id: &str,
     question_id: &str,
     input_hash: &str,
-    routed: bool,
     lease_seconds: u64,
     max_in_flight: usize,
     max_attempts: u32,
     allow_terminal_reenqueue: bool,
 ) -> anyhow::Result<QueueItem> {
     let request = EnqueueRequest {
-        queue_id: queue_id.clone(),
+        queue_id,
         kind: "longmemeval.row".to_string(),
-        payload: serde_json::json!({
+        payload: json!({
             "question_id": question_id,
             "input_hash": input_hash,
-            "routed": routed,
         }),
         idempotency_key: Some(format!("{question_id}:{input_hash}")),
         run_after: None,
@@ -2462,72 +630,78 @@ async fn enqueue_and_claim_workflow_row(
         force: false,
     };
     let mut outcome = queue.enqueue(request.clone()).await.map_err(queue_error)?;
-
     if matches!(outcome.disposition, EnqueueDisposition::TerminalDuplicate) {
-        if !allow_terminal_reenqueue {
-            anyhow::bail!(
-                "workflow row {question_id} already reached terminal queue state without a matching hypothesis; use --resume to re-enqueue missing terminal rows or use a fresh run root"
-            );
-        }
+        anyhow::ensure!(
+            allow_terminal_reenqueue,
+            "workflow row {question_id} is terminal without an output; use --resume to re-enqueue it or use a fresh run root"
+        );
         let mut forced = request;
         forced.force = true;
         outcome = queue.enqueue(forced).await.map_err(queue_error)?;
-        if !matches!(outcome.disposition, EnqueueDisposition::Inserted) {
-            anyhow::bail!(
-                "workflow row {question_id} could not be force re-enqueued from terminal state"
-            );
-        }
+        anyhow::ensure!(
+            matches!(outcome.disposition, EnqueueDisposition::Inserted),
+            "workflow row {question_id} could not be force re-enqueued"
+        );
     }
-
-    for _ in 0..lease_claim_attempts(lease_seconds) {
+    for _ in 0..lease_seconds.saturating_mul(4).clamp(4, 2_400) {
         if let Some(claimed) = queue
             .claim_item(
                 &outcome.item.item_id,
                 worker_id,
                 lease_seconds,
-                Some(max_in_flight),
+                Some(max_in_flight.max(1)),
             )
             .await
             .map_err(queue_error)?
         {
             return Ok(claimed);
         }
-
         if let Some(current) = queue
             .get_item(&outcome.item.item_id)
             .await
             .map_err(queue_error)?
         {
             match current.status {
-                DurableQueueStatus::Succeeded => {
-                    anyhow::bail!(
-                        "workflow row {question_id} was completed by another worker before this run wrote a hypothesis"
-                    );
-                }
-                DurableQueueStatus::Dead => {
-                    anyhow::bail!(
-                        "workflow row {question_id} is dead-lettered: {}",
-                        current
-                            .last_error
-                            .unwrap_or_else(|| "unknown error".to_string())
-                    );
-                }
+                DurableQueueStatus::Succeeded => anyhow::bail!(
+                    "workflow row {question_id} completed before this worker wrote its output"
+                ),
+                DurableQueueStatus::Dead => anyhow::bail!(
+                    "workflow row {question_id} is dead-lettered: {}",
+                    current
+                        .last_error
+                        .unwrap_or_else(|| "unknown error".to_string())
+                ),
                 DurableQueueStatus::Running
                 | DurableQueueStatus::Pending
                 | DurableQueueStatus::Failed => {}
             }
         }
-
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-
-    anyhow::bail!(
-        "workflow row {question_id} could not acquire a lease within {}s",
-        lease_seconds
-    )
+    anyhow::bail!("workflow row {question_id} could not acquire a lease within {lease_seconds}s")
 }
 
-#[cfg(feature = "symbiotic-memory-adapter")]
+fn spawn_workflow_heartbeat(
+    queue: Arc<dyn QueueBackend>,
+    item_id: QueueItemId,
+    worker_id: String,
+    lease_seconds: u64,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let interval = Duration::from_secs((lease_seconds / 3).clamp(5, 60));
+        loop {
+            tokio::time::sleep(interval).await;
+            if let Err(error) = queue.heartbeat(&item_id, &worker_id, lease_seconds).await {
+                eprintln!(
+                    "[longmemeval] workflow heartbeat stopped for {}: {error}",
+                    item_id.0
+                );
+                break;
+            }
+        }
+    })
+}
+
 async fn fail_workflow_item(
     queue: &dyn QueueBackend,
     item_id: &QueueItemId,
@@ -2547,7 +721,6 @@ async fn fail_workflow_item(
         .map_err(queue_error)
 }
 
-#[cfg(feature = "symbiotic-memory-adapter")]
 fn workflow_worker_id(question_id: &str) -> String {
     let sanitized = question_id
         .chars()
@@ -2556,129 +729,6 @@ fn workflow_worker_id(question_id: &str) -> String {
     format!("symem-{}-{sanitized}", std::process::id())
 }
 
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn lease_claim_attempts(lease_seconds: u64) -> usize {
-    lease_seconds.saturating_mul(4).clamp(4, 2_400) as usize
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn queue_error(err: QueueError) -> anyhow::Error {
-    anyhow::anyhow!("workflow queue error: {err}")
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn workflow_max_in_flight(configured: Option<usize>) -> usize {
-    std::env::var("MEMBENCH_WORKFLOW_MAX_IN_FLIGHT")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .or(configured)
-        .unwrap_or(50)
-        .max(1)
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn raw_embed_only_diagnostic() -> bool {
-    // Engine-config field (`distill.ingest_stop_after_raw_embed`), resolved through the
-    // kit config the harness installed for this run.
-    kit_config().distill.ingest_stop_after_raw_embed
-}
-
-/// Gold-oracle mode (`--oracle-gold` / `MEMBENCH_ORACLE_GOLD=1`). When on, the answerer is fed ONLY the
-/// gold-session raw turns for each question (zero retrieval, zero noise) instead of the recall→rerank
-/// output, isolating the reader so we can tell whether multi-session answers fail from noise/dilution
-/// or because the reader genuinely cannot compile them even with perfect evidence.
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn oracle_gold_enabled() -> bool {
-    std::env::var("MEMBENCH_ORACLE_GOLD")
-        .ok()
-        .is_some_and(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES"))
-}
-
-/// Assemble the gold-oracle context: the raw turns of every gold session, in the order the dataset
-/// lists them, formatted to mirror the recall `source_turn` context style so the answer prompt treats
-/// them exactly as it would real retrieved turns. Each gold session id in `answer_session_ids` is
-/// resolved to its slot in `haystack_session_ids`, and that session's turns are emitted one context
-/// string per turn. `captured_at` is the session's haystack date (when the conversation was held);
-/// `score` is fixed at 1.000 (these are gold, not ranked). Always returns `Some` — an EMPTY list for
-/// abstention questions (no `has_answer` turns), which correctly forces the answerer to abstain instead
-/// of falling back to noisy recall.
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn build_gold_oracle_context(row: &LongMemEvalRecord) -> Option<Vec<String>> {
-    // EXACT-evidence oracle: feed the answerer ONLY the dataset's `has_answer:true` turns — the
-    // ground-truth marked evidence (typically 2-6 turns of ~480). NOT whole gold sessions: a gold
-    // session is a long conversation dominated by assistant lectures / chit-chat / adjacent topics
-    // that are noise. Scan all sessions and keep only the marked turns, so the answerer sees the
-    // minimal exact list and nothing else.
-    // Two env-gated context-shaping levers (both default OFF = original behavior):
-    //   MEMBENCH_ORACLE_SORT_BY_DATE=1 → emit turns in chronological captured_at order (across sessions),
-    //                                 not haystack-session order — a clean timeline to count along.
-    //   MEMBENCH_ORACLE_DROP_SCORE=1   → omit the fixed "score: 1.000" tag, which is pure noise on gold.
-    let sort_by_date = std::env::var("MEMBENCH_ORACLE_SORT_BY_DATE")
-        .map(|v| matches!(v.trim(), "1" | "on" | "true" | "yes"))
-        .unwrap_or(false);
-    let drop_score = std::env::var("MEMBENCH_ORACLE_DROP_SCORE")
-        .map(|v| matches!(v.trim(), "1" | "on" | "true" | "yes"))
-        .unwrap_or(false);
-    // (captured_at, original_seq, rendered_line) — captured_at is rfc3339 so it sorts chronologically;
-    // "unknown" sorts last; original_seq is a stable tiebreaker so same-date turns keep their order.
-    let mut items: Vec<(String, usize, String)> = Vec::new();
-    let mut seq = 0usize;
-    for (idx, session) in row.haystack_sessions.iter().enumerate() {
-        let session_id = row
-            .haystack_session_ids
-            .get(idx)
-            .map(|s| s.as_str())
-            .unwrap_or("unknown");
-        let captured_at = row
-            .haystack_dates
-            .get(idx)
-            .and_then(|date| parse_longmemeval_datetime(date))
-            .map(|t| t.to_rfc3339())
-            .unwrap_or_else(|| "unknown".to_string());
-        for (msg_idx, msg) in session.iter().enumerate() {
-            if !msg.has_answer {
-                continue;
-            }
-            let line = if drop_score {
-                format!(
-                    "[type: source_turn | source_id: {} | turn_id: {}:{} | ordinal: {} | speaker: {} | captured_at: {}] {}",
-                    row.question_id,
-                    session_id,
-                    msg_idx,
-                    msg_idx,
-                    msg.role,
-                    captured_at,
-                    msg.content,
-                )
-            } else {
-                format!(
-                    "[type: source_turn | source_id: {} | turn_id: {}:{} | ordinal: {} | speaker: {} | captured_at: {} | score: {:.3}] {}",
-                    row.question_id,
-                    session_id,
-                    msg_idx,
-                    msg_idx,
-                    msg.role,
-                    captured_at,
-                    1.0_f32,
-                    msg.content,
-                )
-            };
-            items.push((captured_at.clone(), seq, line));
-            seq += 1;
-        }
-    }
-    if sort_by_date {
-        items.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-    }
-    let context: Vec<String> = items.into_iter().map(|(_, _, line)| line).collect();
-    // Always force the oracle context — even when empty. An empty list is the CORRECT oracle input for
-    // abstention questions (no `has_answer` turns): the answerer sees no evidence and abstains, which is
-    // the right answer. Returning None instead fell back to normal noisy recall (briefs + ranked facts),
-    // contaminating the abstention subset and triggering false answers. (The "briefs on abstention Qs" bug.)
-    Some(context)
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
 fn workflow_max_attempts() -> u32 {
     std::env::var("MEMBENCH_WORKFLOW_MAX_ATTEMPTS")
         .ok()
@@ -2687,1710 +737,284 @@ fn workflow_max_attempts() -> u32 {
         .max(1)
 }
 
-#[cfg(feature = "symbiotic-memory-adapter")]
 fn workflow_retry_delay_seconds(attempt: u32) -> u64 {
     let base = std::env::var("MEMBENCH_WORKFLOW_RETRY_DELAY_SECS")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(2_u64)
         .max(1);
-    let multiplier = 1_u64 << attempt.saturating_sub(1).min(5);
-    base.saturating_mul(multiplier).min(60)
+    base.saturating_mul(1_u64 << attempt.saturating_sub(1).min(5))
+        .min(60)
 }
 
-#[cfg(feature = "symbiotic-memory-adapter")]
-async fn run_workflow_row<F, T>(row_result: F, timeout: Option<Duration>) -> anyhow::Result<T>
+fn question_timeout() -> Option<Duration> {
+    std::env::var("MEMBENCH_QUESTION_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+}
+
+async fn run_workflow_row<F, T>(future: F, timeout: Option<Duration>) -> anyhow::Result<T>
 where
     F: std::future::Future<Output = anyhow::Result<T>>,
 {
-    if let Some(timeout) = timeout {
-        match tokio::time::timeout(timeout, row_result).await {
-            Ok(result) => result,
-            Err(_) => anyhow::bail!(
-                "workflow row timed out after {}s; this optional outer guard should stay disabled for normal benchmarks because model and step calls have their own timeouts",
-                timeout.as_secs()
-            ),
-        }
-    } else {
-        row_result.await
+    match timeout {
+        Some(timeout) => tokio::time::timeout(timeout, future)
+            .await
+            .map_err(|_| anyhow::anyhow!("workflow row timed out after {}s", timeout.as_secs()))?,
+        None => future.await,
     }
 }
 
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn question_timeout() -> Option<Duration> {
-    let seconds = std::env::var("MEMBENCH_QUESTION_TIMEOUT_SECS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
-    (seconds > 0).then(|| Duration::from_secs(seconds))
+fn queue_error(error: QueueError) -> anyhow::Error {
+    anyhow::anyhow!("workflow queue error: {error}")
 }
 
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn workflow_input_hash(
+fn write_question_debug(
+    run_root: &Path,
     row: &LongMemEvalRecord,
-    routed: bool,
-    answer_only: bool,
-    consolidate_briefs: bool,
-    ingest_diagnostic_mode: IngestDiagnosticMode,
-    policy: &symbiotic_memory::config::RecallPolicy,
-) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(row.question_id.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(row.question.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(row.question_date.as_deref().unwrap_or("").as_bytes());
-    hasher.update(b"\0");
-    hasher.update(if routed { b"routed" } else { b"direct" });
-    hasher.update(b"\0");
-    hasher.update(if answer_only {
-        b"answer-only".as_slice()
-    } else {
-        b"full".as_slice()
-    });
-    hasher.update(b"\0");
-    hasher.update(if consolidate_briefs {
-        b"consolidate-briefs".as_slice()
-    } else {
-        b"base-index".as_slice()
-    });
-    hasher.update(b"\0");
-    hasher.update(ingest_diagnostic_mode.as_str().as_bytes());
-    hasher.update(b"\0");
-    hasher.update(policy.version.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(
-        serde_json::to_string(policy)
-            .unwrap_or_else(|_| "unserializable-policy".to_string())
-            .as_bytes(),
-    );
-    hasher.update(b"\0");
-    {
-        let (window, raw_unit_tokens, _, _) = effective_shape();
-        hasher.update(raw_unit_fingerprint(window, raw_unit_tokens).as_bytes());
-    }
-    hasher.update(b"\0");
-    for session in &row.haystack_sessions {
-        for message in session {
-            hasher.update(message.role.as_bytes());
-            hasher.update(b"\0");
-            hasher.update(message.content.as_bytes());
-            hasher.update(b"\0");
-        }
-    }
-    hex::encode(hasher.finalize())
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn effective_shape() -> (
-    Option<symbiotic_memory::ingest::RawWindowConfig>,
-    usize,
-    usize,
-    usize,
-) {
-    let distill = symbiotic_memory_config::DistillSection::default();
-    let embed = symbiotic_memory_config::EmbedSection::default();
-    let window = symbiotic_memory::ingest::RawWindowConfig::from_values(
-        distill.raw_window_size,
-        distill.raw_window_stride,
-    );
-    (
-        window,
-        distill.raw_unit_max_input_tokens,
-        distill.window_max_input_tokens,
-        embed.max_input_tokens,
-    )
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn source_shape_hash(source: &SourceDocument) -> anyhow::Result<String> {
-    let (window, raw_unit_tokens, window_tokens, embed_tokens) = effective_shape();
-    stable_hash_json(&serde_json::json!({
-        "source": source,
-        "raw_unit_shape": raw_unit_fingerprint(window, raw_unit_tokens),
-        "distill_window_max_input_tokens": window_tokens,
-        "embed_max_input_tokens": embed_tokens,
-    }))
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn post_ingest_complete(manifest: &MemoryRunManifest, consolidate_briefs: bool) -> bool {
-    let mut required = vec![
-        MemoryStage::Capture,
-        MemoryStage::DistillWindow,
-        MemoryStage::WriteArchive,
-        MemoryStage::EmbedRaw,
-        MemoryStage::EmbedFacts,
-        MemoryStage::Index,
-    ];
-    if consolidate_briefs {
-        required.push(MemoryStage::Consolidate);
-    }
-    required
-        .into_iter()
-        .all(|stage| manifest.stage_succeeded(stage))
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
+    diagnostics: &MemoryRecallDiagnostics,
+    answer: &symbiotic_memory::Answer,
+    metadata: Option<&BenchDebugMetadata>,
+) -> anyhow::Result<String> {
+    let relative = PathBuf::from("vaults")
+        .join(&row.question_id)
+        .join("debug")
+        .join("facade")
+        .join("question-debug.json");
+    let path = run_root.join(&relative);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(value)?)?;
-    fs::rename(tmp, path)?;
+    let value = json!({
+        "schema_version": 2,
+        "question_id": row.question_id,
+        "question_type": row.question_type,
+        "question": row.question,
+        "memory_contract": "application-facade",
+        "recall": diagnostics,
+        "final_answer": answer,
+        "benchmark": metadata,
+    });
+    write_json_atomic(&path, &value)?;
+    Ok(relative.to_string_lossy().replace('\\', "/"))
+}
+
+fn read_hypotheses(path: &Path) -> anyhow::Result<Vec<BenchHypothesis>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let file = fs::File::open(path)?;
+    std::io::BufReader::new(file)
+        .lines()
+        .filter(|line| line.as_ref().map_or(true, |line| !line.trim().is_empty()))
+        .map(|line| Ok(serde_json::from_str(&line?)?))
+        .collect()
+}
+
+fn write_json_atomic(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("{} has no parent", path.display()))?;
+    fs::create_dir_all(parent)?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    serde_json::to_writer_pretty(&mut temp, value)?;
+    temp.write_all(b"\n")?;
+    temp.as_file_mut().sync_all()?;
+    temp.persist(path)?;
     Ok(())
 }
 
-#[cfg(feature = "symbiotic-memory-adapter")]
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct ScoreVerdict {
-    question_id: String,
-    #[serde(default)]
-    question_type: Option<String>,
-    #[serde(default)]
-    label: Option<bool>,
-    #[serde(default)]
-    error: Option<Value>,
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn copy_score_artifact(source: &Path, scores_dir: &Path) -> anyhow::Result<String> {
-    let file_name = source
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "score artifact has no UTF-8 file name: {}",
-                source.display()
-            )
-        })?;
-    let destination = scores_dir.join(file_name);
-    let bytes = fs::read(source)?;
-    let tmp = destination.with_extension("tmp");
-    fs::write(&tmp, bytes)?;
-    fs::rename(tmp, &destination)?;
-    Ok(destination
-        .strip_prefix(scores_dir.parent().unwrap_or(scores_dir))
-        .unwrap_or(&destination)
-        .display()
-        .to_string())
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn read_json_file(path: &Path) -> anyhow::Result<Value> {
-    Ok(serde_json::from_slice(&fs::read(path)?)?)
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn read_verdicts_jsonl(
-    path: &Path,
-    hypothesis_ids: &BTreeSet<String>,
-) -> anyhow::Result<Vec<ScoreVerdict>> {
-    let file = fs::File::open(path)?;
-    let mut out = Vec::new();
-    for (line_idx, line) in std::io::BufReader::new(file).lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
+pub fn clear_score_artifacts(
+    run_root: impl AsRef<Path>,
+    hypotheses_path: impl AsRef<Path>,
+) -> anyhow::Result<usize> {
+    let run_root = run_root.as_ref();
+    let hypotheses = hypotheses_path.as_ref().to_string_lossy();
+    let mut paths = vec![run_root.join("score-summary.json"), run_root.join("scores")];
+    for directory in ["raw", "artifacts"] {
+        for file in [
+            "verdicts.jsonl",
+            "partial-verdicts.jsonl",
+            "scored.json",
+            "score-summary.json",
+        ] {
+            paths.push(run_root.join(directory).join(file));
         }
-        let verdict: ScoreVerdict = serde_json::from_str(&line).map_err(|err| {
-            anyhow::anyhow!(
-                "invalid verdict JSON at {} line {}: {err}",
-                path.display(),
-                line_idx + 1
-            )
-        })?;
-        if !hypothesis_ids.contains(&verdict.question_id) {
-            anyhow::bail!(
-                "verdict for {} is not present in current-run hypotheses",
-                verdict.question_id
-            );
+    }
+    for suffix in [".scored.json", ".verdicts.jsonl", ".partial.verdicts.jsonl"] {
+        paths.push(PathBuf::from(format!("{hypotheses}{suffix}")));
+    }
+    let mut removed = 0;
+    for path in paths {
+        if path.is_dir() {
+            fs::remove_dir_all(path)?;
+            removed += 1;
+        } else if path.exists() {
+            fs::remove_file(path)?;
+            removed += 1;
         }
-        out.push(verdict);
     }
-    Ok(out)
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn score_metrics(scored_summary: Option<&Value>, verdicts: &[ScoreVerdict]) -> Value {
-    let verdict_scored = verdicts.len() as u64;
-    let verdict_correct = verdicts
-        .iter()
-        .filter(|verdict| verdict.label == Some(true))
-        .count() as u64;
-    let verdict_errors = verdicts
-        .iter()
-        .filter(|verdict| {
-            verdict
-                .error
-                .as_ref()
-                .map(|error| !error.is_null())
-                .unwrap_or(false)
-        })
-        .count() as u64;
-    let summary_counts = scored_summary.and_then(|value| value.get("counts"));
-    let scored = summary_counts
-        .and_then(|counts| counts.get("scored"))
-        .and_then(Value::as_u64)
-        .unwrap_or(verdict_scored);
-    let correct = summary_counts
-        .and_then(|counts| counts.get("total_correct"))
-        .and_then(Value::as_u64)
-        .unwrap_or(verdict_correct);
-    let judge_errors = summary_counts
-        .and_then(|counts| counts.get("judge_errors"))
-        .and_then(Value::as_u64)
-        .unwrap_or(verdict_errors);
-    let overall_accuracy = scored_summary
-        .and_then(|value| value.get("overall_accuracy"))
-        .and_then(Value::as_f64)
-        .or_else(|| (scored > 0).then_some(correct as f64 / scored as f64));
-    serde_json::json!({
-        "scored": scored,
-        "correct": correct,
-        "judge_errors": judge_errors,
-        "overall_accuracy": overall_accuracy,
-        "task_averaged_accuracy": scored_summary
-            .and_then(|value| value.get("task_averaged_accuracy"))
-            .and_then(Value::as_f64),
-        "verdict_count": verdicts.len(),
-    })
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn score_artifact_hashes(
-    run_root: &Path,
-    scored_artifact: Option<&str>,
-    verdicts_artifact: Option<&str>,
-) -> anyhow::Result<BTreeMap<String, String>> {
-    let mut hashes = BTreeMap::new();
-    if let Some(path) = scored_artifact {
-        hashes.insert(path.to_string(), hash_file(&run_root.join(path))?);
-    }
-    if let Some(path) = verdicts_artifact {
-        hashes.insert(path.to_string(), hash_file(&run_root.join(path))?);
-    }
-    Ok(hashes)
-}
-
-#[cfg(feature = "symbiotic-memory-adapter")]
-fn hash_file(path: &Path) -> anyhow::Result<String> {
-    let bytes = fs::read(path)?;
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    Ok(hex::encode(hasher.finalize()))
+    Ok(removed)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn shared_corpus_keys_are_single_safe_path_components() {
-        for valid in ["web", "enterprise-1", "domain_v2", "a.b"] {
-            assert_eq!(corpus_vault_component(valid).unwrap(), valid);
-        }
-        for invalid in ["", ".", "..", "../escape", "nested/path", "white space"] {
-            assert!(corpus_vault_component(invalid).is_err(), "{invalid}");
-        }
-    }
-    #[cfg(feature = "symbiotic-memory-adapter")]
-    use symbiotic_memory::types::{MemoryFact, RawArchiveReceipt};
-
-    /// Read-side handle onto a test vault, opened through the backend-neutral
-    /// facade with the same vector dimensions as the test embedder.
-    #[cfg(feature = "symbiotic-memory-adapter")]
-    async fn open_vault_ledger(vault_dir: &Path, dimensions: usize) -> BenchMemoryStore {
-        open_store_with_metrics(vault_dir.to_path_buf(), "zvec".to_string(), dimensions)
-            .await
-            .unwrap()
-            .0
-    }
-
-    #[cfg(feature = "symbiotic-memory-adapter")]
-    #[test]
-    fn checked_in_symbiotic_memory_profiles_load_from_benchmark_repo() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let cases = [
-            (
-                "config/symbiotic-memory/longmemeval-raw-light.yaml",
-                "memory-recall-v3-raw-light",
-                10usize,
-                50usize,
-                1000usize,
-                300u64,
-            ),
-            (
-                "config/symbiotic-memory/longmemeval-raw-tiny.yaml",
-                "memory-recall-v3-raw-tiny",
-                5usize,
-                50usize,
-                1000usize,
-                300u64,
-            ),
-            (
-                "config/symbiotic-memory/longmemeval-raw-wide-diagnostic.yaml",
-                "memory-recall-v3-raw-wide-diagnostic",
-                80usize,
-                50usize,
-                1000usize,
-                300u64,
-            ),
-        ];
-
-        for (
-            path,
-            version,
-            raw_top_k,
-            workflow_max_in_flight,
-            embedding_max_in_flight,
-            embedding_timeout_seconds,
-        ) in cases
-        {
-            let config = symbiotic_memory::EngineConfig::load_yaml(root.join(path)).unwrap();
-            let resolved = config
-                .queue
-                .resolve_provider_queue(&config.providers.embedding);
-            let chat_resolved = config
-                .queue
-                .resolve_provider_queue(&config.providers.distill);
-
-            assert_eq!(config.recall.version, version);
-            assert_eq!(config.recall.fact_top_k, 20);
-            assert_eq!(config.recall.raw_turn_top_k, raw_top_k);
-            assert_eq!(config.queue.workflow_max_in_flight, workflow_max_in_flight);
-            assert_eq!(resolved.queue_id, "embedding:gemini:gemini-embedding-2");
-            assert_eq!(resolved.max_in_flight, embedding_max_in_flight);
-            assert_eq!(resolved.timeout_seconds, embedding_timeout_seconds);
-            if path == "config/symbiotic-memory/longmemeval-raw-light.yaml" {
-                assert_eq!(chat_resolved.queue_id, "chat:deepseek:deepseek-v4-flash");
-                assert_eq!(chat_resolved.max_in_flight, 2000);
-                assert_eq!(chat_resolved.timeout_seconds, 600);
-                assert_eq!(resolved.requests_per_minute, Some(4_500));
-                assert_eq!(resolved.input_units_per_minute, Some(5_000_000));
-            }
-        }
-    }
-
-    #[test]
-    fn longmemeval_loader_matches_real_shape() {
-        let json = r#"[{
-          "question_id":"q1",
-          "question_type":"count",
-          "question":"How many pens did I buy?",
-          "question_date":"2023/01/02 (Mon) 00:00",
-	          "answer":4,
-          "answer_session_ids":["s1"],
-          "haystack_dates":["2023/01/01 (Sun) 00:00"],
-          "haystack_session_ids":["s1"],
-          "haystack_sessions":[[
-            {"role":"user","content":"I bought 4 pens."},
-            {"role":"assistant","content":"Great."}
-          ]]
-        }]"#;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("lme.json");
-        fs::write(&path, json).unwrap();
-        let rows = load_longmemeval(&path, Some(1)).unwrap();
-        assert_eq!(rows[0].question_id, "q1");
-        let source = longmemeval_to_source(&rows[0]);
-        assert_eq!(source.turns.len(), 2);
-        assert_eq!(source.turns[0].turn_id, "s1:0");
-        assert_eq!(
-            source.turns[0].captured_at.unwrap().to_rfc3339(),
-            "2023-01-01T00:00:00+00:00"
-        );
-    }
-
-    #[test]
-    fn parses_longmemeval_dates_with_weekday() {
-        assert_eq!(
-            parse_longmemeval_datetime("2023/05/09 (Tue) 13:45")
-                .unwrap()
-                .to_rfc3339(),
-            "2023-05-09T13:45:00+00:00"
-        );
-    }
-
-    #[test]
-    fn answer_reference_datetime_defaults_to_current_rfc3339_timestamp() {
-        let reference = select_answer_reference_datetime(
-            |_| None,
-            None,
-            "2026-06-19T15:15:42+08:00".to_string(),
-        );
-
-        assert_eq!(reference, "2026-06-19T15:15:42+08:00");
-    }
-
-    #[test]
-    fn answer_reference_datetime_uses_benchmark_reference_clock() {
-        let reference = select_answer_reference_datetime(
-            |_| None,
-            Some("2023-05-30T21:35:00+00:00".to_string()),
-            "2026-06-19T15:15:42+08:00".to_string(),
-        );
-
-        assert_eq!(reference, "2023-05-30T21:35:00+00:00");
-    }
-
-    #[test]
-    fn answer_reference_datetime_uses_explicit_benchmark_override() {
-        let reference = select_answer_reference_datetime(
-            |key| {
-                (key == "MEMBENCH_REFERENCE_DATETIME")
-                    .then(|| "2026-06-19T15:15:42+08:00".to_string())
-            },
-            Some("2023-05-30T21:35:00+00:00".to_string()),
-            "2026-06-19T16:00:00+08:00".to_string(),
-        );
-
-        assert_eq!(reference, "2026-06-19T15:15:42+08:00");
-    }
-
-    #[test]
-    fn bench_hypothesis_has_no_gold_answer_surface() {
-        let hypothesis = BenchHypothesis {
+    fn sample_row() -> LongMemEvalRecord {
+        LongMemEvalRecord {
             question_id: "q1".to_string(),
-            question_type: Some("count".to_string()),
-            question: "How many pens?".to_string(),
-            hypothesis: "4".to_string(),
-            debug_artifact: None,
-            router_initial: None,
-            router_final: None,
-            router_reason: None,
-        };
-
-        let json = serde_json::to_value(&hypothesis).unwrap();
-
-        assert!(json.get("answer").is_none());
-        assert_eq!(json["hypothesis"], serde_json::json!("4"));
-    }
-
-    #[test]
-    fn hypothesis_reader_rejects_scoring_fields() {
-        let err = parse_bench_hypothesis_line(
-            r#"{"question_id":"q1","question":"Q?","hypothesis":"A","answer":"gold"}"#,
-        )
-        .unwrap_err()
-        .to_string();
-
-        assert!(err.contains("forbidden scoring field `answer`"), "{err}");
-    }
-
-    #[cfg(feature = "symbiotic-memory-adapter")]
-    #[test]
-    fn workflow_input_hash_includes_query_planner_mode() {
-        let row = LongMemEvalRecord {
-            question_id: "q-planner-hash".to_string(),
-            question_type: Some("direct".to_string()),
-            question: "Where did I buy the racket?".to_string(),
-            question_date: Some("2023/01/02 (Mon) 00:00".to_string()),
+            question_type: None,
+            question: "Where?".to_string(),
+            question_date: None,
             answer: None,
             answer_session_ids: Vec::new(),
-            haystack_dates: vec!["2023/01/01 (Sun) 00:00".to_string()],
+            haystack_dates: vec!["2024/01/02 03:04 (Tue)".to_string()],
             haystack_session_ids: vec!["s1".to_string()],
             haystack_sessions: vec![vec![LongMemEvalMessage {
                 role: "user".to_string(),
-                content: "I bought the racket downtown.".to_string(),
-                has_answer: false,
+                content: "At home".to_string(),
+                has_answer: true,
             }]],
-        };
-        let mut off = symbiotic_memory::config::RecallPolicy::default();
-        off.query_planner = symbiotic_memory::config::QueryPlannerMode::Off;
-        let mut flash = off.clone();
-        flash.query_planner = symbiotic_memory::config::QueryPlannerMode::Flash;
-
-        assert_ne!(
-            workflow_input_hash(&row, false, false, false, IngestDiagnosticMode::None, &off),
-            workflow_input_hash(
-                &row,
-                false,
-                false,
-                false,
-                IngestDiagnosticMode::None,
-                &flash
-            )
-        );
+        }
     }
 
-    #[cfg(feature = "symbiotic-memory-adapter")]
+    fn sample_run(root: &Path) -> MemoryFacadeRun {
+        MemoryFacadeRun {
+            run_id: "test-run".to_string(),
+            run_root: root.to_path_buf(),
+            source_vault_root: None,
+            out_path: root.join("hypotheses.jsonl"),
+            policy: RecallPolicy::default(),
+            debug_metadata: None,
+            answer_only: false,
+            ingest_mode: MemoryIngestMode::Complete,
+            max_in_flight: 1,
+            allow_terminal_reenqueue: false,
+        }
+    }
+
+    fn local_providers() -> MemoryFacadeProviders {
+        MemoryFacadeProviders {
+            embedder: Arc::new(|| Arc::new(symbiotic_memory::HashEmbeddingProvider::default())),
+            distiller: Arc::new(|| Arc::new(symbiotic_memory::PassthroughDistiller)),
+            chat: Arc::new(|| {
+                Arc::new(symbiotic_memory::providers::DisabledChatProvider) as Arc<dyn ChatProvider>
+            }),
+            planner: None,
+            reranker: RerankCascade::default(),
+            trace_sink: None,
+        }
+    }
+
     #[test]
-    fn workflow_input_hash_includes_recall_policy_values() {
-        let row = LongMemEvalRecord {
-            question_id: "q-policy-hash".to_string(),
-            question_type: Some("direct".to_string()),
-            question: "Where did I buy the racket?".to_string(),
-            question_date: Some("2023/01/02 (Mon) 00:00".to_string()),
-            answer: None,
-            answer_session_ids: Vec::new(),
-            haystack_dates: vec!["2023/01/01 (Sun) 00:00".to_string()],
-            haystack_session_ids: vec!["s1".to_string()],
-            haystack_sessions: vec![vec![LongMemEvalMessage {
-                role: "user".to_string(),
-                content: "I bought the racket downtown.".to_string(),
-                has_answer: false,
-            }]],
-        };
-        let mut raw40 = symbiotic_memory::config::RecallPolicy::default();
-        raw40.raw_turn_top_k = 40;
-        let mut raw80 = raw40.clone();
-        raw80.raw_turn_top_k = 80;
-
-        assert_ne!(
-            workflow_input_hash(&row, true, true, false, IngestDiagnosticMode::None, &raw40),
-            workflow_input_hash(&row, true, true, false, IngestDiagnosticMode::None, &raw80)
-        );
-    }
-
-    #[cfg(feature = "symbiotic-memory-adapter")]
-    #[test]
-    fn workflow_input_hash_includes_consolidation_flag() {
-        let row = LongMemEvalRecord {
-            question_id: "q-consolidate".to_string(),
-            question_type: None,
-            question: "What did I buy?".to_string(),
-            answer: None,
-            answer_session_ids: Vec::new(),
-            question_date: None,
-            haystack_dates: Vec::new(),
-            haystack_session_ids: Vec::new(),
-            haystack_sessions: Vec::new(),
-        };
-        let policy = symbiotic_memory::config::RecallPolicy::default();
-
-        assert_ne!(
-            workflow_input_hash(
-                &row,
-                true,
-                false,
-                false,
-                IngestDiagnosticMode::None,
-                &policy
-            ),
-            workflow_input_hash(&row, true, false, true, IngestDiagnosticMode::None, &policy)
-        );
-    }
-
-    #[cfg(feature = "symbiotic-memory-adapter")]
-    #[test]
-    fn workflow_input_hash_includes_ingest_diagnostic_mode() {
-        let row = LongMemEvalRecord {
-            question_id: "q-diagnostic-hash".to_string(),
-            question_type: None,
-            question: "What did I buy?".to_string(),
-            answer: None,
-            answer_session_ids: Vec::new(),
-            question_date: None,
-            haystack_dates: Vec::new(),
-            haystack_session_ids: Vec::new(),
-            haystack_sessions: Vec::new(),
-        };
-        let policy = symbiotic_memory::config::RecallPolicy::default();
-
-        assert_ne!(
-            workflow_input_hash(
-                &row,
-                true,
-                false,
-                false,
-                IngestDiagnosticMode::None,
-                &policy
-            ),
-            workflow_input_hash(
-                &row,
-                true,
-                false,
-                false,
-                IngestDiagnosticMode::DistillOnly,
-                &policy
-            )
-        );
-    }
-
-    #[cfg(feature = "symbiotic-memory-adapter")]
-    #[test]
-    fn workflow_max_in_flight_uses_config_with_env_override() {
-        unsafe {
-            std::env::remove_var("MEMBENCH_WORKFLOW_MAX_IN_FLIGHT");
-        }
-        assert_eq!(workflow_max_in_flight(Some(37)), 37);
-        assert_eq!(workflow_max_in_flight(None), 50);
-
-        unsafe {
-            std::env::set_var("MEMBENCH_WORKFLOW_MAX_IN_FLIGHT", "12");
-        }
-        assert_eq!(workflow_max_in_flight(Some(37)), 12);
-        unsafe {
-            std::env::remove_var("MEMBENCH_WORKFLOW_MAX_IN_FLIGHT");
-        }
-    }
-
-    #[cfg(feature = "symbiotic-memory-adapter")]
-    #[derive(Clone)]
-    struct ConcurrencyTrackingDistiller {
-        active: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-        max_seen: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    }
-
-    #[cfg(feature = "symbiotic-memory-adapter")]
-    #[async_trait::async_trait]
-    impl Distiller for ConcurrencyTrackingDistiller {
-        async fn distill(
-            &self,
-            source: &SourceDocument,
-            receipt: &RawArchiveReceipt,
-        ) -> anyhow::Result<Vec<MemoryFact>> {
-            use std::sync::atomic::Ordering;
-
-            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
-            let mut observed = self.max_seen.load(Ordering::SeqCst);
-            while active > observed {
-                match self.max_seen.compare_exchange(
-                    observed,
-                    active,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                ) {
-                    Ok(_) => break,
-                    Err(next) => observed = next,
-                }
-            }
-
-            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
-
-            let turn = source
-                .turns
-                .iter()
-                .find(|turn| turn.speaker.as_deref() == Some("user"))
-                .expect("test user turn");
-            let mut fact = MemoryFact::new(
-                format!("The user said: {}", turn.text),
-                vec![
-                    symbiotic_memory::types::SourceRef::turn(
-                        &source.source_id,
-                        &receipt.receipt_id,
-                        &turn.turn_id,
-                    )
-                    .with_captured_at(turn.captured_at),
-                ],
-            );
-            fact.captured_at = turn.captured_at;
-            fact.event_time = turn.captured_at;
-            fact.valid_from = turn.captured_at;
-            self.active.fetch_sub(1, Ordering::SeqCst);
-            Ok(vec![fact])
-        }
-    }
-
-    #[cfg(feature = "symbiotic-memory-adapter")]
-    #[tokio::test]
-    async fn workflow_respects_configured_source_wip() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use symbiotic_memory::config::RecallPolicy;
-        use symbiotic_memory::providers::{DisabledChatProvider, HashEmbeddingProvider};
-
-        unsafe {
-            std::env::remove_var("MEMBENCH_WORKFLOW_MAX_IN_FLIGHT");
-        }
-
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("hyps.jsonl");
-        let rows = (0..6)
-            .map(|idx| LongMemEvalRecord {
-                question_id: format!("q-wip-{idx}"),
-                question_type: Some("direct".to_string()),
-                question: format!("What did I say in item {idx}?"),
-                question_date: Some("2023/01/02 (Mon) 00:00".to_string()),
-                answer: Some(serde_json::json!(format!("item {idx}"))),
-                answer_session_ids: Vec::new(),
-                haystack_dates: vec!["2023/01/01 (Sun) 00:00".to_string()],
-                haystack_session_ids: vec![format!("s{idx}")],
-                haystack_sessions: vec![vec![LongMemEvalMessage {
-                    role: "user".to_string(),
-                    content: format!("I mentioned item {idx}."),
-                    has_answer: false,
-                }]],
-            })
-            .collect::<Vec<_>>();
-        let mut policy = RecallPolicy::default();
-        policy.answerer_enabled = false;
-        let active = Arc::new(AtomicUsize::new(0));
-        let max_seen = Arc::new(AtomicUsize::new(0));
-
-        let hypotheses = run_longmemeval_vault_with_planner(
-            &rows,
-            dir.path(),
-            HashEmbeddingProvider::default,
-            {
-                let active = active.clone();
-                let max_seen = max_seen.clone();
-                move || ConcurrencyTrackingDistiller {
-                    active: active.clone(),
-                    max_seen: max_seen.clone(),
-                }
-            },
-            None,
-            || DisabledChatProvider,
-            None,
-            None,
-            RerankCascade::default(),
-            None,
-            None,
-            policy,
-            &out,
-            false,
-            false,
-            false,
-            false,
-            IngestDiagnosticMode::None,
-            Some(2),
-            false,
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(hypotheses.len(), rows.len());
+    fn conversion_is_stable_and_preserves_capture_time() {
+        let row = sample_row();
+        let first = longmemeval_to_source(&row);
+        let second = longmemeval_to_source(&row);
         assert_eq!(
-            std::fs::read_to_string(&out).unwrap().lines().count(),
-            rows.len()
+            first.identity_digest().unwrap(),
+            second.identity_digest().unwrap()
         );
+        assert_eq!(first.turns[0].turn_id, "s1:0");
+        assert!(first.turns[0].event_time.is_none());
+    }
+
+    #[test]
+    fn conversion_without_dates_is_still_deterministic() {
+        let mut row = sample_row();
+        row.haystack_dates.clear();
+        let first = longmemeval_to_source(&row);
+        let second = longmemeval_to_source(&row);
+        assert_eq!(first.captured_at, Utc.timestamp_opt(0, 0).single().unwrap());
+        assert_eq!(
+            first.identity_digest().unwrap(),
+            second.identity_digest().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn answer_only_requires_existing_opaque_memory_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source-vaults");
+        fs::create_dir_all(&source).unwrap();
+        let mut run = sample_run(temp.path());
+        run.answer_only = true;
+        run.source_vault_root = Some(source.clone());
+
+        let error = process_record(sample_row(), local_providers(), run)
+            .await
+            .unwrap_err();
+
         assert!(
-            max_seen.load(Ordering::SeqCst) <= 2,
-            "configured source WIP should cap concurrent row processing"
+            error
+                .to_string()
+                .contains("answer-only Memory state does not exist")
         );
+        assert!(!source.join("q1").exists());
     }
 
-    #[cfg(feature = "symbiotic-memory-adapter")]
-    #[derive(Clone)]
-    struct ControlledEmbeddingProvider {
-        fail_fact_embeddings: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    }
-
-    #[cfg(feature = "symbiotic-memory-adapter")]
-    #[async_trait::async_trait]
-    impl EmbeddingProvider for ControlledEmbeddingProvider {
-        async fn embed(
-            &self,
-            text: &str,
-        ) -> Result<Vec<f32>, symbiotic_memory::providers::ProviderError> {
-            if text.contains("The user said:")
-                && self
-                    .fail_fact_embeddings
-                    .load(std::sync::atomic::Ordering::SeqCst)
-            {
-                return Err(symbiotic_memory::providers::ProviderError::Unavailable(
-                    "simulated fact embedding outage".to_string(),
-                ));
-            }
-            Ok(vec![1.0, 0.0, 0.0])
-        }
-
-        async fn embed_query(
-            &self,
-            _text: &str,
-        ) -> Result<Vec<f32>, symbiotic_memory::providers::ProviderError> {
-            Ok(vec![1.0, 0.0, 0.0])
-        }
-
-        fn dimensions(&self) -> usize {
-            3
-        }
-    }
-
-    #[cfg(feature = "symbiotic-memory-adapter")]
-    #[derive(Clone)]
-    struct CountingDistiller {
-        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    }
-
-    #[cfg(feature = "symbiotic-memory-adapter")]
-    #[async_trait::async_trait]
-    impl Distiller for CountingDistiller {
-        async fn distill(
-            &self,
-            source: &SourceDocument,
-            receipt: &RawArchiveReceipt,
-        ) -> anyhow::Result<Vec<MemoryFact>> {
-            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let turn = source
-                .turns
-                .iter()
-                .find(|turn| turn.speaker.as_deref() == Some("user"))
-                .expect("test user turn");
-            let mut fact = MemoryFact::new(
-                format!("The user said: {}", turn.text),
-                vec![
-                    symbiotic_memory::types::SourceRef::turn(
-                        &source.source_id,
-                        &receipt.receipt_id,
-                        &turn.turn_id,
-                    )
-                    .with_captured_at(turn.captured_at),
-                ],
-            );
-            fact.captured_at = turn.captured_at;
-            fact.event_time = turn.captured_at;
-            fact.valid_from = turn.captured_at;
-            Ok(vec![fact])
-        }
-    }
-
-    #[cfg(feature = "symbiotic-memory-adapter")]
     #[tokio::test]
-    async fn benchmark_resumes_staged_distill_after_fact_embedding_failure() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-        use symbiotic_memory::config::RecallPolicy;
-        use symbiotic_memory::providers::DisabledChatProvider;
-
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("hyps.jsonl");
-        let row = LongMemEvalRecord {
-            question_id: "q-staged-resume".to_string(),
-            question_type: Some("count".to_string()),
-            question: "How many pens did I buy?".to_string(),
-            question_date: Some("2023/01/02 (Mon) 00:00".to_string()),
-            answer: Some(serde_json::json!(4)),
-            answer_session_ids: Vec::new(),
-            haystack_dates: vec!["2023/01/01 (Sun) 00:00".to_string()],
-            haystack_session_ids: vec!["s1".to_string()],
-            haystack_sessions: vec![vec![LongMemEvalMessage {
-                role: "user".to_string(),
-                content: "I bought 4 pens.".to_string(),
-                has_answer: false,
-            }]],
-        };
-        let mut policy = RecallPolicy::default();
-        policy.answerer_enabled = false;
-        let fail_fact_embeddings = Arc::new(AtomicBool::new(true));
-        let distill_calls = Arc::new(AtomicUsize::new(0));
-
-        let first = run_longmemeval_vault(
-            std::slice::from_ref(&row),
-            dir.path(),
-            {
-                let fail_fact_embeddings = fail_fact_embeddings.clone();
-                move || ControlledEmbeddingProvider {
-                    fail_fact_embeddings: fail_fact_embeddings.clone(),
-                }
-            },
-            {
-                let distill_calls = distill_calls.clone();
-                move || CountingDistiller {
-                    calls: distill_calls.clone(),
-                }
-            },
-            || DisabledChatProvider,
-            policy.clone(),
-            &out,
+    async fn durable_workflow_refuses_terminal_duplicate_without_resume() {
+        let queue = SqliteQueue::in_memory().unwrap();
+        let queue_id = QueueId::new("workflow:test");
+        let first = enqueue_and_claim_workflow_row(
+            &queue,
+            queue_id.clone(),
+            "worker-1",
+            "q1",
+            "input-hash",
+            60,
+            1,
+            3,
             false,
-            false,
-            false,
-            false,
-            IngestDiagnosticMode::None,
-            false,
-        )
-        .await;
-        let first = first.unwrap();
-        assert_eq!(first.len(), 1);
-        assert!(
-            first[0]
-                .hypothesis
-                .starts_with("UNAVAILABLE: recall failed")
-        );
-        assert_eq!(distill_calls.load(Ordering::SeqCst), 1);
-
-        let vault_dir = dir.path().join("vaults").join("q-staged-resume");
-        let staged_dir = vault_dir
-            .join("archive")
-            .join("staging")
-            .join("q-staged-resume");
-        assert_eq!(fs::read_dir(staged_dir).unwrap().count(), 1);
-        let manifest = MemoryRunManifest::load(vault_dir.join("manifest.json"))
-            .unwrap()
-            .unwrap();
-        assert!(manifest.stage_succeeded(MemoryStage::DistillWindow));
-        assert!(manifest.stage_succeeded(MemoryStage::WriteArchive));
-        assert!(!manifest.stage_succeeded(MemoryStage::EmbedFacts));
-        assert_eq!(
-            open_vault_ledger(&vault_dir, 3)
-                .await
-                .active_facts()
-                .await
-                .unwrap()
-                .len(),
-            0
-        );
-
-        fail_fact_embeddings.store(false, Ordering::SeqCst);
-        // A fail-soft hypothesis is a legitimate completed result. Remove it
-        // to model a missing output beside terminal workflow state; resume
-        // must then force the queue row and reuse the staged distillation.
-        fs::write(&out, "").unwrap();
-        run_longmemeval_vault(
-            &[row],
-            dir.path(),
-            {
-                let fail_fact_embeddings = fail_fact_embeddings.clone();
-                move || ControlledEmbeddingProvider {
-                    fail_fact_embeddings: fail_fact_embeddings.clone(),
-                }
-            },
-            {
-                let distill_calls = distill_calls.clone();
-                move || CountingDistiller {
-                    calls: distill_calls.clone(),
-                }
-            },
-            || DisabledChatProvider,
-            policy,
-            &out,
-            false,
-            false,
-            false,
-            false,
-            IngestDiagnosticMode::None,
-            true,
         )
         .await
         .unwrap();
+        queue.complete(&first.item_id, "worker-1").await.unwrap();
 
-        assert_eq!(distill_calls.load(Ordering::SeqCst), 1);
-        let manifest = MemoryRunManifest::load(vault_dir.join("manifest.json"))
-            .unwrap()
-            .unwrap();
-        assert!(manifest.stage_succeeded(MemoryStage::EmbedFacts));
-        assert!(manifest.stage_succeeded(MemoryStage::Index));
-        assert_eq!(
-            open_vault_ledger(&vault_dir, 3)
-                .await
-                .active_facts()
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
-    }
-
-    #[cfg(feature = "symbiotic-memory-adapter")]
-    #[tokio::test]
-    async fn shared_corpus_resumes_incomplete_same_identity_manifest() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-        use symbiotic_memory::config::RecallPolicy;
-        use symbiotic_memory::providers::DisabledChatProvider;
-
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("hyps.jsonl");
-        let row = LongMemEvalRecord {
-            question_id: "corpus:web".to_string(),
-            question_type: None,
-            question: String::new(),
-            question_date: None,
-            answer: None,
-            answer_session_ids: Vec::new(),
-            haystack_dates: vec!["1970/01/01 00:00".to_string()],
-            haystack_session_ids: vec!["trajectory-1".to_string()],
-            haystack_sessions: vec![vec![LongMemEvalMessage {
-                role: "user".to_string(),
-                content: "I bought 4 pens.".to_string(),
-                has_answer: false,
-            }]],
-        };
-        let corpus = longmemeval_to_source(&row);
-        let question = SharedCorpusQuestion {
-            id: "q-shared-resume".to_string(),
-            question: "How many pens did I buy?".to_string(),
-            question_type: Some("count".to_string()),
-            reference_date: None,
-            corpus_key: "web".to_string(),
-        };
-        let policy = RecallPolicy {
-            answerer_enabled: false,
-            ..RecallPolicy::default()
-        };
-        let fail_fact_embeddings = Arc::new(AtomicBool::new(true));
-        let distill_calls = Arc::new(AtomicUsize::new(0));
-
-        let first = run_shared_corpus_with_planner(
-            vec![("web".to_string(), corpus.clone())],
-            vec![question.clone()],
-            dir.path(),
-            {
-                let fail_fact_embeddings = fail_fact_embeddings.clone();
-                move || ControlledEmbeddingProvider {
-                    fail_fact_embeddings: fail_fact_embeddings.clone(),
-                }
-            },
-            {
-                let distill_calls = distill_calls.clone();
-                move || CountingDistiller {
-                    calls: distill_calls.clone(),
-                }
-            },
-            || DisabledChatProvider,
-            None,
-            RerankCascade::default(),
-            None,
-            policy.clone(),
-            &out,
-            IngestDiagnosticMode::None,
-        )
-        .await;
-        assert!(first.is_err());
-        assert_eq!(distill_calls.load(Ordering::SeqCst), 1);
-        let manifest_path = dir.path().join("corpus-vaults/web/manifest.json");
-        let manifest = MemoryRunManifest::load(&manifest_path)
-            .unwrap()
-            .expect("failed ingest must leave a resumable manifest");
-        assert!(!post_ingest_complete(&manifest, false));
-
-        fail_fact_embeddings.store(false, Ordering::SeqCst);
-        let resumed = run_shared_corpus_with_planner(
-            vec![("web".to_string(), corpus)],
-            vec![question],
-            dir.path(),
-            {
-                let fail_fact_embeddings = fail_fact_embeddings.clone();
-                move || ControlledEmbeddingProvider {
-                    fail_fact_embeddings: fail_fact_embeddings.clone(),
-                }
-            },
-            {
-                let distill_calls = distill_calls.clone();
-                move || CountingDistiller {
-                    calls: distill_calls.clone(),
-                }
-            },
-            || DisabledChatProvider,
-            None,
-            RerankCascade::default(),
-            None,
-            policy,
-            &out,
-            IngestDiagnosticMode::None,
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(resumed.len(), 1);
-        assert_eq!(distill_calls.load(Ordering::SeqCst), 1);
-        let manifest = MemoryRunManifest::load(manifest_path)
-            .unwrap()
-            .expect("resumed ingest must retain manifest");
-        assert!(post_ingest_complete(&manifest, false));
-
-        let changed_selection = run_shared_corpus_with_planner(
-            vec![("web".to_string(), longmemeval_to_source(&row))],
-            vec![SharedCorpusQuestion {
-                id: "q-different-limit".to_string(),
-                question: "Different selection?".to_string(),
-                question_type: None,
-                reference_date: None,
-                corpus_key: "web".to_string(),
-            }],
-            dir.path(),
-            {
-                let fail_fact_embeddings = fail_fact_embeddings.clone();
-                move || ControlledEmbeddingProvider {
-                    fail_fact_embeddings: fail_fact_embeddings.clone(),
-                }
-            },
-            {
-                let distill_calls = distill_calls.clone();
-                move || CountingDistiller {
-                    calls: distill_calls.clone(),
-                }
-            },
-            || DisabledChatProvider,
-            None,
-            RerankCascade::default(),
-            None,
-            RecallPolicy {
-                answerer_enabled: false,
-                ..RecallPolicy::default()
-            },
-            &out,
-            IngestDiagnosticMode::None,
+        let error = enqueue_and_claim_workflow_row(
+            &queue,
+            queue_id,
+            "worker-2",
+            "q1",
+            "input-hash",
+            60,
+            1,
+            3,
+            false,
         )
         .await
         .unwrap_err();
-        assert!(
-            changed_selection
-                .to_string()
-                .contains("outside the current selection")
-        );
-    }
 
-    #[cfg(feature = "symbiotic-memory-adapter")]
-    #[tokio::test]
-    async fn benchmark_writes_archive_before_manifest_success() {
-        use symbiotic_memory::config::RecallPolicy;
-        use symbiotic_memory::ingest::PassthroughDistiller;
-        use symbiotic_memory::providers::{DisabledChatProvider, HashEmbeddingProvider};
-
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("hyps.jsonl");
-        let row = LongMemEvalRecord {
-            question_id: "q-archive".to_string(),
-            question_type: Some("count".to_string()),
-            question: "How many pens did I buy?".to_string(),
-            question_date: Some("2023/01/02 (Mon) 00:00".to_string()),
-            answer: Some(serde_json::json!(4)),
-            answer_session_ids: Vec::new(),
-            haystack_dates: vec!["2023/01/01 (Sun) 00:00".to_string()],
-            haystack_session_ids: vec!["s1".to_string()],
-            haystack_sessions: vec![vec![
-                LongMemEvalMessage {
-                    role: "user".to_string(),
-                    content: "I bought 4 pens.".to_string(),
-                    has_answer: false,
-                },
-                LongMemEvalMessage {
-                    role: "assistant".to_string(),
-                    content: "Great.".to_string(),
-                    has_answer: false,
-                },
-            ]],
-        };
-        let mut policy = RecallPolicy::default();
-        policy.answerer_enabled = false;
-
-        run_longmemeval_vault(
-            &[row],
-            dir.path(),
-            HashEmbeddingProvider::default,
-            || PassthroughDistiller,
-            || DisabledChatProvider,
-            policy,
-            &out,
-            false,
-            false,
-            false,
-            false,
-            IngestDiagnosticMode::None,
-            false,
-        )
-        .await
-        .unwrap();
-
-        let vault_dir = dir.path().join("vaults").join("q-archive");
-        let manifest = MemoryRunManifest::load(vault_dir.join("manifest.json"))
-            .unwrap()
-            .unwrap();
-        assert!(manifest.stage_succeeded(MemoryStage::WriteArchive));
-        let store = open_vault_ledger(&vault_dir, 1024).await;
-        let fact_count = store.active_facts().await.unwrap().len();
-        let archive_count = std::fs::read_dir(vault_dir.join("archive").join("memories"))
-            .unwrap()
-            .count();
-        assert_eq!(archive_count, fact_count);
-
-        let conn = rusqlite::Connection::open(
-            dir.path()
-                .join("workflow")
-                .join("longmemeval")
-                .join("queue.sqlite"),
-        )
-        .unwrap();
-        let status: String = conn
-            .query_row("select status from queue_items limit 1", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(status, "succeeded");
-        let embed_raw = manifest.stages.get(&MemoryStage::EmbedRaw).unwrap();
-        assert_eq!(embed_raw.metrics["enabled"], serde_json::json!(true));
-        assert_eq!(embed_raw.metrics["turn_count"], serde_json::json!(2));
-        let capture = manifest.stages.get(&MemoryStage::Capture).unwrap();
-        let artifact_path = capture.metrics["artifact_path"].as_str().unwrap();
-        assert!(vault_dir.join(artifact_path).is_file());
-        assert_eq!(
-            capture.metrics["artifact_digest"]["algorithm"],
-            serde_json::json!("sha256")
-        );
-    }
-
-    #[cfg(feature = "symbiotic-memory-adapter")]
-    #[tokio::test]
-    async fn answer_only_reuses_complete_vault_without_reingest() {
-        use symbiotic_memory::config::RecallPolicy;
-        use symbiotic_memory::ingest::PassthroughDistiller;
-        use symbiotic_memory::providers::{DisabledChatProvider, HashEmbeddingProvider};
-
-        let dir = tempfile::tempdir().unwrap();
-        let first_out = dir.path().join("hyps-first.jsonl");
-        let answer_only_out = dir.path().join("hyps-answer-only.jsonl");
-        let row = LongMemEvalRecord {
-            question_id: "q-answer-only".to_string(),
-            question_type: Some("count".to_string()),
-            question: "How many pens did I buy?".to_string(),
-            question_date: Some("2023/01/02 (Mon) 00:00".to_string()),
-            answer: Some(serde_json::json!(4)),
-            answer_session_ids: Vec::new(),
-            haystack_dates: vec!["2023/01/01 (Sun) 00:00".to_string()],
-            haystack_session_ids: vec!["s1".to_string()],
-            haystack_sessions: vec![vec![LongMemEvalMessage {
-                role: "user".to_string(),
-                content: "I bought 4 pens.".to_string(),
-                has_answer: false,
-            }]],
-        };
-        let mut policy = RecallPolicy::default();
-        policy.answerer_enabled = false;
-
-        run_longmemeval_vault(
-            std::slice::from_ref(&row),
-            dir.path(),
-            HashEmbeddingProvider::default,
-            || PassthroughDistiller,
-            || DisabledChatProvider,
-            policy.clone(),
-            &first_out,
-            false,
-            false,
-            false,
-            false,
-            IngestDiagnosticMode::None,
-            false,
-        )
-        .await
-        .unwrap();
-
-        let vault_dir = dir.path().join("vaults").join("q-answer-only");
-        let before = MemoryRunManifest::load(vault_dir.join("manifest.json"))
-            .unwrap()
-            .unwrap();
-        let distill_finished_at = before.stages[&MemoryStage::DistillWindow].finished_at;
-        fs::write(
-            &answer_only_out,
-            r#"{"question_id":"q-answer-only","question_type":"count","question":"stale","hypothesis":"STALE","debug_artifact":null,"router_initial":null,"router_final":null,"router_reason":null}"#,
-        )
-        .unwrap();
-
-        run_longmemeval_vault(
-            &[row],
-            dir.path(),
-            HashEmbeddingProvider::default,
-            || PassthroughDistiller,
-            || DisabledChatProvider,
-            policy,
-            &answer_only_out,
-            false,
-            true,
-            false,
-            false,
-            IngestDiagnosticMode::None,
-            false,
-        )
-        .await
-        .unwrap();
-
-        let after = MemoryRunManifest::load(vault_dir.join("manifest.json"))
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            after.stages[&MemoryStage::DistillWindow].finished_at,
-            distill_finished_at
-        );
-        assert!(after.stage_succeeded(MemoryStage::Answer));
-        assert!(answer_only_out.is_file());
-        let hypotheses = read_existing_hypotheses(&answer_only_out).unwrap();
-        assert_eq!(hypotheses.len(), 1);
-        assert_ne!(hypotheses[0].hypothesis, "STALE");
-    }
-
-    #[cfg(feature = "symbiotic-memory-adapter")]
-    #[tokio::test]
-    async fn benchmark_can_consolidate_extractive_briefs() {
-        use symbiotic_memory::config::RecallPolicy;
-        use symbiotic_memory::ingest::PassthroughDistiller;
-        use symbiotic_memory::providers::{DisabledChatProvider, HashEmbeddingProvider};
-
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("hyps.jsonl");
-        let row = LongMemEvalRecord {
-            question_id: "q-briefs".to_string(),
-            question_type: Some("direct".to_string()),
-            question: "Where did I get the tennis racket?".to_string(),
-            question_date: None,
-            answer: Some(serde_json::json!("the sports store downtown")),
-            answer_session_ids: Vec::new(),
-            haystack_dates: vec!["2023/01/01 (Sun) 00:00".to_string()],
-            haystack_session_ids: vec!["s1".to_string()],
-            haystack_sessions: vec![vec![LongMemEvalMessage {
-                role: "user".to_string(),
-                content: "I bought a tennis racket from the sports store downtown.".to_string(),
-                has_answer: false,
-            }]],
-        };
-        let mut policy = RecallPolicy::default();
-        policy.answerer_enabled = false;
-
-        let consolidator: Arc<dyn Fn() -> Arc<dyn Distiller> + Send + Sync> =
-            Arc::new(|| Arc::new(PassthroughDistiller));
-        run_longmemeval_vault_with_planner(
-            &[row],
-            dir.path(),
-            HashEmbeddingProvider::default,
-            || PassthroughDistiller,
-            Some(consolidator),
-            || DisabledChatProvider,
-            None,
-            None,
-            RerankCascade::default(),
-            None,
-            None,
-            policy,
-            &out,
-            false,
-            false,
-            true,
-            false,
-            IngestDiagnosticMode::None,
-            None,
-            false,
-        )
-        .await
-        .unwrap();
-
-        let vault_dir = dir.path().join("vaults").join("q-briefs");
-        let manifest = MemoryRunManifest::load(vault_dir.join("manifest.json"))
-            .unwrap()
-            .unwrap();
-        assert!(manifest.stage_succeeded(MemoryStage::Consolidate));
-        assert_eq!(
-            manifest.stages[&MemoryStage::Consolidate].metrics["brief_count"],
-            serde_json::json!(1)
-        );
-        let active = open_vault_ledger(&vault_dir, 1024)
-            .await
-            .active_briefs()
-            .await
-            .unwrap();
-        assert_eq!(active.len(), 1);
-        assert!(active[0].content.contains("sports store downtown"));
-    }
-
-    #[cfg(feature = "symbiotic-memory-adapter")]
-    #[tokio::test]
-    async fn workflow_row_rejects_terminal_duplicate_without_hypothesis() {
-        use symbiotic_core::QueueId;
-        use symbiotic_queue::{
-            EnqueueRequest, QueueBackend, QueueStatus as DurableQueueStatus, SqliteQueue,
-        };
-
-        let queue = SqliteQueue::in_memory().unwrap();
-        let queue_id = QueueId::new("workflow:longmemeval");
-        let inserted = queue
-            .enqueue(EnqueueRequest {
-                queue_id: queue_id.clone(),
-                kind: "longmemeval.row".to_string(),
-                payload: serde_json::json!({"question_id": "q-terminal"}),
-                idempotency_key: Some("q-terminal:hash".to_string()),
-                run_after: None,
-                max_attempts: Some(1),
-                force: false,
-            })
-            .await
-            .unwrap()
-            .item;
-        let claimed = queue
-            .claim_item(&inserted.item_id, "worker-a", 60, Some(1))
-            .await
-            .unwrap()
-            .unwrap();
-        queue.complete(&claimed.item_id, "worker-a").await.unwrap();
-        assert_eq!(
-            queue
-                .get_item(&claimed.item_id)
-                .await
-                .unwrap()
-                .unwrap()
-                .status,
-            DurableQueueStatus::Succeeded
-        );
-
-        let err = enqueue_and_claim_workflow_row(
-            &queue,
-            queue_id,
-            "worker-b",
-            "q-terminal",
-            "hash",
-            false,
-            60,
-            1,
-            3,
-            false,
-        )
-        .await
-        .unwrap_err()
-        .to_string();
-
-        assert!(
-            err.contains("terminal queue state without a matching hypothesis"),
-            "{err}"
-        );
-    }
-
-    #[cfg(feature = "symbiotic-memory-adapter")]
-    #[tokio::test]
-    async fn workflow_row_failure_keeps_retryable_attempts() {
-        use symbiotic_core::QueueId;
-        use symbiotic_queue::{QueueBackend, QueueStatus as DurableQueueStatus, SqliteQueue};
-
-        let queue = SqliteQueue::in_memory().unwrap();
-        let queue_id = QueueId::new("workflow:longmemeval");
-        let claimed = enqueue_and_claim_workflow_row(
-            &queue, queue_id, "worker-a", "q-retry", "hash", false, 60, 1, 3, false,
-        )
-        .await
-        .unwrap();
-
-        fail_workflow_item(
-            &queue,
-            &claimed.item_id,
-            "worker-a",
-            "distiller response did not contain JSON",
-            claimed.attempt,
-        )
-        .await
-        .unwrap();
-
-        let failed = queue
-            .get_item(&claimed.item_id)
-            .await
-            .unwrap()
-            .expect("workflow item remains available");
-        assert_eq!(failed.status, DurableQueueStatus::Failed);
-        assert_eq!(failed.attempt, 1);
-        assert_eq!(failed.max_attempts, 3);
-        assert_eq!(
-            failed.last_error.as_deref(),
-            Some("distiller response did not contain JSON")
-        );
-    }
-
-    #[cfg(feature = "symbiotic-memory-adapter")]
-    #[tokio::test]
-    async fn workflow_row_resume_force_reenqueues_terminal_duplicate() {
-        use symbiotic_core::QueueId;
-        use symbiotic_queue::{
-            EnqueueRequest, QueueBackend, QueueStatus as DurableQueueStatus, SqliteQueue,
-        };
-
-        let queue = SqliteQueue::in_memory().unwrap();
-        let queue_id = QueueId::new("workflow:longmemeval");
-        let inserted = queue
-            .enqueue(EnqueueRequest {
-                queue_id: queue_id.clone(),
-                kind: "longmemeval.row".to_string(),
-                payload: serde_json::json!({"question_id": "q-terminal"}),
-                idempotency_key: Some("q-terminal:hash".to_string()),
-                run_after: None,
-                max_attempts: Some(1),
-                force: false,
-            })
-            .await
-            .unwrap()
-            .item;
-        let claimed = queue
-            .claim_item(&inserted.item_id, "worker-a", 60, Some(1))
-            .await
-            .unwrap()
-            .unwrap();
-        queue
-            .fail(&claimed.item_id, "worker-a", "timeout", Some(1))
-            .await
-            .unwrap();
-        assert_eq!(
-            queue
-                .get_item(&claimed.item_id)
-                .await
-                .unwrap()
-                .unwrap()
-                .status,
-            DurableQueueStatus::Dead
-        );
-
-        let resumed = enqueue_and_claim_workflow_row(
-            &queue,
-            queue_id,
-            "worker-b",
-            "q-terminal",
-            "hash",
-            false,
-            60,
-            1,
-            3,
-            true,
-        )
-        .await
-        .unwrap();
-
-        assert_ne!(resumed.item_id, inserted.item_id);
-        assert_eq!(resumed.status, DurableQueueStatus::Running);
-    }
-
-    #[cfg(feature = "symbiotic-memory-adapter")]
-    #[test]
-    fn record_external_scores_writes_benchmark_artifacts_without_mutating_memory_manifest() {
-        let dir = tempfile::tempdir().unwrap();
-        let run_root = dir.path();
-        let vault_dir = run_root.join("vaults").join("q-score");
-        fs::create_dir_all(&vault_dir).unwrap();
-        let mut manifest = MemoryRunManifest::new("q-score", "source-hash", "policy-v1");
-        manifest.begin(MemoryStage::Answer, "answer-input");
-        manifest.succeed(MemoryStage::Answer, "answer-output", BTreeMap::new());
-        manifest.save(vault_dir.join("manifest.json")).unwrap();
-
-        let hypotheses_path = run_root.join("hyp.jsonl");
-        fs::write(
-            &hypotheses_path,
-            serde_json::to_string(&BenchHypothesis {
-                question_id: "q-score".to_string(),
-                question_type: Some("single-session-user".to_string()),
-                question: "What did I buy?".to_string(),
-                hypothesis: "A notebook".to_string(),
-                debug_artifact: None,
-                router_initial: None,
-                router_final: None,
-                router_reason: None,
-            })
-            .unwrap()
-                + "\n",
-        )
-        .unwrap();
-        let scored_path = run_root.join("hyp.jsonl.scored.json");
-        fs::write(
-            &scored_path,
-            serde_json::json!({
-                "counts": {
-                    "scored": 1,
-                    "total_correct": 1,
-                    "judge_errors": 0
-                },
-                "overall_accuracy": 1.0,
-                "task_averaged_accuracy": 1.0
-            })
-            .to_string(),
-        )
-        .unwrap();
-        let verdicts_path = run_root.join("hyp.jsonl.verdicts.jsonl");
-        fs::write(
-            &verdicts_path,
-            serde_json::json!({
-                "question_id": "q-score",
-                "question_type": "single-session-user",
-                "label": true,
-                "error": null
-            })
-            .to_string()
-                + "\n",
-        )
-        .unwrap();
-
-        let report = record_external_scores(
-            run_root,
-            &hypotheses_path,
-            Some(scored_path.as_path()),
-            Some(verdicts_path.as_path()),
-            "test-judge",
-        )
-        .unwrap();
-
-        assert_eq!(report.hypotheses, 1);
-        assert_eq!(report.verdicts, 1);
-        assert_eq!(report.debug_files_updated, 0);
-        assert!(run_root.join("score-summary.json").is_file());
-        let manifest = MemoryRunManifest::load(vault_dir.join("manifest.json"))
-            .unwrap()
-            .unwrap();
-        assert_eq!(manifest.stages.len(), 1);
-        assert!(manifest.stage_succeeded(MemoryStage::Answer));
+        assert!(error.to_string().contains("terminal without an output"));
     }
 
     #[test]
-    fn clear_score_artifacts_removes_derived_score_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let run_root = dir.path();
-        let hypotheses_path = run_root.join("hyp.jsonl");
-        fs::write(&hypotheses_path, "{}\n").unwrap();
-        fs::write(run_root.join("score-summary.json"), "{}").unwrap();
-        fs::create_dir_all(run_root.join("scores")).unwrap();
-        fs::write(run_root.join("scores").join("old.json"), "{}").unwrap();
-        fs::write(run_root.join("hyp.jsonl.scored.json"), "{}").unwrap();
-        fs::write(run_root.join("hyp.jsonl.verdicts.jsonl"), "{}\n").unwrap();
-        fs::write(run_root.join("hyp.jsonl.partial.verdicts.jsonl"), "{}\n").unwrap();
-        for directory in ["raw", "artifacts"] {
-            fs::create_dir_all(run_root.join(directory)).unwrap();
-            for file_name in [
-                "verdicts.jsonl",
-                "partial-verdicts.jsonl",
-                "scored.json",
-                "score-summary.json",
-            ] {
-                fs::write(run_root.join(directory).join(file_name), "{}\n").unwrap();
-            }
-        }
+    fn workflow_identity_changes_when_source_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let run = sample_run(temp.path());
+        let first = sample_row();
+        let mut second = first.clone();
+        second.haystack_sessions[0][0].content = "Somewhere else".to_string();
 
-        let removed = clear_score_artifacts(run_root, &hypotheses_path).unwrap();
-
-        assert_eq!(removed, 13);
-        assert!(!run_root.join("score-summary.json").exists());
-        assert!(!run_root.join("scores").exists());
-        assert!(!run_root.join("hyp.jsonl.scored.json").exists());
-        assert!(!run_root.join("hyp.jsonl.verdicts.jsonl").exists());
-        assert!(!run_root.join("hyp.jsonl.partial.verdicts.jsonl").exists());
-        assert!(!run_root.join("raw/verdicts.jsonl").exists());
-        assert!(!run_root.join("artifacts/score-summary.json").exists());
-        assert!(hypotheses_path.exists());
+        assert_ne!(
+            workflow_input_hash(&first, &run).unwrap(),
+            workflow_input_hash(&second, &run).unwrap()
+        );
     }
 
-    #[cfg(feature = "symbiotic-memory-adapter")]
     #[test]
-    fn record_external_scores_rejects_verdicts_outside_current_hypotheses() {
-        let dir = tempfile::tempdir().unwrap();
-        let hypotheses_path = dir.path().join("hyp.jsonl");
-        fs::write(
-            &hypotheses_path,
-            serde_json::to_string(&BenchHypothesis {
-                question_id: "q-owned".to_string(),
-                question_type: None,
-                question: "Question?".to_string(),
-                hypothesis: "Answer".to_string(),
-                debug_artifact: None,
-                router_initial: None,
-                router_final: None,
-                router_reason: None,
-            })
-            .unwrap()
-                + "\n",
-        )
-        .unwrap();
-        let verdicts_path = dir.path().join("hyp.jsonl.verdicts.jsonl");
-        fs::write(
-            &verdicts_path,
-            serde_json::json!({"question_id": "q-other", "label": true}).to_string() + "\n",
-        )
-        .unwrap();
-
-        let err = record_external_scores(
-            dir.path(),
-            &hypotheses_path,
-            None::<&Path>,
-            Some(verdicts_path.as_path()),
-            "test-judge",
-        )
-        .unwrap_err()
-        .to_string();
-
-        assert!(
-            err.contains("not present in current-run hypotheses"),
-            "{err}"
-        );
+    fn score_cleanup_is_scoped_to_derived_outputs() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("artifacts")).unwrap();
+        fs::write(temp.path().join("artifacts/scored.json"), "{}").unwrap();
+        fs::write(temp.path().join("source.txt"), "keep").unwrap();
+        let removed =
+            clear_score_artifacts(temp.path(), temp.path().join("hypotheses.jsonl")).unwrap();
+        assert_eq!(removed, 1);
+        assert!(temp.path().join("source.txt").exists());
     }
 }

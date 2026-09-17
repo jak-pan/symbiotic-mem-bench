@@ -1,73 +1,69 @@
-# The adapter boundary — membench treats memory systems as black boxes
+# The adapter boundary — memory systems are black boxes
 
-Owner principle (2026-07-04): membench is a benchmark **harness**. A memory
-system under test is a black box that gets (1) a directory to keep its state
-in, (2) conversations to ingest, (3) questions to answer, and exposes
-(4) tracing/metrics. The harness must not understand the system's
-underpinnings — file names, storage backends, index caches, rebuild
-mechanics. Anything the harness knows about internals is coupling that
-breaks the moment we bench a second system (mem0, hymem, …) or a second
-benchmark (LoCoMo next to LongMemEval).
+Membench supplies a state directory, source records, questions, and an
+explicit diagnostics policy. A memory-system adapter returns capture results,
+answers, typed diagnostics, and trace events. The harness must not know how the
+system stores, indexes, checkpoints, or rebuilds those values.
 
-## What the symbiotic-memory adapter may use
+## Symbiotic Memory contract
 
-Exactly the kit's public facade:
+The Symbiotic Memory adapter may depend on these public surfaces:
 
-- `Vault::open_with_report(dir, &profile)` — directory + profile in, store
-  out. The profile (`storage.backend`, `storage.vector_dimensions`) is
-  config plumbing, not internals knowledge: the bench forwards its run
-  configuration, the kit decides what to do with it.
-- The store's trait surface (`MemoryStore`, `GraphStore`, `FactLifecycle`)
-  and the kit's ingest/recall engines.
-- `VaultOpenReport` and trace events for metrics. Reading metrics out is
-  fine; *acting* on internals is not.
+- `MemoryEngine`, `MemorySession`, their request/result contracts, capability
+  negotiation, and typed errors;
+- public source, scope, answer, and evidence DTOs used by that facade;
+- public provider/configuration adapters needed to supply the engine's host
+  seams;
+- facade-owned structured/full diagnostic results and instrumentation events.
 
-Not allowed, with history:
+The application profile is consumed through `symbiotic_memory::profile`.
+Membench must not depend directly on Symbiotic Memory's implementation config
+crate.
 
-- **File names inside the vault** — the adapter once renamed
-  `memory.sqlite`→`vault.db` in code (`migrate_legacy_vault_layout`,
-  removed). Converging old data is a one-time batch operation over the runs
-  tree, not harness code.
-- **Backend types** — the adapter once matched on
-  `SqliteStore | ZvecHybridIndexedSqliteStore` (removed; it holds the
-  opaque `VaultStore`).
+The adapter must not import or construct:
 
-## Known remaining debt (dies with the hybrid backend) — PAID 2026-07-07
+- `IngestPipeline`, `RecallEngine`, a storage trait/backend, or `VaultStore`;
+- zvec collections, SQLite files, archive internals, or manifest checkpoints;
+- an alternate ingestion, embedding, retrieval, reranking, or answer path.
 
-The index-cache logic (`ensure_recall_index`, the per-vault index manifest
-with the ledger sha) was DELETED in the §12 step-3 cutover, together with
-the kit's maintenance surface it spoke through: the sqlite and zvec-hybrid
-backends no longer exist, the collections ARE the store, and consistency on
-open is the kit's own job (retire journal + reconcile). `--store` accepts
-`zvec` (default) and `memory`; stale run markers naming a deleted backend
-refuse loudly. Vault staging copies every `*.zvec` collection directory —
-never symlinks them (the engine takes exclusive per-collection locks and may
-write on open) — and links only the read-only L0 archive.
+If a benchmark mode needs a capability the facade does not expose, the adapter
+fails before ingest or provider calls. It does not approximate the missing
+behavior. In particular, a second harness-side search is not a substitute for
+the evidence used by native recall.
 
-## Redesign target (multi-system, multi-benchmark)
+## Diagnostics and truth tiers
 
-The seam to grow toward, so mem0/hymem/others and LoCoMo/LongMemEval/others
-compose:
+The benchmark may request the facade's protected full diagnostics for local
+question-debug bundles. It may also consume structured diagnostics for safer
+publication artifacts. Raw prompts, model responses, and reasoning remain
+ignored local artifacts and are never copied into tracked records.
+
+Evidence returned by Memory retains the facade's authority labels:
+
+- raw source content is canonical source evidence;
+- facts, plans, rankings, and summaries are rebuildable derived values;
+- answer text is generated output.
+
+Membench renders these values but does not reinterpret their authority.
+
+## State reuse and maintenance
+
+Answer-only reuse, redo stages, consolidation, supersession detection, and
+diagnostic ingest stops are available only when Memory exposes them through a
+public operation or capability. The harness never copies named index files,
+edits manifests, or calls store maintenance methods to implement those modes.
+
+## Multi-system adapter shape
+
+Every system-specific adapter implements the same conceptual seam:
 
 ```text
-trait MemorySystemAdapter {
-    prepare(state_dir, run_config) -> System;   // black box gets a home
-    ingest(conversation) -> IngestReceipt;      // + optional maintenance tick
-    recall(question) -> Answer + Evidence;      // what gets judged
-    trace() -> impl Iterator<TraceEvent>;       // tokens, latency, stages
-}
+open(state_dir, run_config) -> system handle + capabilities
+ingest(source, operation_context) -> capture result
+recall(question, diagnostics, operation_context) -> answer + evidence
+trace() -> typed event stream
 ```
 
-- One implementation per system (symbiotic-memory today; mem0 via its HTTP
-  API; hymem via its SDK) behind cargo features — a system with no notion
-  of "vaults" still fits, because the harness only ever handed over a
-  directory and conversations.
-- Benchmarks are data-plane modules (question sets + gold + judge prompts)
-  that feed any adapter; scoring, registry, and the dashboard stay shared.
-- The judge/scorer must not assume adapter internals either (it already
-  operates on answers + evidence text only — keep it that way).
-
-Today's `symbiotic_memory_adapter.rs` is the only implementation and should
-keep drifting toward this shape whenever it is touched; carving the trait
-out is worth doing at the moment a second system or second benchmark
-actually lands.
+A system with no vault, vector store, or local process still fits this shape.
+Benchmark loading, scoring, records, comparisons, and dashboard rendering stay
+system-neutral.

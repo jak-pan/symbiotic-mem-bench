@@ -54,8 +54,8 @@ for name in "$@"; do
   c=$(jq -rc 'select(.autoeval_label.label==true)' "$V" 2>/dev/null | grep -c .)
   acc=$(awk "BEGIN{if($n>0)printf \"%.3f\",$c/$n; else printf \"0\"}")
   cat=$(jq -r '.question_type+" "+((.autoeval_label.label==true)|tostring)' "$V" 2>/dev/null | bytype)
-  rz=$(jq -rc '(.recall.answerer_calls[0].reasoning//"")|length' "$dir"/vaults/*/debug/question-debug.json 2>/dev/null | awk '$1>0{k++}END{print k+0}')
-  tot=$(jq -rc '(.recall.answerer_calls[0].reasoning//"")|length' "$dir"/vaults/*/debug/question-debug.json 2>/dev/null | grep -c .)
+  rz=$(jq -rc '(.recall.answer_calls[0].reasoning//.recall.answerer_calls[0].reasoning//"")|length' "$dir"/vaults/*/debug/{facade/,}question-debug.json 2>/dev/null | awk '$1>0{k++}END{print k+0}')
+  tot=$(jq -rc '(.recall.answer_calls[0].reasoning//.recall.answerer_calls[0].reasoning//"")|length' "$dir"/vaults/*/debug/{facade/,}question-debug.json 2>/dev/null | grep -c .)
   reasoned="n/a"; [ "${tot:-0}" -gt 0 ] 2>/dev/null && reasoned="$rz/$tot"
   costu=$(jq -r '.metrics.cost_micro_usd//0' "$dir/benchmark-report.json" 2>/dev/null || echo 0)
   cost=$(awk "BEGIN{printf \"%.4f\",${costu:-0}/1e6}")

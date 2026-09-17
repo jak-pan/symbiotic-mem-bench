@@ -18,11 +18,9 @@ external action; the code-side work is done and gated in CI.
    Do not vendor private source or credentials into Membench. The adapter can enter the public
    release only after its complete pinned dependency and zvec runtime are publicly reproducible.
 2. ~~**Adapter APIs not yet published upstream.**~~ **Resolved 2026-07-24.** The kit APIs the
-   adapter needs *are* on the pinned revision — they were renamed: what membench called
-   `symbiotic_memory::MemoryConfig` (YAML `providers:` role bindings,
-   `queue.resolve_provider_queue`) is `symbiotic_memory::EngineConfig` upstream, while
-   `MemoryConfig` now names the newer layered TOML config in `symbiotic-memory-config`.
-   the isolated adapter package builds and runs against the exact pins with no
+   adapter needs are on the pinned revision. The application profile is consumed through
+   `symbiotic_memory::profile`; membench no longer depends on the implementation config crate.
+   The isolated adapter package builds and runs against the exact pins with no
    sibling checkout and no `.cargo/config.toml` override. The override block in
    `docs/environment.md` remains available for co-development, not as a requirement.
 3. ~~**Mandatory opposite-model v0.1.0 release approval.**~~ **Resolved 2026-07-24.** K3 independently
