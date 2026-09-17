@@ -440,7 +440,8 @@ When trace usage includes `cost_micro_usd`, membench uses that reported value. O
 optional `usage.provider.reported_cost_usd` (or normalized `metadata.provider.reported_cost_usd`)
 is validated and rounded to micro-USD. Conflicting copies remain unpriced. Top-level
 provider-queue costs are producer estimates and are recalculated from the dated catalog. A local
-response-cache hit contributes **zero new provider cost**, even if its saved response still carries
+response-cache hit (`usage.response_cache_hit` or `cache.response_cache: "hit"`) contributes
+**zero new provider cost**, even if its saved response still carries
 old usage or cost. Token totals describe the traces, including saved usage on response-cache hits;
 they are not a count of newly billed provider tokens.
 

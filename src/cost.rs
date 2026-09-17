@@ -68,6 +68,8 @@ struct RawCache {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 struct RawUsage {
+    #[serde(default)]
+    response_cache_hit: bool,
     #[serde(default, alias = "prompt_tokens")]
     input_tokens: Option<u64>,
     #[serde(default, alias = "completion_tokens")]
@@ -597,7 +599,8 @@ pub fn rollup_model_trace_file(path: &Path) -> Option<ModelTraceRollup> {
         rollup.uncached_input_tokens += uncached;
         rollup.unknown_cache_input_tokens += unknown_cached;
         rollup.output_tokens += output;
-        let response_replayed = cache.response_cache.as_deref() == Some("hit");
+        let response_replayed =
+            usage.response_cache_hit || cache.response_cache.as_deref() == Some("hit");
         if response_replayed {
             rollup.response_cache_hits += 1;
         }
@@ -698,7 +701,7 @@ pub fn rollup_model_trace_file(path: &Path) -> Option<ModelTraceRollup> {
         acc.unknown_cache_input_tokens += unknown_cached;
         acc.unpriced_calls += unpriced;
         acc.output_tokens += output;
-        if cache.response_cache.as_deref() == Some("hit") {
+        if response_replayed {
             acc.response_cache_hits += 1;
         }
         match prompt_cache {
@@ -738,7 +741,7 @@ pub fn rollup_model_trace_file(path: &Path) -> Option<ModelTraceRollup> {
             role_acc.unknown_cache_input_tokens += unknown_cached;
             role_acc.unpriced_calls += unpriced;
             role_acc.output_tokens += output;
-            if cache.response_cache.as_deref() == Some("hit") {
+            if response_replayed {
                 role_acc.response_cache_hits += 1;
             }
             match prompt_cache {
@@ -1376,5 +1379,28 @@ mod tests {
             trace["cache"] = serde_json::json!({"response_cache":"hit"});
             assert_eq!(rollup_one(trace).cost_micro_usd, Some(0));
         }
+    }
+    #[test]
+    fn shared_memory_replay_flag_preserves_usage_but_has_zero_incremental_cost() {
+        let mut trace = flash_trace("deepseek-flash", "2026-09-17T01:00:00Z");
+        trace["queue_id"] = "chat:deepseek:deepseek-flash".into();
+        trace["status"] = "succeeded".into();
+        trace["usage"]["response_cache_hit"] = true.into();
+        trace["usage"]["provider"] = serde_json::json!({"reported_cost_usd":"0.125"});
+        let rollup = rollup_one(trace.clone());
+        assert_eq!(rollup.cost_micro_usd, Some(0));
+        assert!(!rollup.cost_estimated);
+        assert_eq!(rollup.response_cache_hits, 1);
+        assert_eq!(rollup.models[0].response_cache_hits, 1);
+        assert_eq!(rollup.roles_detail[0].response_cache_hits, 1);
+        assert_eq!(rollup.input_tokens, 1000000);
+        assert_eq!(rollup.output_tokens, 1000000);
+        assert_eq!(rollup.models[0].cost_micro_usd, Some(0));
+        assert_eq!(rollup.roles_detail[0].cost_micro_usd, Some(0));
+        trace["usage"]["response_cache_hit"] = false.into();
+        assert_eq!(rollup_one(trace.clone()).cost_micro_usd, Some(125000));
+        trace["usage"]["response_cache_hit"] = true.into();
+        trace["metadata"] = serde_json::json!({"provider":{"reported_cost_usd":"0.25"}});
+        assert_eq!(rollup_one(trace).cost_micro_usd, Some(0));
     }
 }

@@ -65,7 +65,8 @@ contradictory counters stay unknown; they do not increment prompt-cache misses.
 `unknown_cache_input_tokens` exposes the unknown volume. A cache-discounted
 estimate requires a trustworthy split and complete token usage.
 
-Local response replay makes no new provider call, so its new cost is zero even
+Local response replay is marked by shared Memory `usage.response_cache_hit: true`
+or normalized `cache.response_cache: "hit"`. It makes no new provider call, so its new cost is zero even
 when the saved usage contains an old provider-reported cost. For compatibility,
 token totals and cache counters still describe all trace invocations, including
 saved usage on local replays; they must not be read as newly billed token totals.
@@ -169,3 +170,14 @@ the documented metadata reconciliation and precedence. The final core suite
 passed 58 tests, including 23 cost tests; no provider call was made. Coherent
 reported receipts continue to override estimation even when the served model is
 outside this catalog.
+
+
+## Shared replay marker — September 17, 2026
+
+The settled shared adapter contract adds `Usage.response_cache_hit`, default false
+and omitted when false. The parser treats it like the existing normalized
+response-cache marker, counts it at run/model/role levels, and preserves original
+usage while recording zero new cost. A queue-shaped regression first showed the
+old provider receipt being charged again, then passed. All 59 core tests (24 cost
+tests) passed. No additional top-level cache flag is defined by the active shared
+queue helper, so no unverified field is treated as a free replay.
