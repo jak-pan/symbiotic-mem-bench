@@ -37,6 +37,8 @@ struct RawModelTrace {
     #[serde(default)]
     usage: Option<RawUsage>,
     #[serde(default)]
+    metadata: Option<RawTraceMetadata>,
+    #[serde(default)]
     timing: Option<RawTiming>,
     #[serde(default)]
     outcome: Option<String>,
@@ -83,7 +85,46 @@ struct RawUsage {
 #[derive(Clone, Debug, Default, Deserialize)]
 struct RawProviderUsage {
     #[serde(default)]
+    response_id: Option<String>,
+    #[serde(default)]
+    reasoning_tokens: Option<u64>,
+    #[serde(default)]
+    served_model: Option<String>,
+    #[serde(default)]
+    created: Option<i64>,
+    #[serde(default)]
     reported_cost_usd: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct RawTraceMetadata {
+    #[serde(default)]
+    provider: Option<RawProviderUsage>,
+}
+
+// Memory queue traces use usage.provider; normalized Foundation traces use
+// metadata.provider. Combine missing fields, but never silently mask a conflict.
+fn reconcile_provider_metadata(
+    usage: Option<&RawProviderUsage>,
+    normalized: Option<&RawProviderUsage>,
+) -> Result<Option<RawProviderUsage>, ()> {
+    fn field<T: Clone + PartialEq>(left: &Option<T>, right: &Option<T>) -> Result<Option<T>, ()> {
+        match (left, right) {
+            (Some(left), Some(right)) if left != right => Err(()),
+            _ => Ok(left.as_ref().or(right.as_ref()).cloned()),
+        }
+    }
+    match (usage, normalized) {
+        (None, None) => Ok(None),
+        (Some(only), None) | (None, Some(only)) => Ok(Some(only.clone())),
+        (Some(left), Some(right)) => Ok(Some(RawProviderUsage {
+            response_id: field(&left.response_id, &right.response_id)?,
+            reasoning_tokens: field(&left.reasoning_tokens, &right.reasoning_tokens)?,
+            served_model: field(&left.served_model, &right.served_model)?,
+            created: field(&left.created, &right.created)?,
+            reported_cost_usd: field(&left.reported_cost_usd, &right.reported_cost_usd)?,
+        })),
+    }
 }
 
 impl RawProviderUsage {
@@ -571,20 +612,48 @@ pub fn rollup_model_trace_file(path: &Path) -> Option<ModelTraceRollup> {
             Some("miss") => rollup.prompt_cache_misses += 1,
             _ => {}
         }
-        // A local replay carries original usage (including old provider-reported cost).
-        // It makes no provider request, so it contributes zero new cost.
-        let reported_cost = response_replayed
-            .then_some(0)
-            .or(usage.cost_micro_usd)
-            .or_else(|| usage.provider.as_ref()?.reported_cost_micro_usd())
-            // Queue-level prices are estimates from the producer's configured tariff,
-            // not provider receipts; recalculate them using this dated catalog.
-            .or(trace.cost_micro_usd.filter(|_| trace.queue_id.is_none()));
-        let pricing = pricing_for(&operator, &operation, &model, trace.timestamp.as_deref());
+        let metadata = reconcile_provider_metadata(
+            usage.provider.as_ref(),
+            trace
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.provider.as_ref()),
+        );
+        let metadata_conflict = metadata.is_err();
+        let provider = metadata.as_ref().ok().and_then(Option::as_ref);
+        // A local replay makes no provider request. Otherwise conflicting metadata
+        // cannot establish a receipt's identity, so even reported cost stays unknown.
+        let reported_cost = if response_replayed {
+            Some(0)
+        } else if metadata_conflict {
+            None
+        } else {
+            usage
+                .cost_micro_usd
+                .or_else(|| provider?.reported_cost_micro_usd())
+                // Queue-level prices are estimates from the producer's configured
+                // tariff, not receipts; recalculate using this dated catalog.
+                .or(trace.cost_micro_usd.filter(|_| trace.queue_id.is_none()))
+        };
+        let priced_model = provider
+            .and_then(|provider| provider.served_model.as_deref())
+            .unwrap_or(&model);
+        let provider_created = provider
+            .and_then(|provider| DateTime::<Utc>::from_timestamp(provider.created?, 0))
+            .map(|created| created.to_rfc3339());
+        let pricing = pricing_for(
+            &operator,
+            &operation,
+            priced_model,
+            provider_created.as_deref().or(trace.timestamp.as_deref()),
+        );
         let estimated_cost = reported_cost.or_else(|| {
+            if metadata_conflict {
+                return None;
+            }
             if operation == "rerank" {
                 // One query is one search, independent of document/token count.
-                rerank_search_price_micro_usd(&operator, &model)
+                rerank_search_price_micro_usd(&operator, priced_model)
             } else {
                 let pricing = pricing?;
                 observed_input?;
@@ -1223,6 +1292,89 @@ mod tests {
             assert_eq!(rollup.cost_micro_usd, expected, "{dollars}");
             assert_eq!(rollup.calls, 1);
             assert!(!rollup.cost_estimated);
+        }
+    }
+    #[test]
+    fn served_model_controls_estimates_without_relabeling_requested_model() {
+        let mut trace = flash_trace("deepseek-flash", "2026-09-17T01:00:00Z");
+        trace["usage"]["provider"] = serde_json::json!({"served_model":"unknown-model"});
+        let rollup = rollup_one(trace.clone());
+        assert_eq!(rollup.cost_micro_usd, None);
+        assert_eq!(rollup.models[0].model, "deepseek-flash");
+        trace["usage"]["provider"]["reported_cost_usd"] = "0.125".into();
+        assert_eq!(rollup_one(trace).cost_micro_usd, Some(125000));
+
+        let mut trace = flash_trace("deepseek-v4-flash", "2026-06-23T01:00:00Z");
+        trace["usage"]["provider"] = serde_json::json!({"served_model":"deepseek-v4-pro"});
+        let rollup = rollup_one(trace);
+        assert_eq!(rollup.cost_micro_usd, Some(1089313));
+        assert_eq!(rollup.models[0].model, "deepseek-v4-flash");
+    }
+
+    #[test]
+    fn provider_created_time_precedes_queue_completion_for_tariffs() {
+        let mut trace = flash_trace("deepseek-flash", "2026-09-17T04:00:01Z");
+        let created = DateTime::parse_from_rfc3339("2026-09-17T03:59:59Z")
+            .unwrap()
+            .timestamp();
+        trace["usage"]["provider"] = serde_json::json!({"created":created});
+        assert_eq!(rollup_one(trace.clone()).cost_micro_usd, Some(1353000));
+        // Out-of-range provider dates are unusable; old trace time remains the fallback.
+        trace["usage"]["provider"]["created"] = i64::MAX.into();
+        assert_eq!(rollup_one(trace.clone()).cost_micro_usd, Some(676500));
+        trace.as_object_mut().unwrap().remove("timestamp");
+        assert_eq!(rollup_one(trace.clone()).cost_micro_usd, None);
+        trace["usage"]["provider"]["created"] = created.into();
+        assert_eq!(rollup_one(trace).cost_micro_usd, Some(1353000));
+    }
+    #[test]
+    fn normalized_trace_provider_metadata_controls_rates_and_receipts() {
+        let mut trace = flash_trace("deepseek-flash", "2026-09-17T04:00:01Z");
+        trace["metadata"] = serde_json::json!({"provider":{"served_model":"unknown"}});
+        assert_eq!(rollup_one(trace.clone()).cost_micro_usd, None);
+        trace["metadata"]["provider"]["reported_cost_usd"] = "0.125".into();
+        assert_eq!(rollup_one(trace.clone()).cost_micro_usd, Some(125000));
+        let created = DateTime::parse_from_rfc3339("2026-09-17T03:59:59Z")
+            .unwrap()
+            .timestamp();
+        trace["metadata"]["provider"] =
+            serde_json::json!({"served_model":"deepseek-flash", "created":created});
+        assert_eq!(rollup_one(trace).cost_micro_usd, Some(1353000));
+    }
+
+    #[test]
+    fn matching_or_complementary_provider_metadata_can_be_reconciled() {
+        let mut trace = flash_trace("deepseek-flash", "2026-09-17T01:00:00Z");
+        let metadata = serde_json::json!({"response_id":"response-a", "served_model":"deepseek-flash", "reported_cost_usd":"0.125"});
+        trace["usage"]["provider"] = metadata.clone();
+        trace["metadata"] = serde_json::json!({"provider":metadata});
+        assert_eq!(rollup_one(trace.clone()).cost_micro_usd, Some(125000));
+        trace["usage"]["provider"] = serde_json::json!({"response_id":"response-a"});
+        assert_eq!(rollup_one(trace).cost_micro_usd, Some(125000));
+    }
+
+    #[test]
+    fn conflicting_provider_metadata_leaves_cost_unknown_except_local_replay() {
+        for (key, different) in [
+            ("response_id", serde_json::json!("response-b")),
+            ("served_model", serde_json::json!("unknown")),
+            ("created", serde_json::json!(2)),
+            ("reasoning_tokens", serde_json::json!(20)),
+            ("reported_cost_usd", serde_json::json!("0.25")),
+        ] {
+            let mut trace = flash_trace("deepseek-flash", "2026-09-17T01:00:00Z");
+            let metadata = serde_json::json!({"response_id":"response-a", "served_model":"deepseek-flash", "created":1,
+                                             "reasoning_tokens":10, "reported_cost_usd":"0.125"});
+            trace["usage"]["provider"] = metadata.clone();
+            trace["metadata"] = serde_json::json!({"provider":metadata});
+            trace["metadata"]["provider"][key] = different;
+            trace["usage"]["cost_micro_usd"] = 125000.into();
+            let rollup = rollup_one(trace.clone());
+            assert_eq!(rollup.cost_micro_usd, None, "{key}");
+            assert_eq!(rollup.unpriced_calls, 1);
+            assert!(!rollup.cost_estimated);
+            trace["cache"] = serde_json::json!({"response_cache":"hit"});
+            assert_eq!(rollup_one(trace).cost_micro_usd, Some(0));
         }
     }
 }

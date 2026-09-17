@@ -437,7 +437,8 @@ Cost is derived from:
 - pricing table version used by the run.
 
 When trace usage includes `cost_micro_usd`, membench uses that reported value. Otherwise,
-optional `usage.provider.reported_cost_usd` is validated and rounded to micro-USD. Top-level
+optional `usage.provider.reported_cost_usd` (or normalized `metadata.provider.reported_cost_usd`)
+is validated and rounded to micro-USD. Conflicting copies remain unpriced. Top-level
 provider-queue costs are producer estimates and are recalculated from the dated catalog. A local
 response-cache hit contributes **zero new provider cost**, even if its saved response still carries
 old usage or cost. Token totals describe the traces, including saved usage on response-cache hits;
@@ -445,7 +446,9 @@ they are not a count of newly billed provider tokens.
 
 Otherwise, complete token usage is priced using the versioned built-in catalog
 `official-pricing-2026-09-17`, and the result is marked estimated. Native DeepSeek Flash pricing
-uses the trace's RFC 3339 timestamp in UTC to select peak/off-peak rates and the historical tariff.
+uses the provider-created timestamp when available, otherwise the trace's RFC 3339 timestamp,
+to select the UTC peak/off-peak rates and historical tariff. The returned provider model takes
+precedence for pricing; requested model identity remains unchanged in reports.
 The current `deepseek-flash` name and its two retired Flash aliases share the September 10 tariff;
 June V4 traces retain the June snapshot. Unsupported historical intervals or missing timestamps
 remain unpriced instead of receiving today's rates. See [cost accounting](docs/deepseek-cost-accounting.md)

@@ -8,10 +8,22 @@ time. The rollup now separates those cases without changing saved run evidence.
 ## Rates and time
 
 `official-pricing-2026-09-17` is a versioned estimator, not an invoice. It selects
-the native DeepSeek tariff using each trace's RFC 3339 timestamp, converted to UTC.
-That trace timestamp can be a completion timestamp; it does not prove the exact
-billing instant of a request that crosses a tariff boundary. A provider-reported
-cost always takes precedence over an estimate.
+the native DeepSeek tariff using a valid provider `created` Unix timestamp
+when present, otherwise the trace's RFC 3339 timestamp converted to UTC. A
+provider timestamp outside the representable calendar range is unusable, so the
+trace timestamp is the fallback. Trace time can be completion time; neither
+fallback time nor provider creation time proves an invoice's exact billing
+instant at a tariff boundary. Provider-reported cost takes precedence.
+
+Pricing uses provider `served_model` when present, retaining requested
+model identity for report grouping. An unknown returned model stays unpriced
+without a reported cost; it is never silently priced as the requested Flash
+model. Both Memory `usage.provider` and normalized Foundation `metadata.provider`
+are supported. Their complementary optional fields can be combined only when
+overlapping values agree. A conflict in response identity, served model, creation
+time, reasoning count, or reported cost leaves the call unpriced across all cost
+sources; local response replay still has zero new cost. Older traces without
+metadata keep their original model/time fallback.
 
 | Interval/model | Uncached input / M | Cached input / M | Output / M |
 | --- | ---: | ---: | ---: |
@@ -66,10 +78,11 @@ tariffs. Estimates retain their tariff source and the catalog version. Top-level
 rates, not a provider receipt. The rollup recalculates it from timestamp and
 numeric token/cache counters; unsupported periods or incomplete evidence stay
 unpriced. Usage-level reported costs retain precedence. The optional
-`usage.provider.reported_cost_usd` decimal string is accepted as a provider
+`usage.provider.reported_cost_usd` or normalized `metadata.provider.reported_cost_usd`
+decimal string is accepted as a provider
 receipt after validation of finite, nonnegative, representable micro-USD. Values
 are rounded to the nearest micro-dollar. Source precedence is: local response
-replay zero; existing `usage.cost_micro_usd`; provider decimal receipt; legacy
+replay zero; coherent existing `usage.cost_micro_usd`; provider decimal receipt; legacy
 non-queue top-level cost; dated estimate. The shared adapter populates provider
 receipt metadata only from the provider's reported cost, never a queue estimate.
 
@@ -145,3 +158,14 @@ all 53 core tests (18 cost tests) then passed. They verify metadata-only receipt
 without token usage, rounding, malformed/non-finite/negative/out-of-range values,
 existing micro-USD precedence, and replay zero. Missing optional metadata leaves
 old traces compatible. No paid API call was made.
+
+
+## Returned-model and time provenance — September 17, 2026
+
+Five regressions reproduced incorrect requested-model pricing after a returned
+model mismatch, incorrect completion-time tariffs, dropped normalized Foundation
+metadata, ignored complementary fields, and masked conflicts. All now pass using
+the documented metadata reconciliation and precedence. The final core suite
+passed 58 tests, including 23 cost tests; no provider call was made. Coherent
+reported receipts continue to override estimation even when the served model is
+outside this catalog.
