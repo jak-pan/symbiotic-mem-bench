@@ -2902,10 +2902,12 @@ fn resolve_source_vault_root(value: &Path) -> PathBuf {
     resolve_source_vault_root_with_store(value, vault_store_dir_opt().as_deref())
 }
 
-/// The gold-evidence piece a turn belongs to. Turn ids look like
+/// The gold-evidence piece a turn belongs to. Dataset-form turn ids look like
 /// `answer_<hash>[_<N>]:<turn_index>`; the piece is everything before the first
 /// `:`. NB: split on `:` only — never strip the trailing `_N`, which would
 /// collapse `answer_X_1..answer_X_4` into one piece (a verified prior bug).
+/// Translate ids from run output with `LongMemEvalRecord::dataset_turn_id`
+/// first: the memory system only ever sees opaque session ids.
 fn gold_piece_of_turn(turn_id: &str) -> &str {
     turn_id.split(':').next().unwrap_or(turn_id)
 }
@@ -3115,6 +3117,16 @@ fn gold_eval(run: &str) -> anyhow::Result<()> {
     for record in &records {
         let qid = &record.question_id;
         let gold: Vec<String> = record.answer_session_ids.clone();
+        // The system under test saw opaque session ids; map what it reports back to
+        // dataset ids before comparing with gold. Runs ingested before the remap
+        // already carry dataset ids and pass through unchanged.
+        let ingest_to_dataset = record.dataset_session_ids_by_ingest_id();
+        let dataset_turn_id = |turn_id: &str| {
+            membench::symbiotic_memory_adapter::LongMemEvalRecord::dataset_turn_id(
+                &ingest_to_dataset,
+                turn_id,
+            )
+        };
         let n_gold = gold.len();
         let is_correct = correct_by_qid.get(qid).copied().unwrap_or(false);
         let is_abstained = abstain_by_qid.get(qid).copied().unwrap_or(false);
@@ -3152,7 +3164,7 @@ fn gold_eval(run: &str) -> anyhow::Result<()> {
                     {
                         for source in refs {
                             if let Some(turn) = source.get("turn_id").and_then(|t| t.as_str()) {
-                                let piece = gold_piece_of_turn(turn).to_string();
+                                let piece = gold_piece_of_turn(&dataset_turn_id(turn)).to_string();
                                 fact_pieces.insert(piece.clone());
                                 pieces.insert(piece);
                             }
@@ -3169,7 +3181,7 @@ fn gold_eval(run: &str) -> anyhow::Result<()> {
                 for id in evidence {
                     if let Some(id) = id.as_str() {
                         if evidence_id_is_raw_turn(id) {
-                            raw_pieces.insert(gold_piece_of_turn(id).to_string());
+                            raw_pieces.insert(gold_piece_of_turn(&dataset_turn_id(id)).to_string());
                         }
                     }
                 }
@@ -3189,7 +3201,8 @@ fn gold_eval(run: &str) -> anyhow::Result<()> {
                             if let Some(id) = candidate.get("candidate_id").and_then(|c| c.as_str())
                             {
                                 let id = id.strip_prefix("raw:").unwrap_or(id);
-                                raw_pieces.insert(gold_piece_of_turn(id).to_string());
+                                raw_pieces
+                                    .insert(gold_piece_of_turn(&dataset_turn_id(id)).to_string());
                             }
                         }
                     }
@@ -3206,13 +3219,16 @@ fn gold_eval(run: &str) -> anyhow::Result<()> {
         // gold for the question.
         let gold_turns = gold_turn_ids(record);
         let gold_turns_total = gold_turns.len();
-        let raw_cands = debug
+        let mut raw_cands = debug
             .as_ref()
             .and_then(|debug| debug.get("recall"))
             .and_then(|recall| recall.get("rerank_trace"))
             .and_then(|trace| trace.as_array())
             .map(|traces| raw_turn_candidates(traces))
             .unwrap_or_default();
+        for cand in &mut raw_cands {
+            cand.id = dataset_turn_id(&cand.id);
+        }
         let gold_embed_rank = deepest_gold_rank(&raw_cands, &gold_turns, |c| c.embedding_score);
         let gold_rerank_rank = deepest_gold_rank(&raw_cands, &gold_turns, |c| c.rerank_score);
         // A gold turn is "in set" when it appears among the raw candidates; the
@@ -7744,6 +7760,53 @@ mod tests {
         assert_eq!(
             gold.into_iter().collect::<Vec<_>>(),
             vec!["answer_530960c1:1".to_string()]
+        );
+    }
+
+    #[test]
+    fn ingested_turn_ids_hide_gold_sessions_and_map_back_to_gold_turn_ids() {
+        use membench::symbiotic_memory_adapter::{
+            LongMemEvalMessage, LongMemEvalRecord, longmemeval_to_source,
+        };
+        let msg = |has_answer: bool| LongMemEvalMessage {
+            role: "user".to_string(),
+            content: String::new(),
+            has_answer,
+        };
+        let record = LongMemEvalRecord {
+            question_id: "q".to_string(),
+            question_type: None,
+            question: String::new(),
+            question_date: None,
+            answer: None,
+            answer_session_ids: vec!["answer_530960c1".to_string()],
+            haystack_dates: Vec::new(),
+            haystack_session_ids: vec!["sess_a".to_string(), "answer_530960c1".to_string()],
+            haystack_sessions: vec![vec![msg(false)], vec![msg(false), msg(true)]],
+        };
+        let source = longmemeval_to_source(&record);
+        assert!(
+            source
+                .turns
+                .iter()
+                .all(|turn| !turn.turn_id.contains("answer_") && !turn.turn_id.contains("sess_a")),
+            "the memory system must never see dataset session ids"
+        );
+        // gold-eval maps the ids the system reports back to dataset ids, so a
+        // retrieved gold turn still matches the turn-level gold set.
+        let ingest_to_dataset = record.dataset_session_ids_by_ingest_id();
+        let reported: BTreeSet<String> = source
+            .turns
+            .iter()
+            .map(|turn| LongMemEvalRecord::dataset_turn_id(&ingest_to_dataset, &turn.turn_id))
+            .collect();
+        let gold = gold_turn_ids(&record);
+        assert_eq!(gold.len(), 1);
+        assert!(gold.is_subset(&reported), "{gold:?} vs {reported:?}");
+        // Runs ingested before the remap report dataset ids; they pass through.
+        assert_eq!(
+            LongMemEvalRecord::dataset_turn_id(&ingest_to_dataset, "answer_530960c1:1"),
+            "answer_530960c1:1"
         );
     }
 

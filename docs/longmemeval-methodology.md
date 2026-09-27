@@ -22,6 +22,12 @@ gate a record must pass before it may be ranked on the leaderboard.
 
 - The full memory pipeline runs end to end: ingestion, distillation, embedding, retrieval,
   optional reranking, answering. No stage may read the answer key.
+- Dataset-assigned identifiers (session ids and question ids) never reach the system under
+  test. LongMemEval names every gold evidence session `answer_*` and every abstention question
+  `*_abs`, and the memory system renders source and turn ids into its prompts. The adapter
+  therefore ingests each question under an opaque source id (`opaque_source_id`) and each
+  session under an opaque session id (`opaque_session_id`). It maps ids back to dataset ids
+  only on the harness side: for scoring (`gold-eval`) and for its own traces.
 - No gold-string matching, no per-question special-casing, no dataset-targeted heuristics.
 - Experimental levers are gated flags, off by default; a lever only counts as real when it is
   proven to have fired and its effect clears the variance floor on N≥2 runs.
