@@ -132,14 +132,39 @@ pub struct LongMemEvalMessage {
 /// dataset id private for scoring ([`LongMemEvalRecord::dataset_turn_id`]). One dataset id always
 /// maps to the same opaque id, so repeated sessions keep their identity.
 pub fn opaque_session_id(dataset_session_id: &str) -> String {
+    opaque_dataset_id(
+        b"membench/longmemeval/session\0",
+        "sess",
+        dataset_session_id,
+    )
+}
+
+/// The source id the memory system under test sees for a dataset question.
+///
+/// The memory system renders the source id into its answer prompt (`source_id: ...`), and
+/// LongMemEval question ids carry answer-key hints: all 30 abstention question ids in
+/// LongMemEval-S end in `_abs`, and 89 of the 107 `gpt4_*` ids are temporal-reasoning
+/// questions. The harness hands the system this opaque, deterministic id instead and keeps the
+/// question id for its own bookkeeping (vault paths, hypotheses, traces).
+pub fn opaque_source_id(dataset_question_id: &str) -> String {
+    opaque_dataset_id(b"membench/longmemeval/source\0", "src", dataset_question_id)
+}
+
+/// `<prefix>-` plus 16 hex characters of a domain-tagged SHA-256 of a dataset-assigned id.
+fn opaque_dataset_id(domain: &[u8], prefix: &str, dataset_id: &str) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"membench/longmemeval/session\0");
-    hasher.update(dataset_session_id.as_bytes());
+    hasher.update(domain);
+    hasher.update(dataset_id.as_bytes());
     let digest = hex::encode(hasher.finalize());
-    format!("sess-{}", &digest[..16])
+    format!("{prefix}-{}", &digest[..16])
 }
 
 impl LongMemEvalRecord {
+    /// Source id the memory system sees for this record (see [`opaque_source_id`]).
+    pub fn ingest_source_id(&self) -> String {
+        opaque_source_id(&self.question_id)
+    }
+
     /// Session id the memory system sees for haystack slot `idx` (see [`opaque_session_id`]).
     pub fn ingest_session_id(&self, idx: usize) -> String {
         self.haystack_session_ids
@@ -307,6 +332,8 @@ pub fn load_longmemeval(
 }
 
 pub fn longmemeval_to_source(record: &LongMemEvalRecord) -> SourceDocument {
+    // Never the dataset question id: LongMemEval question ids carry answer-key hints.
+    let source_id = record.ingest_source_id();
     let mut turns = Vec::new();
     let mut first_event_time = None;
     for (session_idx, session) in record.haystack_sessions.iter().enumerate() {
@@ -322,7 +349,7 @@ pub fn longmemeval_to_source(record: &LongMemEvalRecord) -> SourceDocument {
         for (msg_idx, msg) in session.iter().enumerate() {
             turns.push(SourceTurn {
                 turn_id: format!("{session_id}:{msg_idx}"),
-                source_id: record.question_id.clone(),
+                source_id: source_id.clone(),
                 speaker: Some(msg.role.clone()),
                 // MUST stay None: actor is skip_serializing_if-None and ingest_source_hash covers
                 // the whole SourceDocument, so any value here would change every golden vault's
@@ -343,7 +370,7 @@ pub fn longmemeval_to_source(record: &LongMemEvalRecord) -> SourceDocument {
         }
     }
     SourceDocument {
-        source_id: record.question_id.clone(),
+        source_id,
         source_kind: "longmemeval".to_string(),
         captured_at: first_event_time.unwrap_or_else(Utc::now),
         turns,
@@ -1213,6 +1240,52 @@ fn ignore_source_hash() -> bool {
         .unwrap_or(false)
 }
 
+/// Keeps harness traces keyed by dataset identity. The memory system under test only sees the
+/// opaque source id ([`opaque_source_id`]), so its own ingest-stage traces carry that id, while
+/// provenance, step analytics and the live dashboard key traces by `question_id`, falling back to
+/// `source_id` and `run_id`. This sink maps the opaque id back to the vault's dataset id before a
+/// trace is written. Traces are harness artifacts and never reach a model.
+#[cfg(feature = "symbiotic-memory-adapter")]
+struct DatasetIdentityTraceSink {
+    inner: Arc<dyn MemoryTraceSink>,
+    ingest_source_id: String,
+    dataset_id: String,
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+impl DatasetIdentityTraceSink {
+    fn wrap(
+        inner: Option<Arc<dyn MemoryTraceSink>>,
+        ingest_source_id: String,
+        dataset_id: String,
+    ) -> Option<Arc<dyn MemoryTraceSink>> {
+        inner.map(|inner| {
+            Arc::new(Self {
+                inner,
+                ingest_source_id,
+                dataset_id,
+            }) as Arc<dyn MemoryTraceSink>
+        })
+    }
+}
+
+#[cfg(feature = "symbiotic-memory-adapter")]
+#[async_trait::async_trait]
+impl MemoryTraceSink for DatasetIdentityTraceSink {
+    async fn record_memory_event(
+        &self,
+        mut event: MemoryTraceEvent,
+    ) -> Result<(), symbiotic_memory::trace::MemoryTraceError> {
+        if event.source_id.as_deref() == Some(self.ingest_source_id.as_str()) {
+            event.source_id = Some(self.dataset_id.clone());
+        }
+        if event.run_id == self.ingest_source_id {
+            event.run_id = self.dataset_id.clone();
+        }
+        self.inner.record_memory_event(event).await
+    }
+}
+
 #[cfg(feature = "symbiotic-memory-adapter")]
 async fn record_adapter_stage(
     sink: Option<&Arc<dyn MemoryTraceSink>>,
@@ -1465,6 +1538,11 @@ where
     let setup_started_at = Utc::now();
     let setup_started = Instant::now();
     let mut setup_metrics = BTreeMap::<String, serde_json::Value>::new();
+    let memory_trace_sink = DatasetIdentityTraceSink::wrap(
+        memory_trace_sink,
+        row.ingest_source_id(),
+        row.question_id.clone(),
+    );
     // Informational only since the §12 step-3 cutover (one store exists);
     // a stale marker naming a deleted backend refuses loudly.
     let store_backend = store_backend_label(run_root)?;
@@ -2673,8 +2751,10 @@ fn build_gold_oracle_context(row: &LongMemEvalRecord) -> Option<Vec<String>> {
     // "unknown" sorts last; original_seq is a stable tiebreaker so same-date turns keep their order.
     let mut items: Vec<(String, usize, String)> = Vec::new();
     let mut seq = 0usize;
+    // Same opaque source and session ids the ingest path uses, so oracle turns look exactly like
+    // recalled ones and carry no dataset id.
+    let source_id = row.ingest_source_id();
     for (idx, session) in row.haystack_sessions.iter().enumerate() {
-        // Same opaque id the ingest path uses, so oracle turns look exactly like recalled ones.
         let session_id = row.ingest_session_id(idx);
         let captured_at = row
             .haystack_dates
@@ -2689,18 +2769,12 @@ fn build_gold_oracle_context(row: &LongMemEvalRecord) -> Option<Vec<String>> {
             let line = if drop_score {
                 format!(
                     "[type: source_turn | source_id: {} | turn_id: {}:{} | ordinal: {} | speaker: {} | captured_at: {}] {}",
-                    row.question_id,
-                    session_id,
-                    msg_idx,
-                    msg_idx,
-                    msg.role,
-                    captured_at,
-                    msg.content,
+                    source_id, session_id, msg_idx, msg_idx, msg.role, captured_at, msg.content,
                 )
             } else {
                 format!(
                     "[type: source_turn | source_id: {} | turn_id: {}:{} | ordinal: {} | speaker: {} | captured_at: {} | score: {:.3}] {}",
-                    row.question_id,
+                    source_id,
                     session_id,
                     msg_idx,
                     msg_idx,
@@ -3143,6 +3217,8 @@ mod tests {
         assert_eq!(rows[0].question_id, "q1");
         let source = longmemeval_to_source(&rows[0]);
         assert_eq!(source.turns.len(), 2);
+        assert_eq!(source.source_id, opaque_source_id("q1"));
+        assert_eq!(source.turns[0].source_id, opaque_source_id("q1"));
         assert_eq!(
             source.turns[0].turn_id,
             format!("{}:0", opaque_session_id("s1"))
@@ -3684,10 +3760,11 @@ mod tests {
         assert_eq!(distill_calls.load(Ordering::SeqCst), 1);
 
         let vault_dir = dir.path().join("vaults").join("q-staged-resume");
+        // The archive stages under the source id the memory system saw.
         let staged_dir = vault_dir
             .join("archive")
             .join("staging")
-            .join("q-staged-resume");
+            .join(opaque_source_id("q-staged-resume"));
         assert_eq!(fs::read_dir(staged_dir).unwrap().count(), 1);
         let manifest = MemoryRunManifest::load(vault_dir.join("manifest.json"))
             .unwrap()
@@ -4474,16 +4551,69 @@ mod tests {
         );
     }
 
-    /// LongMemEval names every gold evidence session `answer_*` and no other session (all 948
-    /// gold ids in LongMemEval-S cleaned), so a dataset session id that reaches any provider tells
-    /// the model which turns hold the answer. This runs the real ingest -> recall -> answer
-    /// workflow with recording providers and fails if any payload (distill prompt, embedding
-    /// input, rerank request, answer prompt) carries a gold session id or anything shaped like one.
+    /// Everything one real ingest -> recall -> answer workflow run sent out: each provider payload
+    /// (distill prompt, embedding input, rerank request, answer prompt) and each memory trace
+    /// event the harness wrote.
     #[cfg(feature = "symbiotic-memory-adapter")]
-    #[tokio::test]
-    async fn provider_payloads_never_contain_gold_session_ids() {
+    struct RecordedWorkflow {
+        payloads: Vec<(&'static str, String)>,
+        traces: Vec<MemoryTraceEvent>,
+    }
+
+    /// A LongMemEval row shaped like the real dataset for the dataset-id leak guards. Gold
+    /// evidence sessions use both gold naming shapes (`answer_<8 hex>` and
+    /// `answer_<corpus>_<n>`), and the question id is shaped like one of the 30 abstention ids in
+    /// LongMemEval-S (`gpt4_<8 hex>_abs`), so it carries both question-id hints: `_abs` marks every
+    /// abstention question and 89 of the 107 `gpt4_*` ids are temporal-reasoning questions.
+    #[cfg(feature = "symbiotic-memory-adapter")]
+    fn dataset_id_leak_row() -> LongMemEvalRecord {
+        let message = |role: &str, content: &str, has_answer: bool| LongMemEvalMessage {
+            role: role.to_string(),
+            content: content.to_string(),
+            has_answer,
+        };
+        let gold_ids = ["answer_530960c1", "answer_ultrachat_104112"];
+        LongMemEvalRecord {
+            question_id: "gpt4_0a1b2c3d_abs".to_string(),
+            question_type: Some("multi-session".to_string()),
+            question: "How many pens did I buy in total?".to_string(),
+            question_date: Some("2023/01/03 (Tue) 00:00".to_string()),
+            answer: Some(serde_json::json!(6)),
+            answer_session_ids: gold_ids.iter().map(|id| id.to_string()).collect(),
+            haystack_dates: vec![
+                "2023/01/01 (Sun) 00:00".to_string(),
+                "2023/01/01 (Sun) 12:00".to_string(),
+                "2023/01/02 (Mon) 00:00".to_string(),
+            ],
+            haystack_session_ids: vec![
+                "sharegpt_x7Yq2_0".to_string(),
+                gold_ids[0].to_string(),
+                gold_ids[1].to_string(),
+            ],
+            haystack_sessions: vec![
+                vec![
+                    message("user", "Can you recommend a notebook?", false),
+                    message("assistant", "A dotted A5 notebook works well.", false),
+                ],
+                vec![
+                    message("user", "I bought 4 pens today.", true),
+                    message("assistant", "Nice haul.", false),
+                ],
+                vec![
+                    message("user", "I picked up 2 more pens.", true),
+                    message("assistant", "Great.", false),
+                ],
+            ],
+        }
+    }
+
+    /// Runs the real vault workflow (`run_longmemeval_vault_with_planner`) on `row` with a
+    /// recording `LlmDistiller` chat, embedder, reranker, answerer and memory trace sink.
+    #[cfg(feature = "symbiotic-memory-adapter")]
+    async fn run_recorded_workflow(row: LongMemEvalRecord) -> RecordedWorkflow {
         use symbiotic_memory::config::RecallPolicy;
         use symbiotic_memory::providers::{ChatResponse, HashEmbeddingProvider, ProviderError};
+        use symbiotic_memory::trace::MemoryTraceError;
 
         type Payloads = Arc<Mutex<Vec<(&'static str, String)>>>;
 
@@ -4577,50 +4707,25 @@ mod tests {
             }
         }
 
-        let message = |role: &str, content: &str, has_answer: bool| LongMemEvalMessage {
-            role: role.to_string(),
-            content: content.to_string(),
-            has_answer,
-        };
-        // Both gold naming shapes seen in the dataset: `answer_<8 hex>` and
-        // `answer_<corpus>_<n>`.
-        let gold_ids = ["answer_530960c1", "answer_ultrachat_104112"];
-        let row = LongMemEvalRecord {
-            question_id: "q-gold-id-leak".to_string(),
-            question_type: Some("multi-session".to_string()),
-            question: "How many pens did I buy in total?".to_string(),
-            question_date: Some("2023/01/03 (Tue) 00:00".to_string()),
-            answer: Some(serde_json::json!(6)),
-            answer_session_ids: gold_ids.iter().map(|id| id.to_string()).collect(),
-            haystack_dates: vec![
-                "2023/01/01 (Sun) 00:00".to_string(),
-                "2023/01/01 (Sun) 12:00".to_string(),
-                "2023/01/02 (Mon) 00:00".to_string(),
-            ],
-            haystack_session_ids: vec![
-                "sharegpt_x7Yq2_0".to_string(),
-                gold_ids[0].to_string(),
-                gold_ids[1].to_string(),
-            ],
-            haystack_sessions: vec![
-                vec![
-                    message("user", "Can you recommend a notebook?", false),
-                    message("assistant", "A dotted A5 notebook works well.", false),
-                ],
-                vec![
-                    message("user", "I bought 4 pens today.", true),
-                    message("assistant", "Nice haul.", false),
-                ],
-                vec![
-                    message("user", "I picked up 2 more pens.", true),
-                    message("assistant", "Great.", false),
-                ],
-            ],
-        };
+        struct RecordingTraceSink {
+            traces: Arc<Mutex<Vec<MemoryTraceEvent>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl MemoryTraceSink for RecordingTraceSink {
+            async fn record_memory_event(
+                &self,
+                event: MemoryTraceEvent,
+            ) -> Result<(), MemoryTraceError> {
+                self.traces.lock().unwrap().push(event);
+                Ok(())
+            }
+        }
 
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("hyps.jsonl");
         let payloads: Payloads = Arc::default();
+        let traces: Arc<Mutex<Vec<MemoryTraceEvent>>> = Arc::default();
         let distill_prompt = symbiotic_memory::PromptTemplate {
             name: "distill".to_string(),
             version: "test".to_string(),
@@ -4671,7 +4776,9 @@ mod tests {
                 stage1_top_x: 20,
             },
             None,
-            None,
+            Some(Arc::new(RecordingTraceSink {
+                traces: traces.clone(),
+            })),
             policy,
             &out,
             false,
@@ -4687,6 +4794,29 @@ mod tests {
         assert_eq!(hypotheses.len(), 1);
 
         let payloads = payloads.lock().unwrap().clone();
+        let traces = traces.lock().unwrap().clone();
+        RecordedWorkflow { payloads, traces }
+    }
+
+    /// No dataset-assigned identifier may reach a model. LongMemEval names every gold evidence
+    /// session `answer_*` and no other session (all 948 gold ids in LongMemEval-S cleaned), and
+    /// its question ids carry hints too (`_abs` on all 30 abstention questions). The memory
+    /// system renders turn ids and source ids into its distill and answer prompts. This runs the
+    /// real workflow with recording providers and fails if any payload (distill prompt, embedding
+    /// input, rerank request, answer prompt) carries a dataset session or question id, or
+    /// anything shaped like a gold session id or a question-id hint.
+    #[cfg(feature = "symbiotic-memory-adapter")]
+    #[tokio::test]
+    async fn provider_payloads_never_contain_dataset_ids() {
+        let row = dataset_id_leak_row();
+        let dataset_ids: Vec<String> = row
+            .haystack_session_ids
+            .iter()
+            .cloned()
+            .chain([row.question_id.clone()])
+            .collect();
+        let payloads = run_recorded_workflow(row).await.payloads;
+
         // Non-vacuous: the distiller read the gold turns, the reranker ran, and the answerer
         // received retrieved gold evidence.
         assert!(
@@ -4705,21 +4835,65 @@ mod tests {
                 && text.contains("I bought 4 pens")),
             "the answerer never saw the gold evidence"
         );
-        let gold_shaped =
-            regex::Regex::new(r"answer_[0-9a-f]{8}|answer_(?:ultrachat|sharegpt)_").unwrap();
+        let answer_key_shaped = regex::Regex::new(
+            r"answer_[0-9a-f]{8}|answer_(?:ultrachat|sharegpt)_|_abs\b|gpt4_[0-9a-f]{8}",
+        )
+        .unwrap();
         let leaks: Vec<String> = payloads
             .iter()
             .filter(|(_, text)| {
-                gold_ids.iter().any(|gold| text.contains(gold)) || gold_shaped.is_match(text)
+                dataset_ids.iter().any(|id| text.contains(id.as_str()))
+                    || answer_key_shaped.is_match(text)
             })
             .map(|(kind, text)| format!("{kind} payload:\n{text}"))
             .collect();
         assert!(
             leaks.is_empty(),
-            "{} of {} provider payloads carry a gold session id:\n{}",
+            "{} of {} provider payloads carry a dataset id:\n{}",
             leaks.len(),
             payloads.len(),
             leaks.join("\n---\n")
+        );
+    }
+
+    /// The memory system only sees opaque ids, but harness traces keep dataset identity:
+    /// provenance (`memory_trace_ids`), step analytics and the live dashboard key memory traces by
+    /// `question_id`, falling back to `source_id` and `run_id`. Memory's own ingest-stage traces
+    /// carry no `question_id`, so they must still name the dataset question.
+    #[cfg(feature = "symbiotic-memory-adapter")]
+    #[tokio::test]
+    async fn memory_traces_stay_attributed_to_the_dataset_question() {
+        let row = dataset_id_leak_row();
+        let question_id = row.question_id.clone();
+        let traces = run_recorded_workflow(row).await.traces;
+
+        let ingest_traces: Vec<&MemoryTraceEvent> = traces
+            .iter()
+            .filter(|trace| trace.question_id.is_none())
+            .collect();
+        assert!(
+            !ingest_traces.is_empty(),
+            "the memory system emitted no ingest-stage traces"
+        );
+        let misattributed: Vec<String> = traces
+            .iter()
+            .filter(|trace| {
+                trace.question_id.as_deref().or(trace.source_id.as_deref())
+                    != Some(question_id.as_str())
+                    || trace
+                        .source_id
+                        .as_deref()
+                        .is_some_and(|source| source != question_id)
+                    || (trace.question_id.is_none() && trace.run_id != question_id)
+            })
+            .map(|trace| format!("{trace:?}"))
+            .collect();
+        assert!(
+            misattributed.is_empty(),
+            "{} of {} memory traces are not attributed to {question_id}:\n{}",
+            misattributed.len(),
+            traces.len(),
+            misattributed.join("\n")
         );
     }
 }
