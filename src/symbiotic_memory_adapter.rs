@@ -123,6 +123,59 @@ pub struct LongMemEvalMessage {
     pub has_answer: bool,
 }
 
+/// The session id the memory system under test sees for a dataset session.
+///
+/// LongMemEval names every gold evidence session `answer_*` and no other session (all 948 gold
+/// ids in LongMemEval-S cleaned), and the memory system renders turn ids into its distill and
+/// answer prompts. Forwarding dataset ids would therefore tell the models which turns hold the
+/// answer. The harness hands the system this opaque, deterministic id instead and keeps the
+/// dataset id private for scoring ([`LongMemEvalRecord::dataset_turn_id`]). One dataset id always
+/// maps to the same opaque id, so repeated sessions keep their identity.
+pub fn opaque_session_id(dataset_session_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"membench/longmemeval/session\0");
+    hasher.update(dataset_session_id.as_bytes());
+    let digest = hex::encode(hasher.finalize());
+    format!("sess-{}", &digest[..16])
+}
+
+impl LongMemEvalRecord {
+    /// Session id the memory system sees for haystack slot `idx` (see [`opaque_session_id`]).
+    pub fn ingest_session_id(&self, idx: usize) -> String {
+        self.haystack_session_ids
+            .get(idx)
+            .map(|id| opaque_session_id(id))
+            .unwrap_or_else(|| format!("session-{idx}"))
+    }
+
+    /// Private scoring map from the ingest session id back to the dataset session id.
+    pub fn dataset_session_ids_by_ingest_id(&self) -> std::collections::HashMap<String, String> {
+        self.haystack_session_ids
+            .iter()
+            .map(|id| (opaque_session_id(id), id.clone()))
+            .collect()
+    }
+
+    /// Translate a turn id seen in the system's output (`<ingest session>:<rest>`) back to the
+    /// dataset's `<session_id>:<rest>` form, using [`Self::dataset_session_ids_by_ingest_id`].
+    /// Ids without a mapping — facts, briefs, and runs ingested before session ids were made
+    /// opaque — pass through unchanged.
+    pub fn dataset_turn_id(
+        ingest_to_dataset: &std::collections::HashMap<String, String>,
+        turn_id: &str,
+    ) -> String {
+        let (session, rest) = match turn_id.split_once(':') {
+            Some((session, rest)) => (session, Some(rest)),
+            None => (turn_id, None),
+        };
+        match (ingest_to_dataset.get(session), rest) {
+            (Some(dataset), Some(rest)) => format!("{dataset}:{rest}"),
+            (Some(dataset), None) => dataset.clone(),
+            (None, _) => turn_id.to_string(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BenchHypothesis {
     pub question_id: String,
@@ -257,11 +310,8 @@ pub fn longmemeval_to_source(record: &LongMemEvalRecord) -> SourceDocument {
     let mut turns = Vec::new();
     let mut first_event_time = None;
     for (session_idx, session) in record.haystack_sessions.iter().enumerate() {
-        let session_id = record
-            .haystack_session_ids
-            .get(session_idx)
-            .cloned()
-            .unwrap_or_else(|| format!("session-{session_idx}"));
+        // Never the dataset id: LongMemEval's session names reveal which sessions are gold.
+        let session_id = record.ingest_session_id(session_idx);
         let session_time = record
             .haystack_dates
             .get(session_idx)
@@ -2624,11 +2674,8 @@ fn build_gold_oracle_context(row: &LongMemEvalRecord) -> Option<Vec<String>> {
     let mut items: Vec<(String, usize, String)> = Vec::new();
     let mut seq = 0usize;
     for (idx, session) in row.haystack_sessions.iter().enumerate() {
-        let session_id = row
-            .haystack_session_ids
-            .get(idx)
-            .map(|s| s.as_str())
-            .unwrap_or("unknown");
+        // Same opaque id the ingest path uses, so oracle turns look exactly like recalled ones.
+        let session_id = row.ingest_session_id(idx);
         let captured_at = row
             .haystack_dates
             .get(idx)
@@ -3096,11 +3143,44 @@ mod tests {
         assert_eq!(rows[0].question_id, "q1");
         let source = longmemeval_to_source(&rows[0]);
         assert_eq!(source.turns.len(), 2);
-        assert_eq!(source.turns[0].turn_id, "s1:0");
+        assert_eq!(
+            source.turns[0].turn_id,
+            format!("{}:0", opaque_session_id("s1"))
+        );
         assert_eq!(
             source.turns[0].captured_at.unwrap().to_rfc3339(),
             "2023-01-01T00:00:00+00:00"
         );
+    }
+
+    #[test]
+    fn dataset_turn_id_reverses_opaque_session_ids_only() {
+        let record = LongMemEvalRecord {
+            question_id: "q".to_string(),
+            question_type: None,
+            question: String::new(),
+            question_date: None,
+            answer: None,
+            answer_session_ids: vec!["answer_530960c1".to_string()],
+            haystack_dates: Vec::new(),
+            haystack_session_ids: vec!["sess_a".to_string(), "answer_530960c1".to_string()],
+            haystack_sessions: vec![Vec::new(), Vec::new()],
+        };
+        let opaque = record.ingest_session_id(1);
+        assert_eq!(opaque, opaque_session_id("answer_530960c1"));
+        assert!(!opaque.contains("answer"));
+        assert_ne!(opaque, record.ingest_session_id(0));
+        let map = record.dataset_session_ids_by_ingest_id();
+        let translate = |id: &str| LongMemEvalRecord::dataset_turn_id(&map, id);
+        assert_eq!(translate(&format!("{opaque}:3")), "answer_530960c1:3");
+        assert_eq!(
+            translate(&format!("{opaque}:3#chunk-1")),
+            "answer_530960c1:3#chunk-1"
+        );
+        assert_eq!(translate(&opaque), "answer_530960c1");
+        for passthrough in ["answer_530960c1:3", "mem-abc", "brief-1", "sess-unknown:0"] {
+            assert_eq!(translate(passthrough), passthrough);
+        }
     }
 
     #[test]
@@ -4391,6 +4471,255 @@ mod tests {
         assert!(
             err.contains("not present in current-run hypotheses"),
             "{err}"
+        );
+    }
+
+    /// LongMemEval names every gold evidence session `answer_*` and no other session (all 948
+    /// gold ids in LongMemEval-S cleaned), so a dataset session id that reaches any provider tells
+    /// the model which turns hold the answer. This runs the real ingest -> recall -> answer
+    /// workflow with recording providers and fails if any payload (distill prompt, embedding
+    /// input, rerank request, answer prompt) carries a gold session id or anything shaped like one.
+    #[cfg(feature = "symbiotic-memory-adapter")]
+    #[tokio::test]
+    async fn provider_payloads_never_contain_gold_session_ids() {
+        use symbiotic_memory::config::RecallPolicy;
+        use symbiotic_memory::providers::{ChatResponse, HashEmbeddingProvider, ProviderError};
+
+        type Payloads = Arc<Mutex<Vec<(&'static str, String)>>>;
+
+        #[derive(Clone)]
+        struct RecordingChat {
+            payloads: Payloads,
+        }
+
+        #[async_trait::async_trait]
+        impl ChatProvider for RecordingChat {
+            async fn chat(&self, system: &str, user: &str) -> Result<ChatResponse, ProviderError> {
+                self.payloads
+                    .lock()
+                    .unwrap()
+                    .push(("chat", format!("{system}\n{user}")));
+                // A distill request lists its turns as `{{turn:<id>}}`; cite one back the way a
+                // real distiller does so the id flows into fact source refs and out through recall.
+                let cited = user
+                    .split("{{turn:")
+                    .nth(1)
+                    .and_then(|rest| rest.split("}}").next());
+                let text = match cited {
+                    Some(turn_id) => serde_json::json!([{
+                        "content": "The user bought pens.",
+                        "subject": "user",
+                        "status": "Active",
+                        "confidence": 0.9,
+                        "source_turn_ids": [turn_id],
+                    }])
+                    .to_string(),
+                    None => "6".to_string(),
+                };
+                Ok(ChatResponse {
+                    text,
+                    usage: None,
+                    finish_reason: Some("stop".to_string()),
+                    reasoning: None,
+                })
+            }
+        }
+
+        #[derive(Clone)]
+        struct RecordingEmbedder {
+            inner: HashEmbeddingProvider,
+            payloads: Payloads,
+        }
+
+        #[async_trait::async_trait]
+        impl EmbeddingProvider for RecordingEmbedder {
+            async fn embed(&self, text: &str) -> Result<Vec<f32>, ProviderError> {
+                self.payloads
+                    .lock()
+                    .unwrap()
+                    .push(("embed", text.to_string()));
+                self.inner.embed(text).await
+            }
+
+            async fn embed_query(&self, text: &str) -> Result<Vec<f32>, ProviderError> {
+                self.payloads
+                    .lock()
+                    .unwrap()
+                    .push(("embed_query", text.to_string()));
+                self.inner.embed_query(text).await
+            }
+
+            fn dimensions(&self) -> usize {
+                self.inner.dimensions()
+            }
+        }
+
+        struct RecordingReranker {
+            payloads: Payloads,
+        }
+
+        #[async_trait::async_trait]
+        impl Reranker for RecordingReranker {
+            async fn rerank(
+                &self,
+                query: &str,
+                documents: &[String],
+                top_n: usize,
+            ) -> anyhow::Result<Vec<(usize, f32)>> {
+                self.payloads
+                    .lock()
+                    .unwrap()
+                    .push(("rerank", format!("{query}\n{}", documents.join("\n"))));
+                Ok((0..documents.len())
+                    .take(top_n)
+                    .map(|idx| (idx, 1.0 - idx as f32 * 0.001))
+                    .collect())
+            }
+        }
+
+        let message = |role: &str, content: &str, has_answer: bool| LongMemEvalMessage {
+            role: role.to_string(),
+            content: content.to_string(),
+            has_answer,
+        };
+        // Both gold naming shapes seen in the dataset: `answer_<8 hex>` and
+        // `answer_<corpus>_<n>`.
+        let gold_ids = ["answer_530960c1", "answer_ultrachat_104112"];
+        let row = LongMemEvalRecord {
+            question_id: "q-gold-id-leak".to_string(),
+            question_type: Some("multi-session".to_string()),
+            question: "How many pens did I buy in total?".to_string(),
+            question_date: Some("2023/01/03 (Tue) 00:00".to_string()),
+            answer: Some(serde_json::json!(6)),
+            answer_session_ids: gold_ids.iter().map(|id| id.to_string()).collect(),
+            haystack_dates: vec![
+                "2023/01/01 (Sun) 00:00".to_string(),
+                "2023/01/01 (Sun) 12:00".to_string(),
+                "2023/01/02 (Mon) 00:00".to_string(),
+            ],
+            haystack_session_ids: vec![
+                "sharegpt_x7Yq2_0".to_string(),
+                gold_ids[0].to_string(),
+                gold_ids[1].to_string(),
+            ],
+            haystack_sessions: vec![
+                vec![
+                    message("user", "Can you recommend a notebook?", false),
+                    message("assistant", "A dotted A5 notebook works well.", false),
+                ],
+                vec![
+                    message("user", "I bought 4 pens today.", true),
+                    message("assistant", "Nice haul.", false),
+                ],
+                vec![
+                    message("user", "I picked up 2 more pens.", true),
+                    message("assistant", "Great.", false),
+                ],
+            ],
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("hyps.jsonl");
+        let payloads: Payloads = Arc::default();
+        let distill_prompt = symbiotic_memory::PromptTemplate {
+            name: "distill".to_string(),
+            version: "test".to_string(),
+            system: "Extract durable facts. Cite source_turn_ids.".to_string(),
+            user: "{{turns}}".to_string(),
+            cacheable_prefix: None,
+        };
+        let policy = RecallPolicy {
+            answerer_enabled: true,
+            ..RecallPolicy::default()
+        };
+
+        let hypotheses = run_longmemeval_vault_with_planner(
+            &[row],
+            dir.path(),
+            {
+                let payloads = payloads.clone();
+                move || RecordingEmbedder {
+                    inner: HashEmbeddingProvider::default(),
+                    payloads: payloads.clone(),
+                }
+            },
+            {
+                let payloads = payloads.clone();
+                move || {
+                    symbiotic_memory::LlmDistiller::new(
+                        RecordingChat {
+                            payloads: payloads.clone(),
+                        },
+                        distill_prompt.clone(),
+                    )
+                }
+            },
+            None,
+            {
+                let payloads = payloads.clone();
+                move || RecordingChat {
+                    payloads: payloads.clone(),
+                }
+            },
+            None,
+            None,
+            RerankCascade {
+                main: Some(Arc::new(RecordingReranker {
+                    payloads: payloads.clone(),
+                })),
+                stage1: None,
+                stage1_top_x: 20,
+            },
+            None,
+            None,
+            policy,
+            &out,
+            false,
+            false,
+            false,
+            false,
+            IngestDiagnosticMode::None,
+            Some(1),
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(hypotheses.len(), 1);
+
+        let payloads = payloads.lock().unwrap().clone();
+        // Non-vacuous: the distiller read the gold turns, the reranker ran, and the answerer
+        // received retrieved gold evidence.
+        assert!(
+            payloads.iter().any(|(kind, text)| *kind == "chat"
+                && text.contains("{{turn:")
+                && text.contains("I bought 4 pens")),
+            "the distiller never saw the gold turns"
+        );
+        assert!(
+            payloads.iter().any(|(kind, _)| *kind == "rerank"),
+            "the reranker never ran"
+        );
+        assert!(
+            payloads.iter().any(|(kind, text)| *kind == "chat"
+                && !text.contains("{{turn:")
+                && text.contains("I bought 4 pens")),
+            "the answerer never saw the gold evidence"
+        );
+        let gold_shaped =
+            regex::Regex::new(r"answer_[0-9a-f]{8}|answer_(?:ultrachat|sharegpt)_").unwrap();
+        let leaks: Vec<String> = payloads
+            .iter()
+            .filter(|(_, text)| {
+                gold_ids.iter().any(|gold| text.contains(gold)) || gold_shaped.is_match(text)
+            })
+            .map(|(kind, text)| format!("{kind} payload:\n{text}"))
+            .collect();
+        assert!(
+            leaks.is_empty(),
+            "{} of {} provider payloads carry a gold session id:\n{}",
+            leaks.len(),
+            payloads.len(),
+            leaks.join("\n---\n")
         );
     }
 }
