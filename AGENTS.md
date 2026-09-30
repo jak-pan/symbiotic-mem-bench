@@ -16,6 +16,7 @@ subcommands in `symem`.
 - Run benchmark orchestration through that adapter CLI, not Python scoring scripts or manual
   score entry. No gold-string matching, per-question special cases, or answer-key-driven tuning.
 - Do not commit `runs/`, `.debug-session/`, `target/`, provider queues, or local datasets.
+  Never commit raw prompts or provider payloads; retain them only in ignored local debug storage.
   Keep native state out of tracked records.
   Public records use repo-relative paths and omit raw prompts and provider payloads. Missing
   artifacts stay explicitly missing in `artifact_manifest`.
@@ -59,8 +60,9 @@ file loading are described in [docs/environment.md](docs/environment.md).
   `--answer-only` reuses ingested state. Pass `--run-root` only for a deliberate named run.
 - The persistent store is `--store zvec`. `sqlite` and `zvec-hybrid` are retired and rejected;
   old run roots need fresh ingestion. `memory` supports only simple unscored slices.
-- Answer-only reruns use `workflow_max_in_flight=500` by default; ingest uses its configured window.
-  Provider concurrency is still enforced by model queue id.
+- Answer-only reruns use `workflow_max_in_flight=64` by default; ingest uses its configured window.
+  Override either with `MEMBENCH_WORKFLOW_MAX_IN_FLIGHT`. Provider concurrency is still enforced
+  by model queue id.
 - Paid runs serialize through `runs/.locks/paid-provider-run.lock/`. Inspect `owner.json` and
   confirm the recorded process is dead before removing a stranded lock.
 

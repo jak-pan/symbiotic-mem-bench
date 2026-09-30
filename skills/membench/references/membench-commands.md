@@ -71,9 +71,9 @@ and re-ingests source questions. Use reuse flags only when deliberately testing 
 --answer-only  reuse an already ingested run root and write new answers
 ```
 
-Answer-only native reruns default to `workflow_max_in_flight=500` so recall/answer-only comparisons
-can make full use of the provider queue caps. Fresh ingest runs use the memory config's workflow
-window.
+Answer-only native reruns default to `workflow_max_in_flight=64`. Fresh ingest runs use the memory
+config's workflow window. Override either with `MEMBENCH_WORKFLOW_MAX_IN_FLIGHT`; provider
+concurrency remains controlled by model queue id.
 
 Paid provider-backed native runs are serialized per benchmark repo clone with an atomic lock at:
 
