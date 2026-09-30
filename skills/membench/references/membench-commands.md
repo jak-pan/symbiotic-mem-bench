@@ -332,10 +332,5 @@ steps that move root-level temporary files into place.
 
 ## Validation
 
-Use an external target dir:
-
-```bash
-CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo fmt -- --check
-CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo test
-CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo clippy --all-targets -- -D warnings
-```
+Use the local checks in [AGENTS.md](../../../AGENTS.md#validate), with the external target
+cache and targeted tests in CI's debug profile. CI owns the full core/server test suites.

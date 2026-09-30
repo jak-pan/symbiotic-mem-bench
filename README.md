@@ -11,9 +11,14 @@ portable run records. Memory implementation behavior stays inside the system und
 Everything in this section is local and network-free — no API keys. From this repository root:
 
 ```bash
-CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo test
+CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo fmt -- --check
+# Example targeted check for registry changes (debug profile, as in CI):
+CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo test registry::tests
 cargo run --bin membench-leaderboard -- export --records-root records
 ```
+
+CI owns the complete core and server-feature test suites; see [CONTRIBUTING.md](CONTRIBUTING.md)
+for local checks.
 
 The native `membench` CLI uses the isolated
 `adapters/symbiotic-memory/Cargo.toml` package, which builds against an exact revision of the private

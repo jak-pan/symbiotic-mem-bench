@@ -19,7 +19,8 @@ Run from an exact clean checkout of the intended release commit:
 
 1. Verify version and release contract:
    `./scripts/check-release-version.sh vX.Y.Z`.
-2. Run the same source gates as CI:
+2. Confirm CI is green on the intended commit for these source gates. Run them locally
+   only when CI cannot run or to diagnose a CI failure:
    - `cargo fmt -- --check`
    - `cargo clippy --locked --all-targets --features server -- -D warnings`
    - `cargo test --locked` and `cargo test --locked --features server`

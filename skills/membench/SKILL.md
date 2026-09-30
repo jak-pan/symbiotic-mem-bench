@@ -37,13 +37,8 @@ cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench --
   --run-root runs/{system}/{benchmark}/{limit}/{run_name}
 ```
 
-Run the standard validation gate:
-
-```bash
-CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo fmt -- --check
-CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo test
-CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo clippy --all-targets -- -D warnings
-```
+Use the local checks in [AGENTS.md](../../AGENTS.md#validate). CI owns the full core/server
+suites; local tests target the changed area in CI's debug profile.
 
 For detailed commands and run-shape rules, read `references/membench-commands.md`.
 
@@ -215,14 +210,5 @@ When investigating unexpected spend, always compare:
 
 ## Publication Pass
 
-Before calling a run or repo publish-ready:
-
-```bash
-CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo fmt -- --check
-CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo test
-CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo clippy --all-targets -- -D warnings
-cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- explore
-git status --short --ignored
-```
-
-Then run the publication stale-reference scan from `AGENTS.md`.
+Use [AGENTS.md](../../AGENTS.md#publication-hygiene) for publication checks and the local
+validation commands; CI owns the full test suites.

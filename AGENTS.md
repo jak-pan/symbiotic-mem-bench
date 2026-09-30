@@ -21,16 +21,22 @@ agent to run, inspect, and publish results without reverse-engineering local scr
 
 ## Validate
 
+CI (`.github/workflows/ci.yml`) owns the full core and server-feature suites. Local checks
+use the same debug profile; select tests for the changed area with `<filter>`. Full suites
+are for CI-unavailable cases or CI-failure diagnosis only.
+
 ```bash
 CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo fmt -- --check
-CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo test
+CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo clippy --all-targets --features server -- -D warnings
+CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo test <filter>
+CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo test --features server <filter>
 ```
 
 If you need to run from another repository, use:
 
 ```bash
 CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target \
-  cargo test --manifest-path ../symbiotic-mem-bench/Cargo.toml
+  cargo test --manifest-path ../symbiotic-mem-bench/Cargo.toml <filter>
 ```
 
 ## Codex Skill
@@ -294,11 +300,9 @@ raw local script names
 
 ## Publication Hygiene
 
-Before publishing or opening a PR:
+Use the local checks in [Validate](#validate); CI runs the complete suites. Inspect runs with:
 
 ```bash
-CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo fmt -- --check
-CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo test
 cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- explore
 ```
 

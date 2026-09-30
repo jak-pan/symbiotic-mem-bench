@@ -32,15 +32,16 @@ dashboard, and explicit `--smoke` runs are all local and network-free.
 
 ## Quality gates
 
-Run these before opening a PR (CI runs the same set — `.github/workflows/ci.yml`):
+Locally run formatting, lint, and tests for the changed area (`<filter>` below). Match CI's
+debug test profile. `.github/workflows/ci.yml` owns the complete core/server suites,
+dependency checks, and dashboard build; full local suites are only for CI-unavailable
+cases or CI-failure diagnosis.
 
 ```bash
 CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo fmt -- --check
 CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo clippy --all-targets --features server -- -D warnings
-CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo test
-CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo test --features server
-cargo deny check advisories licenses sources     # cargo install cargo-deny
-cd dashboard && npm ci && npm run build
+CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo test <filter>
+CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo test --features server <filter>
 ```
 
 If you change the leaderboard export contract intentionally, regenerate the canary
