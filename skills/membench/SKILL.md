@@ -5,210 +5,75 @@ description: Use when Codex needs to run, inspect, import, validate, compare, de
 
 # Membench
 
-## Core Workflow
+Shared collaboration, Git, verification, and security rules: House Rules (`~/p/house-rules/AGENTS.md`).
 
-Work from the `symbiotic-mem-bench` repository root when possible. If called from a sibling repo,
-use `--manifest-path ../symbiotic-mem-bench/adapters/symbiotic-memory/Cargo.toml` for the native
-adapter CLI. The public root package is the credential-free core/server/leaderboard product.
+## Read First
 
-Use `membench` for benchmark orchestration and inspection. Do not recreate old Python scoring
-scripts, manually enter scores, or infer missing traces. Missing artifacts must stay missing and be
-declared through `artifact_manifest`.
+- [AGENTS.md](../../AGENTS.md) owns repository boundaries, validation commands, and settled
+  campaign decisions.
+- [Command reference](references/membench-commands.md) owns runnable workflow examples.
+- [Run registry](../../docs/run-registry.md) owns paths and artifact completeness;
+  [schemas](../../docs/schemas.md) describes report, trace, and debug fields.
+- [Environment](../../docs/environment.md) describes env-file loading, engine configuration,
+  and model/provider ownership.
 
-## First Checks
+## Choose the Workflow
 
-1. Read `AGENTS.md` in the benchmark repo.
-2. Read `docs/run-registry.md` for layout questions.
-3. Read `docs/schemas.md` for JSON fields, traces, or artifact completeness questions.
-4. Use `CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target` for validation so the repo stays clean.
+Work from the repository root. The public root builds the core/server/leaderboard without
+private dependencies. Native `membench` commands use
+`cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- ...` and
+require repository access to the pinned Memory dependency. Use release for paid runs.
 
-## Common Tasks
+- Inspect existing runs with `explore`; import frozen artifacts with `--import-report`.
+- Native execution is paid/scored by default. Only explicit `--smoke` selects local providers;
+  smoke does not prove any configured cloud model was invoked.
+- State reuse is explicit: `--resume` or `--answer-only`. For answer-only comparisons,
+  `--source-vault-root` must name an existing compatible zvec vault root. The runner copies
+  `*.zvec` collections and manifests and links the immutable archive; new answers/debug stay
+  in the new run root. Old SQLite/zvec-hybrid vaults require fresh ingestion.
+- Derive trial ledgers with `trials derive`, rather than writing scores or deltas manually.
+  `TRIAL` rows are diagnostic experiments; publication requires a full run and the
+  [ranking review gate](../../docs/longmemeval-methodology.md).
+- Promote with `save-record`, which defaults to portable artifacts without native state.
+  Use [AGENTS.md publication checks](../../AGENTS.md#publication-hygiene) and
+  [RELEASING.md](../../RELEASING.md) for release preparation.
+- Local validation follows [AGENTS.md](../../AGENTS.md#validate), in CI's debug profile.
+  CI owns the full core/server test suites.
 
-List known scratch runs:
+## Diagnose a Run
 
-```bash
-cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- explore
-```
+Compare `run-params.json`'s `configured_models` (requested) and `runtime_models` (invoked).
+Provider calls are evidenced by `artifacts/model-traces.jsonl` or the live/fallback
+`provider-queue/model-queue-traces.jsonl`, not by config names.
 
-Inspect one run:
+The memory engine's query-planner result supplies `query_plan` trace hashes/pointers.
+Per-question `vaults/{question}/debug/.../question-debug.json` stores
+`recall.query_planner_call.{system_prompt,user_prompt,response_text}`, retrieval queries,
+and initial/fallback profile diagnostics. Do not invoke an extra planner for display.
+The dashboard reads question debug lazily. Its `answer embed` label maps to `embed_query`.
 
-```bash
-cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- explore \
-  --run-root runs/{system}/{benchmark}/{limit}/{run_name}
-```
+Embedding request packing (`SYMBIOTIC_MEMORY__EMBED__BATCH_SIZE` / `BATCH_MAX_CHARS`) is
+separate from per-input truncation (`MEMBENCH_EMBED_MAX_CHARS`) and model-queue concurrency.
+LongMemEval's reference clock comes from each row's `question_date`; override with
+`MEMBENCH_REFERENCE_DATETIME` only for a named experiment.
 
-Use the local checks in [AGENTS.md](../../AGENTS.md#validate). CI owns the full core/server
-suites; local tests target the changed area in CI's debug profile.
+## Cost Interpretation
 
-For detailed commands and run-shape rules, read `references/membench-commands.md`.
+Use the dashboard/API `cost` rollup, implemented in [src/cost.rs](../../src/cost.rs).
+Provider-reported `cost_micro_usd` wins; token-priced estimates carry `cost_estimated: true`.
+Missing token usage stays unpriced, not zero-cost. The static table version is defined by
+`PRICING_TABLE_VERSION`; the OpenRouter catalog is
+[config/pricing/openrouter-pricing.json](../../config/pricing/openrouter-pricing.json),
+refreshed by [scripts/refresh-pricing.sh](../../scripts/refresh-pricing.sh).
+See [DeepSeek cost accounting](../../docs/deepseek-cost-accounting.md) for cache buckets.
 
-## Trials
-
-Use Trials for benchmark improvement experiments. A trial is not fine-tuning: it records one generic
-system change, why it was made, what files changed, how it was verified, and which questions improved
-or regressed.
-
-When source runs exist, derive trial artifacts through the runner instead of hand-writing the ledger:
-
-```bash
-cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- trials derive \
-  --trial-run-root runs/{system}/{benchmark}/{limit}/{candidate_run} \
-  --comparison-run-root runs/{system}/{benchmark}/{limit}/{previous_run} \
-  --original-baseline-run-root runs/{system}/{benchmark}/{limit}/{baseline_run} \
-  --change-title "{short title}" \
-  --reasoning "{why this generic change is being tested}" \
-  --changed-file "../symbiotic-memory/src/recall/prompt_policy.rs:120|answer prompt|Clarify evidence grouping" \
-  --verification "cargo test --manifest-path ../symbiotic-memory/Cargo.toml prompt_ --features cli" \
-  --decision "diagnostic_only"
-```
-
-The command writes `runs/analysis/trial-{generated-change-id}/trial-stack.json`, `trials.jsonl`,
-and `trial-question-deltas.jsonl`. `--stack-id` and `--change-id` are generated by default from the
-change title and compared run roots; pass explicit ids only when intentionally grouping several
-trial rows into one ledger. It derives wins/regressions from verdicts and hypotheses, compares
-against both the immediate comparison run and original stack, and attaches question-debug path/hash
-references when available. Keep raw prompt bodies in local debug bundles, not in tracked trial
-ledgers.
-
-Use focused sub-25Q trial stacks for one failure class or prompt-forensics loop. Use stratified
-25-50Q trial stacks before drawing broader diagnostic conclusions. Full benchmark claims still need
-the complete benchmark set and promoted records.
-
-The dashboard flags any benchmark run referenced by `trials.jsonl` with a `TRIAL` badge. Treat that
-badge as diagnostic improvement context, not a promoted benchmark claim.
-
-## Environment
-
-Paid provider-backed runs load `.env.test.local` from the benchmark repository by default. Create it
-from a tracked template:
-
-```bash
-cp .env.example .env.test.local
-```
-
-Never commit real `.env` files. Use `--env-file path/to/file` only when intentionally testing an
-alternate environment.
-
-## Run Integrity Rules
-
-- Scratch runs live under `runs/{system}/{benchmark}/{limit}/{run_name}/` and are ignored by git.
-- Tracked records live under `records/{system}/{benchmark}/{limit}/{run_name}/`.
-- Standard LongMemEval runs may omit `--dataset`; `membench` auto-downloads the cleaned S dataset to
-  ignored local storage under `runs/inputs/longmemeval-cleaned/` when missing.
-- `membench` does not auto-download or vendor `symbiotic-memory`; the adapter resolves exact locked
-  Git revisions from the private `symbiotic-sh/symbiotic-memory` repository and therefore requires
-  explicit repository access. A sibling override is only for deliberate co-development.
-- LongMemEval small runs default to `--sample stratified`, not first-N row order. Use `--sample first`
-  only for exact row-order reproductions.
-- Native runs re-ingest by default; state reuse must be explicit with `--resume` or `--answer-only`.
-  For cheap isolated answer-only comparisons, pass `--source-vault-root
-  runs/inputs/vault-roots/.../vaults`; membench links immutable `memory.sqlite` and `archive/`
-  data into the new run root and writes fresh hypotheses, debug, traces, and scores there.
-- Answer-only native reruns default to `workflow_max_in_flight=500`. Normal ingest runs use the
-  configured workflow window. Provider queue ids still enforce model concurrency in both modes.
-- Paid provider-backed native runs are intentionally one-at-a-time per benchmark repo clone. The
-  runner creates `runs/.locks/paid-provider-run.lock` before starting provider calls and refuses a
-  second paid run while it exists. This avoids multiplying model pressure across independent
-  run-local queues. If a process dies, inspect `owner.json` in that lock directory before removing it.
-- Default Symbiotic Memory launches are paid, provider-backed, and scored: `llm` distill, `gemini`
-  embeddings, unified answerer, consolidated retrieval enabled, and `score=true`.
-- Paid/provider-backed benchmark runs must use Cargo release mode (`cargo run --release ...`).
-  Dev-mode runs are acceptable only for smoke/debug/inspection commands.
-- Symbiotic Memory adapter status today: explicit local `--smoke` runs and the default paid
-  LLM/Gemini ingestion/scoring path are wired in this repo. Compact normalized
-  `artifacts/model-traces.jsonl` export is still pending; provider queue logs are present under
-  `provider-queue/model-queue-traces.jsonl`.
-- Local `--smoke` adapter runs map internally to local deterministic providers and no scorer.
-  They also force `query_planner=off`, so smoke runs are truly local/no-network.
-  Without an explicit `--run-root` or hidden `--keep-smoke-run`, they execute outside the
-  registry and delete themselves after success; they should not appear in dashboard run lists.
-- Check `run-params.json` before interpreting a run: `configured_models` records requested YAML
-  settings, while `runtime_models` records what the adapter actually invoked. Current local smoke
-  runs do not prove DeepSeek/Gemini use even when the config names those providers.
-- `workflow/longmemeval/queue.sqlite` is durable row workflow state. Provider/model queue logs live
-  separately under `provider-queue/model-queue-traces.jsonl` and are present only for actual queued
-  model calls.
-- LongMemEval scoring defaults to `judge_prompt_mode=official` (the per-question-type paper grader,
-  see `JUDGE.md`); use `MEMBENCH_JUDGE_PROMPT_MODE=semantic` only for legacy-grader A/B comparisons.
-- Judge cache prewarm is wired but must remain opt-in: use `--prewarm-judge-cache 5
-  --prewarm-pause-secs 10` for DeepSeek rejudge/score-heavy runs, not as a default ingest/answer
-  behavior.
-- Imported runs can be artifact-only; `artifact_manifest.native_state_available` must be `false`.
-- Never commit `runs/`, `.debug-session/`, `target/`, provider queues with secrets, local datasets,
-  raw prompts, or raw secret-bearing traces.
-- Preserve repo-relative paths in reports and records.
-- Native adapters must preserve async pipeline behavior: no benchmark-owned ingestion/recall
-  duplication, no artificial batch barrier, stage outputs and traces written incrementally, and
-  provider caps controlled by model queue id.
-- Query-planner diagnostics live in two layers: memory traces record `query_plan` hashes and the
-  question-debug path, while `vaults/{question}/debug/.../question-debug.json` contains
-  `recall.query_planner_call.system_prompt`, `user_prompt`, `response_text`,
-  `recall.retrieval_queries`, and scored `recall.initial_profile` / `fallback_profile` search
-  results. The dashboard `QUESTIONS` drawer reads this bundle lazily when a row is expanded.
-- The live dashboard labels the memory `embed_query` stage as `answer embed`, because that embedding
-  call vectorizes the answer/retrieval query before fact/raw source search.
-- Embedding request sizing has two distinct axes. `SYMBIOTIC_MEMORY__EMBED__BATCH_SIZE` and
-  `SYMBIOTIC_MEMORY__EMBED__BATCH_MAX_CHARS` (the kit's `embed.batch_size` / `embed.batch_max_chars`)
-  are request-packing controls with code-owned defaults. Larger request char budgets reduce HTTP
-  fanout but can take longer and retry more work when a request fails. `MEMBENCH_EMBED_MAX_CHARS` is
-  the per-input local text cap. Do not use the batch char budget as an item truncation cap or
-  provider concurrency control.
-- Symbiotic Memory model/provider defaults belong in `../symbiotic-memory` code/config. Benchmark
-  role bindings belong in `../symbiotic-memory`, while known model queue defaults belong in the
-  foundation model catalog. Benchmark profiles should not repeat answer/distill/embed model defaults;
-  add role/model env overrides only for an explicitly named tuning arm or provider comparison.
-- The reference clock passed to Symbiotic Memory recall defaults to the current RFC3339 datetime
-  with timezone for normal memory use. LongMemEval maps each row's `question_date` into an RFC3339
-  reference timestamp so temporal questions replay against the benchmark's pinned clock. Set
-  `MEMBENCH_REFERENCE_DATETIME` only when intentionally overriding that clock for a named
-  experiment.
-- Native adapters write executor-owned outputs directly under `raw/`; do not add root-level
-  temporary outputs that need a cleanup pass.
-- For LongMemEval native runs, hypotheses and memory `answer` traces are controlled by
-  `answer_output`; the legacy `answerer` flag means generative-answerer policy, not whether answers
-  exist. Scored/judged output is controlled by `score_output`/`score`.
-- Dashboard commands should use `node` and `npm` from the user `nvm` install already on PATH; do
-  not install or rely on Homebrew Node.
-- Dashboard command previews should target the short native `membench` command and omit harness-owned
-  defaults such as dataset, run root, raw output, prompt dir, provider queue dir, and fresh mode.
-
-## Cost And Pricing Interpretation
-
-Use the dashboard/API cost fields for run-level cost. Do not manually multiply screenshots or guess
-from provider dashboards unless debugging a provider-side discrepancy.
-
-Cost source rules:
-
-- If a trace row has `cost_micro_usd`, that provider-reported value wins.
-- If a trace row has token usage but no explicit cost, membench estimates cost from its built-in
-  pricing catalog and marks the rollup with `cost_estimated: true`.
-- If a model has no token usage, that model stays unpriced. Do not treat missing usage as zero-cost.
-- New Symbiotic Memory Gemini embedding traces should include `usage.prompt_tokens` from Gemini
-  `countTokens`, so embedding cost should be estimated. Old native Gemini embedding traces may show
-  thousands of embedding calls with no cost because those queue rows did not record embedding
-  input-token usage.
-
-Current built-in catalog:
-
-- `official-pricing-2026-06-19`
-- DeepSeek official API pricing for `deepseek-v4-flash` and `deepseek-v4-pro`, including cache-hit
-  input, cache-miss input, and output tokens.
-- Gemini official API pricing for `gemini-embedding-2` standard and batch text-input prices.
-
-Useful inspection command:
+Inspect one run (replace `{run_name}`):
 
 ```bash
 curl -s 'http://127.0.0.1:8787/api/run?id=runs%2Fsymbiotic-memory%2Flong-mem-eval%2F10%2F{run_name}' \
   | jq '{cost:.cost.cost_micro_usd, estimated:.cost.cost_estimated, pricing:.cost.pricing_table_version, models:[.cost.models[] | {model,calls,cost_micro_usd,cost_estimated,input_tokens,cached_input_tokens,output_tokens}]}'
 ```
 
-When investigating unexpected spend, always compare:
-
-- `run-params.json` `configured_models` and `runtime_models`;
-- `provider-queue/model-queue-traces.jsonl` queue ids and successful-call counts;
-- dashboard/API `cost.models[]`, especially `cached_input_tokens` versus `input_tokens`.
-
-## Publication Pass
-
-Use [AGENTS.md](../../AGENTS.md#publication-hygiene) for publication checks and the local
-validation commands; CI owns the full test suites.
+For unexpected spend, compare configured/runtime bindings, queue ids and successful-call
+counts, and per-model input/cache/output token buckets. Older embedding traces may lack
+usage and cannot retrospectively prove cost.

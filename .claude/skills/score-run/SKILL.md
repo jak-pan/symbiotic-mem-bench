@@ -3,26 +3,33 @@ name: score-run
 description: Score/measure a membench LongMemEval run (or several) — overall accuracy, per-question-type breakdown, reasoning-fired count, cost, and the hard/control split. Use whenever the user asks to score, measure, re-measure, or compare runs by name or path.
 ---
 
-# Score a membench run
+# Read a Run's Scores
 
-Run the scorer with one or more run names or paths:
+Shared collaboration, Git, verification, and security rules: House Rules (`~/p/house-rules/AGENTS.md`).
 
-```
+From the repository root, with `jq` and `awk` available:
+
+```bash
 scripts/score-run.sh <run-name-or-path> [<run> ...]
 ```
 
-A run name resolves under `runs/symbiotic-memory/long-mem-eval/<limit>/<name>` (a full path also works). Pass several to compare them side by side.
+Names resolve under `runs/symbiotic-memory/long-mem-eval/<limit>/<name>`; paths must contain
+`artifacts/verdicts.jsonl` with native `autoeval_label.label` booleans. Imported/canary verdicts
+using other label fields are unsupported and can print incorrect zero counts; inspect those
+through `membench explore` instead. Multiple runs print side by side. This is read-only: it reports stored
+artifacts and never invokes an answerer or judge.
 
-## What it prints, per run
+- `acc`: correct/total from `autoeval_label.label` in verdicts.
+- `by-type`: LongMemEval question-type counts (`ms`, `tr`, `ku`, `ss-user`, `ss-asst`, `ss-pref`).
+- `reasoned`: answerer calls with a reasoning trace, or `n/a` without per-question debug.
+  Check this before interpreting an effort/model trial.
+- `cost`: stored `benchmark-report.json`'s `metrics.cost_micro_usd`; it does not refresh pricing
+  or recompute an old report. Missing cost prints zero, which does not prove the run was free.
+  Use [membench cost diagnostics](../../../skills/membench/SKILL.md#cost-interpretation) for
+  live rollups and per-model usage.
+- `hard / control`: optional local question sets under `runs/inputs/longmemeval-hard/`
+  (`hard-tier2-cluster31.json`, `control-easy30.json`), only when present and covered by the run.
+  Those sets are absent from a clean checkout.
 
-- **acc** — overall correct/total from `artifacts/verdicts.jsonl`.
-- **by-type** — accuracy per LongMemEval question type: `ms` (multi-session), `tr` (temporal), `ku` (knowledge-update), `ss-user` / `ss-asst` / `ss-pref` (single-session).
-- **reasoned** — how many answerer calls emitted a reasoning trace (`n/a` if the run has no per-question debug). Use this to confirm thinking actually fired — opt-in models (e.g. gemma-4) need `MEMBENCH_ANSWER_REASONING_EFFORT=high`, not just `THINKING=on`. See `MODEL-REASONING-DEFAULTS.md`.
-- **cost** — total run cost from the report (the `cost.rs` rollup, priced from the OpenRouter `/models` catalog in `config/pricing/openrouter-pricing.json` + the native static table, with prompt-cache discount). Canonical for runs scored after the pricing-catalog change; re-score older runs to refresh. Per-model split is in the dashboard / `/api/run`. Refresh prices: `scripts/refresh-pricing.sh`.
-- **hard / control** — the tier2 (31) and control (30) split, shown only when the run covers those question sets (the 61-question baseline). Qids come from `runs/inputs/longmemeval-hard/{hard-tier2-cluster31,control-easy30}.json` — canonical, not `/tmp`.
-
-## Notes
-
-- Scoring is read-only over already-written artifacts; it never re-runs the model.
-- All counting is jq/awk (no Python), matching repo conventions.
-- To score a fresh run, first produce it with `membench ... --score --run-name <name>`, then `scripts/score-run.sh <name>`.
+To judge new hypotheses, use the [native benchmark workflow](../../../skills/membench/references/membench-commands.md);
+this helper only reads its result.
