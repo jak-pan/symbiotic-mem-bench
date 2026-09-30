@@ -228,8 +228,9 @@ runs/symbiotic-memory/long-mem-eval/500/20260617-153012-a1b2c3d4/
 Native runs re-ingest by default. `membench` passes `--fresh` for normal native benchmark runs so
 the run root is reset and every question is ingested from source again. Reuse is opt-in with
 `--resume` or `--answer-only`. For cheap answer-only comparisons, use `--source-vault-root
-runs/inputs/vault-roots/.../vaults`; the rerun links immutable `memory.sqlite` and `archive/`
-state, copies mutable manifests, and writes fresh answer/score artifacts in its own run root.
+runs/inputs/vault-roots/.../vaults`; the rerun copies zvec collections and manifests, links
+`archive/`, and writes fresh answer/score artifacts in its own run root. Pre-cutover SQLite vaults
+are rejected and need fresh ingestion.
 
 Relative `--registry-root`, `--run-root`, and `save-record --records-root` paths resolve from this
 repo root, not from the caller's current working directory.
@@ -293,24 +294,8 @@ cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench --
   --jsonl runs/symbiotic-memory/long-mem-eval/500/baseline-clean/provider-queue/model-queue-traces.jsonl
 ```
 
-Run and report the first-class OpenRouter Qwen raw-embedding transport tuner:
-
-```bash
-scripts/run-embedding-transport-tuning.sh openrouter-qwen3-8b-1024 h1-32x32
-scripts/report-embedding-transport-tuning.sh --profile openrouter-qwen3-8b-1024 --markdown
-```
-
-Run and report the equivalent DeepSeek chat transport tuner for distill-only runs:
-
-```bash
-scripts/run-chat-transport-tuning.sh deepseek-v4-flash-distill h2-64x32
-scripts/report-chat-transport-tuning.sh --profile deepseek-v4-flash-distill --markdown
-```
-
-The current evidence-backed candidate for OpenRouter `qwen/qwen3-embedding-8b` raw embeddings is
-documented in `docs/symbiotic-memory/openrouter-qwen-embedding-tuning.md`. The current DeepSeek
-chat transport evidence is documented in
-`docs/symbiotic-memory/deepseek-chat-transport-tuning.md`.
+For historical embedding and chat transport studies, see
+[Historical Transport Experiments](skills/membench/references/membench-commands.md#historical-transport-experiments).
 
 Dashboard-safe tuning records can be promoted without copying vaults, raw provider payloads, or
 question-level artifacts:

@@ -15,7 +15,8 @@ subcommands in `symem`.
   [docs/environment.md](docs/environment.md)).
 - Run benchmark orchestration through that adapter CLI, not Python scoring scripts or manual
   score entry. No gold-string matching, per-question special cases, or answer-key-driven tuning.
-- Keep scratch runs, native state, provider queues, and local datasets out of tracked records.
+- Do not commit `runs/`, `.debug-session/`, `target/`, provider queues, or local datasets.
+  Keep native state out of tracked records.
   Public records use repo-relative paths and omit raw prompts and provider payloads. Missing
   artifacts stay explicitly missing in `artifact_manifest`.
 - GitHub Actions and release bundles run on Linux, including the private adapter's zvec gate.
@@ -151,8 +152,9 @@ Conditional Chain-of-Note gains also collapsed under replication.
   Short/surgical/Chain-of-Note/split prompts, wider rerank, and smaller top-k were noise or worse.
   Deterministic count-in-code was shelved by operator decision.
 - Removed levers (`SYMEM_EXCLUDE_BRIEFS`, `SYMEM_LEDGER_RETRIEVAL`, `SYMEM_DEDUP_EVIDENCE`,
-  `SYMEM_DETERMINISTIC_COUNT`, `SYMEM_RERANK_RESERVE`) are historical only. Use the typed engine
-  config and harness variables documented in `docs/environment.md` for new work.
+  `SYMEM_DETERMINISTIC_COUNT`, `SYMEM_RERANK_RESERVE`) are historical only. Re-add only as typed
+  `[experimental]` fields with referee evidence. Use the typed engine config and harness variables
+  documented in `docs/environment.md` for new work.
 
 The old campaign vaults and custom prompt directories are local prerequisites, absent in a
 clean checkout. Historical measurements do not establish the current pipeline's score.

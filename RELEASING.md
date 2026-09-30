@@ -78,4 +78,5 @@ Before promoting that draft:
 - Omit `THIRD_PARTY_NOTICES.md`, or ship a notice inventory that does not match the locked Cargo and
   dashboard graphs or the redistributed LongMemEval-derived artifacts.
 - Claim the `longmemeval-v2-text` projection is an official LongMemEval-V2 score.
+- Tag or release a commit other than the reviewed head.
 - Ship an asset that has not passed the extracted-bundle smoke for the exact tag commit.
