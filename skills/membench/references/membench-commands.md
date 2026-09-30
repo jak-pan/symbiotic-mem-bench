@@ -1,12 +1,13 @@
 # Membench Commands
 
+Shared collaboration, Git, verification, and security rules: House Rules (`~/p/house-rules/AGENTS.md`).
+
 ## Repository Root
 
-Prefer running from the `symbiotic-mem-bench` repo root:
-
-```bash
-cd ../symbiotic-mem-bench
-```
+Run the examples from this repository root. Native adapter commands require read access to
+the pinned Memory Git dependency; the public root package is credential-free. Replace
+`<...>`, `{...}`, and `path/to/...` placeholders with real local inputs. Example run roots
+are illustrative and are not included in a clean checkout.
 
 From another repo, use:
 
@@ -70,9 +71,9 @@ and re-ingests source questions. Use reuse flags only when deliberately testing 
 --answer-only  reuse an already ingested run root and write new answers
 ```
 
-Answer-only native reruns default to `workflow_max_in_flight=500` so recall/answer-only comparisons
-can make full use of the provider queue caps. Fresh ingest runs use the memory config's workflow
-window.
+Answer-only native reruns default to `workflow_max_in_flight=64`. Fresh ingest runs use the memory
+config's workflow window. Override either with `MEMBENCH_WORKFLOW_MAX_IN_FLIGHT`; provider
+concurrency remains controlled by model queue id.
 
 Paid provider-backed native runs are serialized per benchmark repo clone with an atomic lock at:
 
@@ -105,7 +106,8 @@ query planner receive the parsed RFC3339 timestamp as the reference clock.
 
 The current raw-light LongMemEval profile is
 `config/symbiotic-memory/longmemeval-raw-light.yaml`: facts 20, raw top-k 10,
-DeepSeek Flash query planner, and shared provider queue defaults.
+Flash query planner policy, and queue timeout/retry settings. Model bindings are resolved
+from the pinned Memory/foundation configuration, not this profile.
 
 Embedding request sizing is split deliberately:
 
@@ -121,21 +123,20 @@ Default native launches are paid, provider-backed, scored, and must run in Cargo
 
 ```text
 distiller        llm
-embedder         gemini
+embedder         openrouter
 answerer         enabled
-consolidation    enabled
+consolidation    opt-in
 query_planner    flash
+store            zvec
 score            enabled
 memory_config    config/symbiotic-memory/longmemeval-raw-light.yaml
 ```
 
-Current adapter status:
-
-```text
-wired:   explicit --smoke local no-network run-shape tests
-wired:   default provider-backed LLM/Gemini ingestion and queued LongMemEval scoring
-pending: compact normalized artifacts/model-traces.jsonl export
-```
+Native `--smoke`, paid ingestion/scoring, and `artifacts/model-traces.jsonl` export are wired.
+Gemini embeddings require explicit `--embedder gemini`. Brief generation needs both
+`--consolidate-briefs` and `MEMBENCH_CONSOLIDATOR=llm`. The persistent store is `zvec`;
+`sqlite` and `zvec-hybrid` are rejected (old vaults need fresh ingestion). Rerank is on by
+harness default; pin `MEMBENCH_RERANK_MODEL` for comparable model-specific trials.
 
 Do not restore benchmark subcommands in `symem`; paid benchmark orchestration and scoring belong in
 `membench`.
@@ -150,6 +151,26 @@ CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run \
   --benchmark long-mem-eval \
   --smoke
 ```
+
+## Oracle Reader Comparison
+
+For an answerer/prompt experiment with gold-session evidence, use the native CLI. Replace
+`<source-vault-root>`, `<prompt-dir>`, and `<run-name>` with local inputs; the source vaults
+must use the current zvec format. A clean checkout contains neither vaults nor custom prompts.
+This is a paid diagnostic arm, not a promotable benchmark claim. Gold evidence replaces the
+answer context; recall still runs for diagnostics.
+
+```bash
+MEMBENCH_ANSWER_OPERATOR=openrouter MEMBENCH_ANSWER_MODEL=<operator/model> \
+MEMBENCH_ANSWER_THINKING=on \
+CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run --release \
+  --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench -- \
+  --system symbiotic-memory --benchmark long-mem-eval --limit 500 \
+  --answer-only --oracle-gold --source-vault-root <source-vault-root> \
+  --prompt-dir <prompt-dir> --run-name <run-name>
+```
+
+Read the stored result with `scripts/score-run.sh <run-name>`; that helper makes no provider calls.
 
 ## Queued Scoring
 
@@ -173,11 +194,9 @@ CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo run --release \
   --prewarm-pause-secs 10
 ```
 
-This example is not an active command until scoring is ported. The prewarm should write temporary
-files under `raw/judge-cache-prewarm/`, score only those rows through the same queued scorer, wait,
-then run the real score. Its local queue and traces stay under that same raw subdirectory, so final
-score cost/latency artifacts exclude warmup. It is disabled by default so full ingest/answer
-pipelines stay fully async.
+Prewarm scores the selected prefix under `raw/judge-cache-prewarm/` through the queued
+scorer, waits, then performs the real score. Inspect that subdirectory when accounting for
+warmup calls. It is disabled by default so ingest/answer pipelines remain async.
 
 ## Import Existing Artifacts
 
@@ -223,8 +242,8 @@ cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench --
   --original-baseline-run-root runs/{system}/{benchmark}/{limit}/{baseline_run} \
   --change-title "{short title}" \
   --reasoning "{why this generic change is being tested}" \
-  --changed-file "../symbiotic-memory/src/recall/prompt_policy.rs:120|answer prompt|Clarify evidence grouping" \
-  --verification "cargo test --manifest-path ../symbiotic-memory/Cargo.toml prompt_ --features cli" \
+  --changed-file "src/runner.rs|runner|Describe the benchmark policy change" \
+  --verification "cargo fmt -- --check" \
   --risk "Focused trial stack; validate on a stratified 25-50Q stack before broad conclusions." \
   --decision "diagnostic_only"
 ```
@@ -262,80 +281,19 @@ cargo run --manifest-path adapters/symbiotic-memory/Cargo.toml --bin membench --
 The queue summary groups by `queue_id` and `item_id`, deriving wait time, run time, total time,
 attempt count, and final status.
 
-## OpenRouter Qwen Embedding Tuning
+## Historical Transport Experiments
 
-Run a raw-embedding-only transport tuning arm with the existing release binary:
-
-```bash
-scripts/run-embedding-transport-tuning.sh openrouter-qwen3-8b-1024 h1-32x32
-```
-
-Compare the saved evidence runs:
-
-```bash
-scripts/report-embedding-transport-tuning.sh --profile openrouter-qwen3-8b-1024 --markdown
-```
-
-## DeepSeek Chat Transport Tuning
-
-Run a distill-only DeepSeek transport tuning arm with the existing release binary:
-
-```bash
-scripts/run-chat-transport-tuning.sh deepseek-v4-flash-distill h2-64x32
-```
-
-Compare saved DeepSeek chat transport evidence runs:
-
-```bash
-scripts/report-chat-transport-tuning.sh --profile deepseek-v4-flash-distill --markdown
-```
-
-The chat transport shape is controlled by `SYMBIOTIC_MEMORY__TRANSPORT__CHAT_CLIENT_POOL_SIZE`,
-`SYMBIOTIC_MEMORY__TRANSPORT__POOL_MAX_IDLE_PER_HOST`, and
-`SYMBIOTIC_MEMORY__TRANSPORT__HTTP1_ONLY` (the kit's `[transport]` config section).
-Those are below the provider queue: they do not replace the model catalog or
-workflow `max_in_flight`.
-
-Promote one local evidence run as a dashboard-safe meta record:
-
-```bash
-scripts/save-run-meta-record.sh runs/symbiotic-memory/long-mem-eval/10/<run-name>
-```
-
-The current decision records are:
-
-- `docs/symbiotic-memory/openrouter-qwen-embedding-tuning.md`: OpenRouter Qwen raw embedding.
-- `docs/symbiotic-memory/deepseek-chat-transport-tuning.md`: DeepSeek Flash distill chat.
+Decisions from the original transport studies live in
+[OpenRouter Qwen embedding tuning](../../../docs/symbiotic-memory/openrouter-qwen-embedding-tuning.md)
+and [DeepSeek chat transport tuning](../../../docs/symbiotic-memory/deepseek-chat-transport-tuning.md).
+Their launch helpers still select retired storage backends; they are not current launch examples.
 
 ## Required Run Shape
 
-All complete runs:
-
-```text
-run-params.json
-benchmark-report.json
-artifacts/
-```
-
-Native runs can also have:
-
-```text
-raw/
-vaults/
-workflow/
-provider-queue/
-```
-
-Imported runs may be artifact-only. Do not create fake native state to make old runs look complete.
-Native adapters write executor-owned outputs directly under `raw/`; do not add end-of-run cleanup
-steps that move root-level temporary files into place.
+See [docs/run-registry.md](../../../docs/run-registry.md) for the native/imported layout and
+[AGENTS.md](../../../AGENTS.md#async-adapter-contract) for incremental-output invariants.
 
 ## Validation
 
-Use an external target dir:
-
-```bash
-CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo fmt -- --check
-CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo test
-CARGO_TARGET_DIR=/tmp/symbiotic-mem-bench-target cargo clippy --all-targets -- -D warnings
-```
+Use the local checks in [AGENTS.md](../../../AGENTS.md#validate), with the external target
+cache and targeted tests in CI's debug profile. CI owns the full core/server test suites.

@@ -1,5 +1,7 @@
 # Releasing
 
+Shared collaboration, Git, verification, and security rules: House Rules (`~/p/house-rules/AGENTS.md`).
+
 ## Versioning and distribution
 
 - The Rust package (`Cargo.toml`) and dashboard (`dashboard/package.json`) share one release
@@ -19,7 +21,8 @@ Run from an exact clean checkout of the intended release commit:
 
 1. Verify version and release contract:
    `./scripts/check-release-version.sh vX.Y.Z`.
-2. Run the same source gates as CI:
+2. Confirm CI is green on the intended commit for these source gates. Run them locally
+   only when CI cannot run or to diagnose a CI failure:
    - `cargo fmt -- --check`
    - `cargo clippy --locked --all-targets --features server -- -D warnings`
    - `cargo test --locked` and `cargo test --locked --features server`
@@ -31,7 +34,8 @@ Run from an exact clean checkout of the intended release commit:
    - `python3 -m unittest scripts.tests.test_package_release`
    - deterministic canary export matches `canary/expected-leaderboard.json`
    - `./scripts/check-leaderboard-snapshot.sh`
-   - tracked-tree secret scan and release-bundle forbidden-path scan
+   - `./scripts/check-publication-hygiene.sh` and the forbidden-path validation in
+     `scripts/package-release.py`
 3. Maintainers with read access must run `./scripts/check-adapter-build.sh`. The gate resolves the
    exact locked Memory checkout and stages its verified prebuilt for the host target before Cargo;
    it proves the private integration remains compatible with the exact pins but does **not** put
@@ -74,5 +78,5 @@ Before promoting that draft:
 - Omit `THIRD_PARTY_NOTICES.md`, or ship a notice inventory that does not match the locked Cargo and
   dashboard graphs or the redistributed LongMemEval-derived artifacts.
 - Claim the `longmemeval-v2-text` projection is an official LongMemEval-V2 score.
-- Publish a tag or release from a dirty checkout, a commit other than the reviewed head, or an asset
-  that has not passed the extracted-bundle smoke.
+- Tag or release a commit other than the reviewed head.
+- Ship an asset that has not passed the extracted-bundle smoke for the exact tag commit.
